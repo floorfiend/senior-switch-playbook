@@ -12,13 +12,22 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
   <h1>Distributed rate limiter</h1>
-  <p class="lede">Design a rate limiter that enforces per-user, per-tenant and per-API limits across hundreds of gateway nodes. A senior answer picks an algorithm for a reason, makes the check atomic in Redis with Lua, keeps it under a millisecond or two, and says exactly what happens when Redis or a region goes away.</p>
+  <p class="lede">After this page you can design a limiter for hundreds of gateway nodes: pick the algorithm, make the Redis check atomic, and say what happens when Redis dies.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> ~8 reports, 2025–26</span>
     <span class="fact"><b>Often paired with:</b> idempotency, CAP rapid-fire</span>
   </div>
   <div class="chips"><span class="chip hot">Amazon</span><span class="chip hot">Salesforce</span><span class="chip">Oracle</span><span class="chip">Apple</span><span class="chip">Microsoft</span><span class="chip">Agoda</span><span class="chip">Kotak</span></div>
+
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Gateway filter checks every request against counters in Redis Cluster.</li>
+    <li>Token bucket by default; sliding log only for OTP and login.</li>
+    <li>One Lua script per request makes read-compute-write atomic.</li>
+    <li>Redis down: fail-open to a local bucket, fail-closed for sensitive endpoints.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A FASTag toll plaza with many lanes. Each lane (gateway node) checks one shared wallet (Redis) before lifting the barrier. If the wallet server goes down, ordinary lanes wave cars through with a local tally; the lane for heavy trucks (OTP, payments) stays shut.</p></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -27,37 +36,53 @@
     <li><a href="#api">API design</a></li>
     <li><a href="#data">Data model</a></li>
     <li><a href="#arch">Architecture</a></li>
+    <li><a href="#follow">Follow one request</a></li>
     <li><a href="#deep">Deep dives</a></li>
     <li><a href="#scale">Scaling and failure</a></li>
     <li><a href="#tradeoffs">Trade-offs</a></li>
-    <li><a href="#followups">Follow-up questions</a></li>
     <li><a href="#mistakes">Mistakes</a></li>
     <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#followups">Interview questions</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
-  <p>The reports show two flavours. Amazon asked it from first principles: fixed window, sliding window, token bucket, then "make it work across servers with Redis". Salesforce went in depth on the distributed part: Redis Lua scripts, fail-open versus fail-closed, and multi-region. Agoda framed it as "API rate limiter" inside a wider microservices discussion. Across all of them the interviewer is checking:</p>
-  <ul>
-    <li><b>Algorithm judgement.</b> You can explain four algorithms in two sentences each and choose one with a reason (burst tolerance, memory, accuracy), not because it is "the standard".</li>
-    <li><b>Atomicity.</b> You know that <code>GET</code> then <code>INCR</code> from the application is a race, and that a Lua script (or a single atomic command) fixes it.</li>
-    <li><b>Latency budget.</b> The limiter sits on every request. You keep the check to one network round trip, ideally under 1–2 ms at p99, and you have a plan for hot keys.</li>
-    <li><b>Failure behaviour.</b> A limiter that takes the whole API down when Redis blips is worse than no limiter. You state fail-open or fail-closed per endpoint and justify it.</li>
-    <li><b>Distributed reality.</b> Clock skew, Redis Cluster slots, replication lag, multi-region quotas. Staff-level interviewers push here.</li>
-    <li><b>Client contract.</b> HTTP 429, <code>Retry-After</code>, remaining-quota headers, and how clients should back off.</li>
-  </ul>
+  <div class="keys">
+    <div class="key"><h4>Algorithm judgement</h4><p>Explain four algorithms in two sentences each; pick one for a reason (bursts, memory, accuracy).</p></div>
+    <div class="key"><h4>Atomicity</h4><p><code>GET</code> then <code>INCR</code> from the app is a race. A Lua script or single atomic command fixes it.</p></div>
+    <div class="key"><h4>Latency budget</h4><p>It runs on every request: one round trip, under 1–2 ms at p99, with a plan for hot keys.</p></div>
+    <div class="key"><h4>Failure behaviour</h4><p>A limiter that takes the API down on a Redis blip is worse than none. State fail-open or fail-closed per endpoint.</p></div>
+    <div class="key"><h4>Distributed reality</h4><p>Clock skew, Redis Cluster slots, replication lag, multi-region quotas. Staff-level interviewers push here.</p></div>
+    <div class="key"><h4>Client contract</h4><p>HTTP 429, <code>Retry-After</code>, remaining-quota headers, and how clients back off.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: how each company asked it</summary><p>The reports show two flavours. Amazon asked it from first principles: fixed window, sliding window, token bucket, then "make it work across servers with Redis". Salesforce went in depth on the distributed part: Redis Lua scripts, fail-open versus fail-closed, and multi-region. Agoda framed it as "API rate limiter" inside a wider microservices discussion.</p></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
-  <h3>Questions to ask</h3>
-  <ul>
-    <li><b>Where does it run?</b> Inside the API gateway (Spring Cloud Gateway, Envoy, Kong), as a sidecar, or as a library inside each service? Changes the deployment, not the core algorithm.</li>
-    <li><b>Limit by what?</b> User ID, API key, tenant, IP, endpoint, or combinations. Tenant identity comes from the verified JWT, never a header the client sets.</li>
-    <li><b>How strict?</b> Is 2% overshoot acceptable for a public API? For OTP sends or payment initiation it usually is not.</li>
-    <li><b>Burst behaviour?</b> Should a client be allowed to burst 50 requests and then average 10/s? That decides token bucket versus window.</li>
-    <li><b>Scale.</b> Peak RPS, number of distinct keys, number of regions.</li>
-    <li><b>Rule changes.</b> Must limits change without a deploy? Per-tenant plans (free, pro, enterprise)?</li>
-    <li><b>Throttle or shape?</b> Reject with 429, or queue and delay? Almost always reject at the edge; shaping belongs to queues.</li>
-  </ul>
+  <div class="chips"><span class="chip">Where does it run?</span><span class="chip">Limit by what key?</span><span class="chip">How strict?</span><span class="chip">Bursts allowed?</span><span class="chip">Peak RPS, keys, regions?</span><span class="chip">Rules change at runtime?</span><span class="chip">Reject or queue?</span></div>
+  <details class="deep"><summary>Go deeper: why each question matters</summary>
+  <div class="tbl"><table>
+    <thead><tr><th>Ask</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td>Where does it run?</td><td>Gateway (Spring Cloud Gateway, Envoy, Kong), sidecar, or library. Changes deployment, not the algorithm.</td></tr>
+      <tr><td>Limit by what?</td><td>User, API key, tenant, IP, endpoint, or combos. Tenant comes from the verified JWT, never a client header.</td></tr>
+      <tr><td>How strict?</td><td>2% overshoot is fine for a public API, not for OTP or payment initiation.</td></tr>
+      <tr><td>Bursts allowed?</td><td>Burst 50 then average 10/s? That decides token bucket vs window.</td></tr>
+      <tr><td>Scale</td><td>Peak RPS, distinct keys, number of regions.</td></tr>
+      <tr><td>Rule changes</td><td>Change limits without a deploy? Per-plan (free, pro, enterprise)?</td></tr>
+      <tr><td>Throttle or shape?</td><td>Almost always reject with 429 at the edge; shaping belongs to queues.</td></tr>
+    </tbody>
+  </table></div>
+  </details>
+  <div class="stats">
+    <div class="stat"><b>1M RPS</b><span>peak across the fleet</span></div>
+    <div class="stat"><b>10M</b><span>active keys</span></div>
+    <div class="stat"><b>&lt; 2 ms</b><span>added p99 latency</span></div>
+    <div class="stat"><b>1–5%</b><span>accuracy; exact for OTP, payments</span></div>
+  </div>
+  <p>Out of scope: L3/L4 DDoS (CDN/WAF), billing (needs exactly-once counts), traffic shaping.</p>
+  <details class="deep"><summary>Go deeper: full requirements</summary>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
       <li>Check and consume quota per request for a composite key.</li>
@@ -77,8 +102,18 @@
       <li>Request queuing and traffic shaping.</li>
     </ul></div>
   </div>
+  </details>
 
   <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <div class="stats">
+    <div class="stat"><b>2M ops/s</b><span>1M RPS × 2 rules</span></div>
+    <div class="stat"><b>~30–40</b><span>Redis primaries at 50–100k evals/s each</span></div>
+    <div class="stat"><b>~1.6 GB</b><span>token bucket, 10M keys</span></div>
+    <div class="stat"><b>~40 GB</b><span>sliding log, 10M keys (25x more)</span></div>
+    <div class="stat"><b>~100k ops/s</b><span>Redis load with token leasing (batch 20)</span></div>
+  </div>
+  <p>Say it out loud: the sliding log is most accurate but costs ~25x the memory, so keep it for login and OTP. Leasing tokens in batches cuts Redis load by an order of magnitude.</p>
+  <details class="deep"><summary>Go deeper: the full arithmetic</summary>
   <div class="tbl"><table>
     <thead><tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr></thead>
     <tbody>
@@ -92,10 +127,15 @@
     </tbody>
   </table></div>
   <p>The punchline to say out loud: the sliding log is the most accurate but costs ~25x the memory, so it is reserved for low-volume, high-value limits (login attempts, OTP). Everything else uses token bucket or sliding window counter. Batching or leasing tokens is how you cut Redis load by an order of magnitude when one cluster is not enough.</p>
+  </details>
 
   <h2 id="api"><span class="n">04</span>API design</h2>
-  <p>Two surfaces: the client-facing contract and the internal decision API (if the limiter is a service rather than a library).</p>
-  <pre><code>// Client-facing: any API, when throttled
+  <ol class="walk">
+    <li><span class="who">Client-facing</span><span>On throttle: <code>429</code>, <code>Retry-After</code>, <code>RateLimit-Limit/Remaining/Reset</code> headers.</span></li>
+    <li><span class="who">Internal</span><span><code>POST /v1/ratelimit:check</code> with descriptors (tenant, user, endpoint) and a cost, like Envoy's ratelimit service.</span></li>
+    <li><span class="who">Admin</span><span><code>PUT /v1/rules/{ruleId}</code>: algorithm, capacity, refill, <code>failMode</code>. Stored in Postgres, cached in every gateway.</span></li>
+  </ol>
+  <details class="code"><summary>Show the full API contract</summary><pre><code>// Client-facing: any API, when throttled
 HTTP/1.1 429 Too Many Requests
 Retry-After: 12
 RateLimit-Limit: 100
@@ -121,10 +161,21 @@ POST /v1/ratelimit:check
 PUT /v1/rules/{ruleId}
 { "match": { "plan": "free", "endpoint": "POST /payments" },
   "algorithm": "TOKEN_BUCKET", "capacity": 20, "refillPerSec": 5,
-  "failMode": "CLOSED" }</code></pre>
-  <p>The check is not idempotent by nature, it consumes quota. If a gateway retries a timed-out check you may double-charge a token; that is acceptable for rate limiting, not for billing. Say so.</p>
+  "failMode": "CLOSED" }</code></pre></details>
+  <div class="callout"><b>Say this</b><p>The check is not idempotent: a retried check consumes again. Fine for rate limiting, wrong for billing.</p></div>
 
   <h2 id="data"><span class="n">05</span>Data model</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Key / table</th><th>Holds</th></tr></thead>
+    <tbody>
+      <tr><td><code>rl:{t_481:u_99}:pay</code></td><td>Token bucket hash: tokens, ts. TTL = time to refill.</td></tr>
+      <tr><td><code>rl:{t_481}:min:29384710</code></td><td>Sliding window counter bucket.</td></tr>
+      <tr><td><code>rl:{u_99}:otp</code></td><td>Sorted set of timestamps (sliding log).</td></tr>
+      <tr><td><code>rate_limit_rule</code> (Postgres)</td><td>Rules: algorithm, capacity, refill, fail_mode, version.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The braces are a <dfn title="Only the part inside {} is hashed, so keys sharing it land on the same Redis Cluster slot">hash tag</dfn>: related keys land on one slot so one script can touch them all.</p>
+  <details class="deep"><summary>Go deeper: full data model</summary>
   <div class="tbl"><table>
     <thead><tr><th>Store</th><th>Key / table</th><th>Fields</th><th>Why</th></tr></thead>
     <tbody>
@@ -135,38 +186,138 @@ PUT /v1/rules/{ruleId}
       <tr><td>Postgres</td><td><code>tenant_plan_override</code></td><td>tenant_id (PK), rule_id, capacity, expires_at</td><td>Enterprise exceptions without code changes.</td></tr>
     </tbody>
   </table></div>
-  <p>Why Redis: single-digit-microsecond in-memory ops, atomic Lua, native TTL, cluster sharding by key. Counters are disposable: losing them for a minute means a brief over-allowance, which is acceptable. That is also why you do not need Redis persistence (AOF) for this cluster, and why a DynamoDB or Postgres counter is the wrong default (too slow per check, and contention on hot rows).</p>
+  </details>
+  <div class="vs">
+    <div class="pick"><h4>Redis for counters <span class="tag">usual pick</span></h4><ul><li class="pro">Microsecond in-memory ops, atomic Lua, native TTL</li><li class="pro">Sharded by key; no persistence needed</li><li class="con">Losing it means a brief over-allowance</li></ul><p class="when">Counters are disposable, so this is fine.</p></div>
+    <div><h4>Postgres / DynamoDB counters</h4><ul><li class="pro">Durable</li><li class="con">Too slow per check</li><li class="con">Contention on hot rows</li></ul><p class="when">Only for rules, never for per-request counters.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: why Redis</summary><p>Why Redis: single-digit-microsecond in-memory ops, atomic Lua, native TTL, cluster sharding by key. Counters are disposable: losing them for a minute means a brief over-allowance, which is acceptable. That is also why you do not need Redis persistence (AOF) for this cluster, and why a DynamoDB or Postgres counter is the wrong default (too slow per check, and contention on hot rows).</p></details>
 
   <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
-  <div class="flow">
-    <span class="node">Client</span><span class="arrow">→</span>
-    <span class="node">CDN / WAF<small>IP-level, L7 DDoS</small></span><span class="arrow">→</span>
-    <span class="node">Load balancer</span><span class="arrow">→</span>
-    <span class="node hl">API gateway<small>rate-limit filter</small></span><span class="arrow">→</span>
-    <span class="node">Backend services</span>
+  <div class="arch">
+    <div class="tier"><small>Decision path</small><span class="node">Client</span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">CDN / WAF<small>IP-level, L7 DDoS</small></span><span class="node">Load balancer</span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node hl">API gateway<small>rate-limit filter · local rule cache · fallback bucket</small></span></div>
+    <div class="down">↓ <small>EVALSHA, 2 ms timeout</small></div>
+    <div class="tier"><span class="node store">Redis Cluster<small>counters, sharded by key</small></span><span class="node">Backend services</span></div>
   </div>
-  <div class="flow">
-    <span class="node hl">Rate-limit filter<small>local rule cache + local fallback bucket</small></span><span class="arrow">→<small>EVALSHA, 2 ms timeout</small></span>
-    <span class="node store">Redis Cluster<small>counters, sharded by key</small></span>
+  <div class="arch">
+    <div class="tier"><small>Rule path</small><span class="node">Admin UI / API</span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node store">Postgres<small>rules</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">Config service<small>versioned snapshot</small></span></div>
+    <div class="down">↓ <small>push / long-poll</small></div>
+    <div class="tier"><span class="node hl">Every gateway node</span></div>
   </div>
-  <div class="flow">
-    <span class="node">Admin UI / API</span><span class="arrow">→</span>
-    <span class="node store">Postgres<small>rules</small></span><span class="arrow">→</span>
-    <span class="node">Config service<small>versioned snapshot</small></span><span class="arrow">→<small>push / long-poll</small></span>
-    <span class="node hl">Every gateway node</span>
+  <p class="flow-caption">Metrics on allow/deny flow to Prometheus; denials sampled to Kafka for abuse analytics.</p>
+  <div class="vs">
+    <div class="pick"><h4>Library in the gateway <span class="tag">usual pick</span></h4><ul><li class="pro">No extra hop</li><li class="con">Logic lives in each gateway's language</li></ul><p class="when">Java shop with one gateway layer.</p></div>
+    <div><h4>Central limiter service (gRPC)</h4><ul><li class="pro">One place for logic, polyglot</li><li class="con">Extra hop, another service to run</li></ul><p class="when">Many languages, Envoy-based mesh.</p></div>
   </div>
-  <p class="flow-caption">Figure: decision path (top two rows) and rule distribution path (bottom). Metrics on allow/deny flow to Prometheus; denials sampled to Kafka for abuse analytics.</p>
-  <ul>
+  <details class="deep"><summary>Go deeper: each box in detail</summary><ul>
     <li><b>CDN / WAF.</b> Coarse per-IP limits and bot rules before traffic costs you anything. Your limiter is for authenticated, business-aware limits.</li>
     <li><b>Gateway filter.</b> Extracts identity from the already-validated JWT (tenant, user, plan), matches rules from an in-memory cache, builds descriptors, calls Redis once with all keys for this request. In Spring Cloud Gateway this is the <code>RequestRateLimiter</code> filter, whose default <code>RedisRateLimiter</code> is a token bucket in a Lua script; you would extend it for multi-rule checks.</li>
     <li><b>Redis Cluster.</b> 3+ shards with replicas, no persistence needed, keys TTL'd. One script call per request.</li>
     <li><b>Config service.</b> Rules change rarely; gateways hold the full rule set in memory and refresh by version number. Never read rules from the DB on the request path.</li>
     <li><b>Library vs service.</b> A shared library in the gateway saves a hop. A central limiter service (Envoy's global ratelimit service pattern) centralises logic for polyglot fleets at the cost of one more hop. For a Java shop with one gateway layer, the library wins.</li>
-  </ul>
+  </ul></details>
 
-  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+  <h2 id="follow"><span class="n">07</span>Follow one request</h2>
+  <div class="stepper"><b class="title">POST /payments from user u_99 of tenant t_481 (free plan: 20 tokens, 5/s)</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Client<small>POST /payments</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node">Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">Redis</span><span class="node">Payments svc</span></div>
+      </div>
+      <figcaption>The app sends a payment request with a JWT. Nothing is counted yet.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node hl">CDN / WAF<small>per-IP check: ok</small></span><span class="node">Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">Redis</span><span class="node">Payments svc</span></div>
+      </div>
+      <figcaption>The WAF applies coarse per-IP and bot rules. This IP is fine, so it passes on.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node hl">Gateway<small>tenant=t_481 from JWT</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">Redis</span><span class="node">Payments svc</span></div>
+      </div>
+      <figcaption>The gateway reads tenant and user from the verified JWT and matches rules from its in-memory cache. Keys: <code>rl:{t_481:u_99}:pay</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node">Gateway</span></div>
+        <div class="down">↓ <small>EVALSHA</small></div>
+        <div class="tier"><span class="node store hl">Redis<small>tokens 3.2 → 2.2</small></span><span class="node">Payments svc</span></div>
+      </div>
+      <figcaption>One Lua call refills by elapsed time, checks tokens ≥ 1, and takes one, atomically. Returns allowed=1.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node">Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">Redis</span><span class="node hl">Payments svc<small>200 OK</small></span></div>
+      </div>
+      <figcaption>Allowed, so the request reaches the service. The response carries <code>RateLimit-Remaining: 2</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Client<small>429, Retry-After: 1</small></span></div>
+        <div class="down">↑</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node">Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">Redis<small>tokens 0.4</small></span><span class="node dim">Payments svc</span></div>
+      </div>
+      <figcaption>Three fast retries later the bucket holds 0.4 tokens. Lua returns allowed=0 with a wait; the gateway answers 429 and never touches the service.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node hl">Gateway<small>timeout → fallback</small></span></div>
+        <div class="down">↓ <small>2 ms timeout</small></div>
+        <div class="tier"><span class="node store bad">Redis<small>down</small></span><span class="node">Payments svc</span></div>
+      </div>
+      <figcaption>Now Redis dies. The call times out after 2 ms and the circuit breaker opens.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Client<small>503</small></span></div>
+        <div class="down">↑</div>
+        <div class="tier"><span class="node">CDN / WAF</span><span class="node hl">Gateway<small>failMode=CLOSED</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store bad">Redis<small>down</small></span><span class="node dim">Payments svc</span></div>
+      </div>
+      <figcaption>Payments is a fail-closed rule, so it returns 503. A fail-open GET would instead use the local bucket at limit / N nodes.</figcaption>
+    </figure>
+  </div></div>
 
-  <h3>7.1 Choosing the algorithm</h3>
+  <h2 id="deep"><span class="n">08</span>Deep dives</h2>
+
+  <h3>8.1 Choosing the algorithm</h3>
+  <div class="vs">
+    <div class="pick"><h4>Token bucket <span class="tag">usual pick</span></h4><ul><li class="pro">Allows bursts up to capacity (mobile apps fire 10 calls on launch)</li><li class="pro">Two numbers per key</li><li class="con">Two parameters to explain to customers</li></ul><p class="when">Default for request limits.</p></div>
+    <div><h4>Sliding window counter</h4><ul><li class="pro">"100 per minute" semantics</li><li class="con">Approximate</li></ul><p class="when">When product wants per-minute quotas.</p></div>
+    <div><h4>Sliding window log</h4><ul><li class="pro">Exact</li><li class="con">Memory per request</li></ul><p class="when">Only login, OTP, password reset.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: all five algorithms</summary>
   <div class="tbl"><table>
     <thead><tr><th>Algorithm</th><th>How it works</th><th>Weakness</th><th>Use it for</th></tr></thead>
     <tbody>
@@ -177,11 +328,19 @@ PUT /v1/rules/{ruleId}
       <tr><td>Leaky bucket</td><td>Queue drained at constant rate</td><td>Adds latency; queue state</td><td>Shaping outbound calls to a fragile downstream (SMS vendor)</td></tr>
     </tbody>
   </table></div>
-  <p>Default answer: token bucket for request limits (bursty clients are normal; mobile apps fire 10 calls on launch), sliding window counter where product wants "100 per minute" semantics, sliding log only for security-sensitive low-volume limits.</p>
+  </details>
+  <p>The fixed-window boundary burst, on a 100/min limit:</p>
+  <div class="cells"><span class="cell">0:58</span><span class="cell bad">0:59 ×100</span><span class="cell bad">1:00 ×100</span><span class="cell">1:01</span></div>
+  <p>200 requests in two seconds, both windows "valid".</p>
 
-  <h3>7.2 Atomic check-and-consume with Lua</h3>
-  <p>The race: two gateway nodes both read <code>tokens=1</code>, both allow, both write <code>0</code>. Redis runs a Lua script atomically (no other command interleaves on that shard), so read-compute-write happens as one step. Use Redis server time inside the script so gateway clock skew does not matter.</p>
-  <pre><code>-- KEYS[1] = bucket key; ARGV: capacity, refill tokens per second, cost
+  <h3>8.2 Atomic check-and-consume with Lua</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Gateway A</th><th>Gateway B</th><th>tokens</th></tr></thead><tbody>
+    <tr><td>t1</td><td>GET tokens → 1</td><td></td><td>1</td></tr>
+    <tr><td>t2</td><td></td><td>GET tokens → 1</td><td>1</td></tr>
+    <tr><td>t3</td><td>allow, SET 0</td><td>allow, SET 0</td><td class="bad">2 allowed, 1 token</td></tr>
+  </tbody></table></div>
+  <p>A Lua script runs atomically on its shard, so read-compute-write is one step. It uses Redis server time, so gateway clock skew does not matter.</p>
+  <details class="code"><summary>Show the Lua token bucket</summary><pre><code>-- KEYS[1] = bucket key; ARGV: capacity, refill tokens per second, cost
 local capacity = tonumber(ARGV[1])
 local rate     = tonumber(ARGV[2])
 local cost     = tonumber(ARGV[3])
@@ -203,39 +362,73 @@ redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) + 1000)
 -- retry-after in ms when denied
 local wait = 0
 if allowed == 0 then wait = math.ceil((cost - tokens) * 1000 / rate) end
-return { allowed, math.floor(tokens), wait }</code></pre>
+return { allowed, math.floor(tokens), wait }</code></pre></details>
+  <div class="keys">
+    <div class="key"><h4>EVALSHA</h4><p><code>SCRIPT LOAD</code> once, call by SHA; on <code>NOSCRIPT</code> after failover, fall back to <code>EVAL</code>.</p></div>
+    <div class="key"><h4>Hash tags</h4><p>All keys in one script must share a cluster slot. <code>{t_481}</code> pins a tenant's keys; global keys go in a second pipelined call.</p></div>
+    <div class="key"><h4>Check all, then consume</h4><p>Otherwise a request denied by the tenant rule still burns the user's token.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: script details and Java clients</summary><p>The race: two gateway nodes both read <code>tokens=1</code>, both allow, both write <code>0</code>. Redis runs a Lua script atomically (no other command interleaves on that shard), so read-compute-write happens as one step. Use Redis server time inside the script so gateway clock skew does not matter.</p>
   <ul>
     <li>Load once with <code>SCRIPT LOAD</code>, call with <code>EVALSHA</code>; fall back to <code>EVAL</code> on <code>NOSCRIPT</code> after a failover.</li>
     <li>Multiple rules in one call: pass all keys, but in Redis Cluster every key in one script must hash to the same slot. Use hash tags (<code>{t_481}</code>) for rules on the same tenant; rules on different entities (global endpoint limit) go in a second pipelined call.</li>
     <li>Check all rules first, consume only if all pass. Otherwise a request denied by the tenant rule still burns the user's token.</li>
     <li>Sliding window counter in Lua: <code>INCR</code> the current bucket, <code>GET</code> the previous, compute the weighted sum, <code>DECR</code> back if over. Or check first and increment only on allow.</li>
   </ul>
-  <p>Java side: Lettuce's async API with a small dedicated connection pool, or Redisson; set command timeout around 2–5 ms. Bucket4j offers the same token bucket over Redis/Hazelcast if you would rather not hand-write Lua.</p>
+  <p>Java side: Lettuce's async API with a small dedicated connection pool, or Redisson; set command timeout around 2–5 ms. Bucket4j offers the same token bucket over Redis/Hazelcast if you would rather not hand-write Lua.</p></details>
 
-  <h3>7.3 Fail-open vs fail-closed (the Salesforce probe)</h3>
-  <p>When Redis is slow or down, every request hits a decision you must have made in advance:</p>
+  <h3>8.3 Fail-open vs fail-closed (the Salesforce probe)</h3>
+  <div class="vs">
+    <div class="pick"><h4>Fail-open <span class="tag">usual pick</span></h4><ul><li class="pro">Product stays up</li><li class="pro">Local bucket sized <code>limit / nodes</code> keeps it roughly right</li><li class="con">Abuse window during outage</li></ul><p class="when">Ordinary APIs.</p></div>
+    <div><h4>Fail-closed</h4><ul><li class="pro">No unlimited attacker</li><li class="con">Limiter outage = feature outage</li></ul><p class="when">OTP, login, payment initiation, costly AI inference. Set per rule as <code>failMode</code>.</p></div>
+  </div>
+  <div class="callout"><b>Protect the protector</b><p>2 ms timeout, a Resilience4j circuit breaker around the Redis client, and alerts on fallback rate.</p></div>
+  <details class="deep"><summary>Go deeper: fallback behaviour</summary>
   <div class="grid">
     <div class="card"><h4>Fail-open (default)</h4><p>Allow the request, emit a metric, switch to a local in-memory bucket sized <code>limit / number_of_gateway_nodes</code>. Availability of the product beats exact quota enforcement for ordinary APIs.</p></div>
     <div class="card"><h4>Fail-closed</h4><p>Deny (429 or 503). For OTP sends, login attempts, payment initiation, expensive AI inference: an unlimited attacker costs money or security. Configured per rule as <code>failMode</code>.</p></div>
     <div class="card"><h4>Protecting the protector</h4><p>Short timeout (2 ms), circuit breaker (Resilience4j) around the Redis client so a sick cluster is not hammered, and alerting on fallback rate. Never let limiter latency become API latency.</p></div>
   </div>
-  <p>The local fallback limiter is what makes fail-open safe: you degrade to "approximately right per node" rather than "no limits at all". Node count comes from service discovery; it is fine if it is a little stale.</p>
+  <p>The local fallback limiter is what makes fail-open safe: you degrade to "approximately right per node" rather than "no limits at all". Node count comes from service discovery; it is fine if it is a little stale.</p></details>
 
-  <h3>7.4 Multi-region quotas</h3>
-  <p>A tenant has 10,000 requests per minute globally and traffic lands in Mumbai and Singapore. Options:</p>
-  <ul>
+  <h3>8.4 Multi-region quotas</h3>
+  <p>Tenant quota: 10,000/min globally; traffic lands in Mumbai and Singapore.</p>
+  <div class="vs">
+    <div class="pick"><h4>Regional split <span class="tag">usual pick</span></h4><ul><li class="pro">No cross-region calls</li><li class="con">Small accuracy loss</li></ul><p class="when">Each region enforces limit × share (50/50 or last hour's traffic).</p></div>
+    <div><h4>Home-region routing</h4><ul><li class="pro">Exact: one Redis owns the counters</li><li class="con">Latency for traffic arriving elsewhere</li></ul><p class="when">Strict global limits.</p></div>
+    <div><h4>Local + async sync</h4><ul><li class="pro">Scales to huge global quotas</li><li class="con">Overshoot ≈ sync interval × rate</li></ul><p class="when">Broadcast G-counter deltas every 100–500 ms.</p></div>
+  </div>
+  <div class="callout warn"><b>Never</b><p>A synchronous cross-region Redis call: 50–100 ms RTT, and a WAN partition becomes an outage. Rate limiting is AP.</p></div>
+  <details class="deep"><summary>Go deeper: multi-region options</summary><ul>
     <li><b>Regional split.</b> Each region enforces <code>limit × share</code> (static 50/50 or based on last hour's traffic). No cross-region calls, small accuracy loss. Best default.</li>
     <li><b>Home-region routing.</b> Route each tenant to a home region (GeoDNS or gateway forwarding) so one Redis owns its counters. Exact, but adds latency for traffic arriving elsewhere.</li>
     <li><b>Local enforce, async sync.</b> Each region counts locally and broadcasts deltas every 100–500 ms (CRDT-style G-counters per region; global count = sum). Overshoot bounded by sync interval × rate. Good for very large global quotas.</li>
     <li><b>Never</b> a synchronous cross-region Redis call on the request path: 50–100 ms RTT destroys the latency budget, and a WAN partition then becomes an outage.</li>
   </ul>
-  <p>This is a CAP choice and you should name it: rate limiting is AP. During a partition you keep serving with slightly loose limits rather than refusing traffic.</p>
+  <p>This is a CAP choice and you should name it: rate limiting is AP. During a partition you keep serving with slightly loose limits rather than refusing traffic.</p></details>
 
-  <h3>7.5 Hot keys and token leasing</h3>
-  <p>A large tenant at 50k RPS on one key sends all of that to one Redis shard. Fix: each gateway leases a batch of tokens (say 50) with one script call, then serves from local memory until the batch is used or 100 ms passes. Redis traffic for that key drops 50x; the cost is up to <code>batch × nodes</code> tokens of imprecision, which you size against the limit. Alternatively split the key into N sub-keys with <code>limit/N</code> each and pick one at random.</p>
+  <h3>8.5 Hot keys and token leasing</h3>
+  <div class="stats">
+    <div class="stat"><b>50k RPS</b><span>one big tenant, one key, one shard</span></div>
+    <div class="stat"><b>batch 50</b><span>tokens leased per call, or 100 ms</span></div>
+    <div class="stat"><b>50x</b><span>less Redis traffic for that key</span></div>
+  </div>
+  <div class="vs">
+    <div class="pick"><h4>Token leasing <span class="tag">usual pick</span></h4><ul><li class="pro">Serve from local memory</li><li class="con">Up to batch × nodes tokens of imprecision</li></ul><p class="when">Size the batch against the limit.</p></div>
+    <div><h4>Sub-keys</h4><ul><li class="pro">Simple</li><li class="con">Uneven if random picks cluster</li></ul><p class="when">Split into N keys with limit/N each, pick one at random.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: leasing</summary><p>A large tenant at 50k RPS on one key sends all of that to one Redis shard. Fix: each gateway leases a batch of tokens (say 50) with one script call, then serves from local memory until the batch is used or 100 ms passes. Redis traffic for that key drops 50x; the cost is up to <code>batch × nodes</code> tokens of imprecision, which you size against the limit. Alternatively split the key into N sub-keys with <code>limit/N</code> each and pick one at random.</p></details>
 
-  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
-  <ul>
+  <h2 id="scale"><span class="n">09</span>Scaling, failure handling and consistency</h2>
+  <div class="keys">
+    <div class="key"><h4>First to break at 10x</h4><p>A single hot shard, not memory. Leasing and sub-keys fix it; adding shards does not.</p></div>
+    <div class="key"><h4>Redis failover</h4><p>Async replication: a promoted replica is a few hundred ms stale. Brief over-allowance; acceptable.</p></div>
+    <div class="key"><h4>Retries amplify load</h4><p>Clients back off with jitter using <code>Retry-After</code>; internal callers use a retry budget.</p></div>
+    <div class="key"><h4>Shadow rollout</h4><p>New rules log "would deny" before enforcing, as Stripe did.</p></div>
+    <div class="key"><h4>Observability</h4><p>Allow/deny per rule and tenant, Redis p99, fallback rate. Alert when a rule denies X% of a tenant.</p></div>
+    <div class="key"><h4>Load shedding</h4><p>A separate layer that drops low-priority traffic when the fleet is unhealthy.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the full failure list</summary><ul>
     <li><b>What breaks first at 10x.</b> A single hot shard (big tenant or a global endpoint key), not total memory. Leasing and sub-keys fix it; adding shards does not.</li>
     <li><b>Redis failover.</b> Replication is async, so a promoted replica may have counters a few hundred ms stale: brief over-allowance. Acceptable; say it.</li>
     <li><b>Script cache loss.</b> After failover, <code>EVALSHA</code> returns <code>NOSCRIPT</code>; the client re-sends with <code>EVAL</code>. Lettuce and Redisson handle it if you use their script helpers.</li>
@@ -244,9 +437,15 @@ return { allowed, math.floor(tokens), wait }</code></pre>
     <li><b>Rule rollout.</b> Ship new rules in shadow mode first: evaluate and log "would deny" without denying. Stripe described rolling out limiters this way so existing users' workflows are not broken.</li>
     <li><b>Observability.</b> Allow/deny counts per rule and tenant, Redis latency p99, fallback rate, top denied keys. Alert when a rule denies more than X% of a tenant's traffic: that is either an attack or a broken client.</li>
     <li><b>Load shedding is different.</b> Stripe separates per-user rate limits from fleet-level load shedders that drop low-priority traffic (analytics, webhooks retries) when the system is unhealthy. Mention it as the next layer.</li>
-  </ul>
+  </ul></details>
 
-  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
+  <h2 id="tradeoffs"><span class="n">10</span>Trade-offs</h2>
+  <div class="vs">
+    <div class="pick"><h4>Centralised Redis + Lua <span class="tag">usual pick</span></h4><ul><li class="pro">Accurate, one RTT</li><li class="con">Redis on the hot path; hot keys</li></ul><p class="when">Default for most fleets.</p></div>
+    <div><h4>Local in-memory per node</h4><ul><li class="pro">Zero network cost</li><li class="con">Drifts with node count and uneven LB</li></ul><p class="when">Fallback, or protecting the node itself.</p></div>
+    <div><h4>Sticky sessions</h4><ul><li class="pro">No shared state</li><li class="con">Rebalancing breaks limits</li></ul><p class="when">Rarely; mention it to reject it.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full trade-off table</summary>
   <div class="tbl"><table>
     <thead><tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr></thead>
     <tbody>
@@ -258,19 +457,7 @@ return { allowed, math.floor(tokens), wait }</code></pre>
       <tr><td>Fail-open</td><td>Availability</td><td>Abuse window during outage</td><td>General APIs</td></tr>
       <tr><td>Fail-closed</td><td>Safety</td><td>Limiter outage = feature outage</td><td>OTP, login, payments, costly compute</td></tr>
     </tbody>
-  </table></div>
-
-  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>Why not GET the counter, check it in Java, then INCR?</summary><p>Two nodes can read the same value between the GET and the INCR and both allow. Either make the operation a single atomic command (<code>INCR</code> then compare the returned value, decrementing if over) or put read-compute-write in a Lua script. <code>WATCH/MULTI</code> optimistic transactions work but retry under contention, which is exactly when you are being hammered.</p></details>
-  <details class="qa"><summary>Redis is down. What happens to traffic?</summary><p>Per rule: fail-open rules fall back to a local bucket at <code>limit / N nodes</code> and raise an alert; fail-closed rules (OTP, login) return 503. A circuit breaker stops us waiting 2 ms on every request against a dead cluster. The limiter must never be the reason the API is down.</p></details>
-  <details class="qa"><summary>How do you make it work across two regions?</summary><p>Split the quota per region by traffic share and enforce locally; optionally sync counts asynchronously every few hundred ms for large global quotas. No synchronous cross-region calls. It is an AP system: during a partition we accept bounded overshoot.</p></details>
-  <details class="qa"><summary>Fixed window lets 2x through at the boundary. How much does that matter?</summary><p>For a 100/min limit a client can send 100 at 0:59 and 100 at 1:00. For daily quotas nobody cares; for per-second abuse protection it matters. Sliding window counter fixes most of it with two integers; token bucket bounds bursts to capacity explicitly.</p></details>
-  <details class="qa"><summary>How do you rate limit by tenant when the tenant ID is in the request body?</summary><p>You do not. Tenant comes from the authenticated JWT claim, validated at the gateway. Anything the client sets can be spoofed to spend another tenant's quota or dodge yours. Unauthenticated endpoints are limited by IP plus device fingerprint.</p></details>
-  <details class="qa"><summary>Different costs per endpoint, like an expensive report export?</summary><p>Token bucket handles it naturally: pass <code>cost</code> to the script (export = 50 tokens, GET = 1). For LLM APIs the cost is tokens consumed, known only after the call: reserve an estimate, then adjust with a second call.</p></details>
-  <details class="qa"><summary>Kotak rapid-fire: what is idempotency, and how does it relate?</summary><p>An operation is idempotent if repeating it has the same effect as doing it once. Clients retrying after a 429 or timeout must send an <code>Idempotency-Key</code> on POSTs so the retry does not create a second payment. The limiter itself is not idempotent (a retried check consumes again), which is fine for limits and wrong for billing.</p></details>
-  <details class="qa"><summary>Kotak rapid-fire: where does the limiter sit in CAP?</summary><p>AP. Under partition we prefer to keep answering with possibly stale counts over refusing traffic. A payment ledger is the opposite: CP, refuse rather than double-spend.</p></details>
-  <details class="qa"><summary>How do you change a limit for one enterprise tenant without a deploy?</summary><p>Override row in Postgres, config service bumps the snapshot version, gateways pull within seconds. Existing Redis buckets pick up the new capacity on their next call because capacity is a script argument, not stored state.</p></details>
-  <details class="qa"><summary>How would you test it?</summary><p>Unit-test the script with an embedded or Testcontainers Redis and a controllable time source; concurrency test with 200 parallel callers asserting exactly N allowed; chaos test by killing the Redis primary and asserting fallback and no API errors; shadow mode in production before enforcing.</p></details>
+  </table></div></details>
 
   <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
@@ -294,7 +481,46 @@ return { allowed, math.floor(tokens), wait }</code></pre>
     <div class="step"><span class="t">40–45 min</span><span>Observability, shadow rollout, trade-offs recap; invite follow-ups.</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <h2 id="quiz"><span class="n">13</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">Two gateways read tokens=1 and both allow. What is the standard fix?</p>
+    <div class="opts"><button class="opt" type="button">Add more Redis replicas</button><button class="opt" type="button">Use a Java synchronized block on each gateway</button><button class="opt" type="button">Do read-compute-write in one Lua script on Redis</button></div>
+    <p class="why">Lua runs atomically on the shard; a Java lock only protects one JVM, not the fleet.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Redis is down. What should an OTP-send endpoint do?</p>
+    <div class="opts"><button class="opt" type="button">Fail open and allow everything</button><button class="opt" type="button">Fail closed and reject</button><button class="opt" type="button">Queue requests until Redis returns</button></div>
+    <p class="why">An unlimited attacker on OTP costs money and security, so it is fail-closed. Ordinary APIs fail open to a local bucket.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Why use <code>redis.call('TIME')</code> inside the script?</p>
+    <div class="opts"><button class="opt" type="button">Only the shard's clock matters, so gateway clock skew can't break refills</button><button class="opt" type="button">It is faster than passing time as an argument</button><button class="opt" type="button">Redis requires it for EVALSHA</button></div>
+    <p class="why">If each gateway passes its own time, skew between nodes makes buckets refill wrongly.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">One tenant sends 50k RPS to a single key. What helps most?</p>
+    <div class="opts"><button class="opt" type="button">Add more shards</button><button class="opt" type="button">Switch to a sliding log</button><button class="opt" type="button">Lease token batches to each gateway</button></div>
+    <p class="why">One key lives on one shard, so more shards don't help. Leasing 50 tokens per call cuts that key's traffic 50x.</p></div>
+
+  <h2 id="followups"><span class="n">14</span>Interview questions</h2>
+  <details class="qa"><summary>Why not GET the counter, check it in Java, then INCR?</summary><p>Two nodes can read the same value between the GET and the INCR and both allow. Either make the operation a single atomic command (<code>INCR</code> then compare the returned value, decrementing if over) or put read-compute-write in a Lua script. <code>WATCH/MULTI</code> optimistic transactions work but retry under contention, which is exactly when you are being hammered.</p></details>
+  <details class="qa"><summary>Redis is down. What happens to traffic?</summary><p>Per rule: fail-open rules fall back to a local bucket at <code>limit / N nodes</code> and raise an alert; fail-closed rules (OTP, login) return 503. A circuit breaker stops us waiting 2 ms on every request against a dead cluster. The limiter must never be the reason the API is down.</p></details>
+  <details class="qa"><summary>How do you make it work across two regions?</summary><p>Split the quota per region by traffic share and enforce locally; optionally sync counts asynchronously every few hundred ms for large global quotas. No synchronous cross-region calls. It is an AP system: during a partition we accept bounded overshoot.</p></details>
+  <details class="qa"><summary>Fixed window lets 2x through at the boundary. How much does that matter?</summary><p>For a 100/min limit a client can send 100 at 0:59 and 100 at 1:00. For daily quotas nobody cares; for per-second abuse protection it matters. Sliding window counter fixes most of it with two integers; token bucket bounds bursts to capacity explicitly.</p></details>
+  <details class="qa"><summary>How do you rate limit by tenant when the tenant ID is in the request body?</summary><p>You do not. Tenant comes from the authenticated JWT claim, validated at the gateway. Anything the client sets can be spoofed to spend another tenant's quota or dodge yours. Unauthenticated endpoints are limited by IP plus device fingerprint.</p></details>
+  <details class="qa"><summary>Different costs per endpoint, like an expensive report export?</summary><p>Token bucket handles it naturally: pass <code>cost</code> to the script (export = 50 tokens, GET = 1). For LLM APIs the cost is tokens consumed, known only after the call: reserve an estimate, then adjust with a second call.</p></details>
+  <details class="qa"><summary>Kotak rapid-fire: what is idempotency, and how does it relate?</summary><p>An operation is idempotent if repeating it has the same effect as doing it once. Clients retrying after a 429 or timeout must send an <code>Idempotency-Key</code> on POSTs so the retry does not create a second payment. The limiter itself is not idempotent (a retried check consumes again), which is fine for limits and wrong for billing.</p></details>
+  <details class="qa"><summary>Kotak rapid-fire: where does the limiter sit in CAP?</summary><p>AP. Under partition we prefer to keep answering with possibly stale counts over refusing traffic. A payment ledger is the opposite: CP, refuse rather than double-spend.</p></details>
+  <details class="qa"><summary>How do you change a limit for one enterprise tenant without a deploy?</summary><p>Override row in Postgres, config service bumps the snapshot version, gateways pull within seconds. Existing Redis buckets pick up the new capacity on their next call because capacity is a script argument, not stored state.</p></details>
+  <details class="qa"><summary>How would you test it?</summary><p>Unit-test the script with an embedded or Testcontainers Redis and a controllable time source; concurrency test with 200 parallel callers asserting exactly N allowed; chaos test by killing the Redis primary and asserting fallback and no API errors; shadow mode in production before enforcing.</p></details>
+
+  <h2 id="cheat"><span class="n">15</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Gateway filter → Redis Cluster; rules in Postgres pushed by config service.</li>
+    <li>Token bucket default; sliding counter for "per minute"; sliding log for OTP/login.</li>
+    <li>One Lua script per request, Redis server time, hash tags for one slot.</li>
+    <li>Check all rules, then consume.</li>
+    <li>Fail-open to local bucket (limit / N); fail-closed for OTP, login, payments.</li>
+    <li>2 ms timeout plus circuit breaker; never let limiter latency become API latency.</li>
+    <li>Multi-region: split quota per region; AP; no sync cross-region calls.</li>
+    <li>Hot key: lease token batches, not more shards.</li>
+    <li>Client contract: 429, Retry-After, backoff with jitter.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">16</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="noopener">Stripe: Scaling your API with rate limiters</a> (token bucket, load shedders, safe rollout)</li>
     <li><a href="https://blog.cloudflare.com/counting-things-a-lot-of-different-things/" target="_blank" rel="noopener">Cloudflare: How we built rate limiting capable of scaling to millions of domains</a> (sliding window counter)</li>
@@ -306,5 +532,6 @@ return { allowed, math.floor(tokens), wait }</code></pre>
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="lld-parking-lot.html">← Parking lot</a> · <a href="hld-notification-system.html">Notification system →</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

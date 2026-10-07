@@ -12,12 +12,21 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html" aria-current="page">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../career.html">Lesson · Career</a></div>
   <h1>Whiteboard your own system</h1>
-  <p class="lede">The hiring-manager project deep-dive is where many SDE-2 candidates who cleared coding get rejected. This lesson gives you a 10-minute walkthrough structure, the numbers you must know, the diagrams to draw, and prepared answers to "what breaks at 100×" and "what would you do differently", using a generic e-signing service as the worked example.</p>
+  <p class="lede">Present the system you own in 10 clear minutes, then survive 30 minutes of "why", "how big" and "what breaks at 100×".</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 10 min talk + 30–40 min probing</span>
     <span class="fact"><b>Round:</b> HM / project deep-dive / bar raiser</span>
   </div>
   <div class="chips"><span class="chip hot">Blinkit</span><span class="chip hot">CRED</span><span class="chip hot">Slice</span><span class="chip hot">Freshworks</span><span class="chip">Amazon</span><span class="chip">Uber</span><span class="chip">Atlassian</span><span class="chip">Razorpay</span></div>
+
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Context, boxes, APIs, tables, one async flow, numbers, decisions.</li>
+    <li>Know nine real numbers from your dashboards; never invent.</li>
+    <li>Rank what breaks first at 100×, with a fix for each.</li>
+    <li>Have three honest "do differently" answers. Never say "nothing".</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Giving a guest a tour of your house. Start at the gate, walk room by room, point at the wiring you redid yourself, and know which pipe bursts first if ten more people move in.</p></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -29,10 +38,21 @@
     <li><a href="#differently">What would you do differently</a></li>
     <li><a href="#probes">Probing questions</a></li>
     <li><a href="#prep">Prep worksheet</a></li>
+    <li><a href="#quiz">Quick check</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <div class="keys">
+    <div class="key"><h4>Depth</h4><p>API down to the index, transaction boundary and Kafka partition key, without hand-waving.</p></div>
+    <div class="key"><h4>Ownership</h4><p>Did you make the decisions or just implement them? Tested with "why" on each box.</p></div>
+    <div class="key"><h4>Judgement</h4><p>Alternatives considered and why you rejected them.</p></div>
+    <div class="key"><h4>Scale thinking</h4><p>Real numbers now; what fails at 10× and 100×.</p></div>
+    <div class="key"><h4>Self-critique</h4><p>Honest answers on what you would change. Defensiveness is a red flag.</p></div>
+    <div class="key"><h4>Communication</h4><p>Clear structure, a diagram, no internal jargon.</p></div>
+  </div>
+  <div class="callout warn"><b>Why candidates fail this round</b><p>Reports from Blinkit, CRED, Slice and Freshworks show the same pattern: candidates describe features instead of architecture, cannot give a single scale number, say "the team decided" for every choice, or freeze on "what would you change?". All four are fixable in a weekend of preparation.</p></div>
+  <details class="deep"><summary>Go deeper: the grading criteria in full</summary>
   <ul>
     <li><b>Depth of understanding</b>: can you go from the API down to the index, the transaction boundary and the Kafka partition key without hand-waving?</li>
     <li><b>Ownership</b>: did you make the decisions or just implement them? They test this with "why" questions on each box.</li>
@@ -40,10 +60,71 @@
     <li><b>Scale thinking</b>: real numbers now, and a credible view of what fails at 10× and 100×.</li>
     <li><b>Self-critique</b>: honest answers on what you would change. Defensiveness is a red flag.</li>
     <li><b>Communication</b>: a clear structure, a diagram, no internal jargon the interviewer cannot follow.</li>
-  </ul>
-  <div class="callout warn"><b>Why candidates fail this round</b><p>Reports from Blinkit, CRED, Slice and Freshworks show the same pattern: candidates describe features instead of architecture, cannot give a single scale number, say "the team decided" for every choice, or freeze on "what would you change?". All four are fixable in a weekend of preparation.</p></div>
+  </ul></details>
 
   <h2 id="structure"><span class="n">02</span>The 10-minute structure</h2>
+  <p>Watch the whiteboard fill up, one tier at a time, as the talk moves through its slots.</p>
+  <div class="stepper"><b class="title">Drawing the e-signing system live</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Clients</small><span class="node hl">Tenant app / API client<small>banks, NBFCs</small></span></div>
+      </div>
+      <figcaption><b>0:00–1:00 Context.</b> The business problem, who uses it, and "I own the signing workflow and audit services and I'm on call for both."</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Clients</small><span class="node">Tenant app / API client</span></div>
+        <div class="down">↓ <small>HTTPS</small></div>
+        <div class="tier"><span class="node hl">API Gateway<small>JWT, tenant, rate limit</small></span></div>
+      </div>
+      <figcaption><b>1:00 Architecture begins.</b> The gateway authenticates, extracts the tenant from the JWT and applies per-tenant rate limits.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Clients</small><span class="node">Tenant app / API client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">API Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">Document Service<small>pre-signed URL</small></span><span class="node hl">Signing Workflow Service<small>state machine · mine</small></span></div>
+      </div>
+      <figcaption>Add the services and point at your part. Highlight what you own.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Clients</small><span class="node">Tenant app / API client</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">API Gateway</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">Document Service</span><span class="node">Signing Workflow Service</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">S3<small>originals + signed PDFs</small></span><span class="node store hl">PostgreSQL<small>workflows, signers, outbox</small></span></div>
+      </div>
+      <figcaption><b>3:00–6:00 APIs and data model.</b> State change and outbox row commit in one Postgres transaction; file bytes go straight to S3.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Signing Workflow Service</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store">PostgreSQL<small>outbox</small></span></div>
+        <div class="down">↓ <small>relay</small></div>
+        <div class="tier"><span class="node store hl">Kafka<small>workflow-events · key = workflowId</small></span></div>
+      </div>
+      <figcaption><b>6:00 Async flow.</b> A relay publishes outbox rows to Kafka; keying by workflowId keeps one workflow's events in order.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node store">Kafka<small>workflow-events</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node hl">Audit Service<small>hash-chained · mine</small></span><span class="node">Notification<small>email, SMS, WhatsApp</small></span><span class="node">Webhooks<small>tenant callbacks</small></span><span class="node">Billing<small>usage</small></span></div>
+      </div>
+      <figcaption>Events fan out. Consumers are idempotent on eventId; vendor failures retry (1m, 5m, 30m) then go to a DLQ.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="stats"><div class="stat"><b>1,200 RPS</b><span>peak, month-end</span></div><div class="stat"><b>280ms</b><span>p99 key API</span></div><div class="stat"><b>99.95%</b><span>monthly SLO</span></div><div class="stat"><b>1,500</b><span>tenants</span></div></div>
+      <figcaption><b>7:30–10:00 Numbers and decisions.</b> Give the scale, then two or three decisions with rejected alternatives. End with "happy to go deeper anywhere".</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: the 10-minute timeline as a list</summary>
   <div class="timeline">
     <div class="step"><span class="t">0:00–1:00</span><span><b>Context.</b> The business problem, who uses it, your role ("I own this service and am on call for it").</span></div>
     <div class="step"><span class="t">1:00–3:00</span><span><b>Architecture.</b> Draw the boxes: clients, gateway, your services, datastores, queues, external vendors. Point at your part.</span></div>
@@ -53,9 +134,20 @@
     <div class="step"><span class="t">7:30–8:30</span><span><b>Scale numbers.</b> RPS, p99, data size, tenants, availability, cost.</span></div>
     <div class="step"><span class="t">8:30–10:00</span><span><b>Your decisions.</b> Two or three choices you made, the alternatives, and the outcome. End with "happy to go deeper anywhere".</span></div>
   </div>
-  <p>Practise until you can do it in 10 minutes without notes. Many interviewers interrupt after 3–4 minutes; the structure lets you resume cleanly.</p>
+  </details>
+  <p>Practise until you can do it without notes. Many interviewers interrupt after 3–4 minutes; the structure lets you resume cleanly.</p>
 
   <h2 id="numbers"><span class="n">03</span>Numbers to know</h2>
+  <div class="stats">
+    <div class="stat"><b>150 / 1,200</b><span>avg / peak RPS</span></div>
+    <div class="stat"><b>60 / 280ms</b><span>p50 / p99</span></div>
+    <div class="stat"><b>15K/day</b><span>documents</span></div>
+    <div class="stat"><b>180M rows</b><span>audit table, +6M/month</span></div>
+    <div class="stat"><b>Top 10 = 60%</b><span>tenant volume skew</span></div>
+    <div class="stat"><b>2 P1s</b><span>last year, MTTR 35 min</span></div>
+  </div>
+  <p>Pull these from dashboards before any interview. Round them, know the source; if you do not know one, say how you would find it.</p>
+  <details class="deep"><summary>Go deeper: all nine numbers and their follow-ups</summary>
   <p>Pull these from your dashboards before any interview. Round them, but know where they come from. If you do not know one, say how you would find it; never invent.</p>
   <div class="tbl"><table>
     <thead><tr><th>Number</th><th>Example (illustrative)</th><th>Follow-up you should expect</th></tr></thead>
@@ -70,13 +162,27 @@
       <tr><td>Infra footprint and cost</td><td class="num">6 pods × 2 vCPU; RDS r6g.xlarge</td><td>Biggest cost line? How would you cut it?</td></tr>
       <tr><td>Incidents</td><td class="num">2 P1s last year; MTTR 35 min</td><td>Most recent RCA?</td></tr>
     </tbody>
-  </table></div>
+  </table></div></details>
   <div class="callout tip"><b>Back-of-envelope sanity check</b><p>15K documents/day ÷ 86,400 s ≈ 0.17 docs/s on average. Each document creates ~3 signers × ~8 API calls + ~20 audit events, so ~80 writes/document ≈ 14 writes/s average. A month-end peak of 10× is 140 writes/s: comfortable for one Postgres primary. Being able to do this live shows you understand your own system's headroom.</p></div>
 
   <h2 id="example"><span class="n">04</span>Worked example: a generic e-signing service</h2>
+  <div class="arch">
+    <div class="tier"><small>Clients</small><span class="node">Tenant app / API client</span></div>
+    <div class="down">↓ <small>HTTPS</small></div>
+    <div class="tier"><span class="node">API Gateway<small>JWT, tenant, rate limit</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">Document Service<small>upload, pre-signed URL</small></span><span class="node hl">Signing Workflow Service<small>state machine, owner</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node store">S3<small>originals + signed PDFs</small></span><span class="node store">PostgreSQL<small>workflows, signers, outbox</small></span></div>
+    <div class="down">↓ <small>relay</small></div>
+    <div class="tier"><span class="node store">Kafka<small>workflow-events</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node hl">Audit Service<small>hash-chained log</small></span><span class="node">Notification Service<small>email, SMS, WhatsApp</small></span><span class="node">Webhook Dispatcher<small>tenant callbacks</small></span><span class="node">Billing<small>usage events</small></span></div>
+  </div>
+  <p class="flow-caption">Figure: document upload → signer workflow → events fan out to audit, notifications, webhooks and billing. Highlighted boxes are "mine".</p>
+  <details class="deep"><summary>Go deeper: the 1-minute context script and original flow diagram</summary>
   <h3>Context (1 minute)</h3>
   <p>"We run a multi-tenant e-signing platform for banks, NBFCs and enterprises. A tenant uploads a document, defines signers and order, signers receive links, sign with OTP/Aadhaar e-sign/DSC, and every action is recorded in a tamper-evident audit trail that serves as legal evidence. I own the signing workflow and audit services and I'm on call for both."</p>
-  <h3>Architecture</h3>
   <div class="flow">
     <span class="node">Tenant app / API client</span><span class="arrow">→</span>
     <span class="node">API Gateway<small>JWT, tenant, rate limit</small></span><span class="arrow">→</span>
@@ -94,8 +200,7 @@
     <span class="node">Notification Service<small>email, SMS, WhatsApp</small></span>
     <span class="node">Webhook Dispatcher<small>tenant callbacks</small></span>
     <span class="node">Billing<small>usage events</small></span>
-  </div>
-  <p class="flow-caption">Figure: document upload → signer workflow → events fan out to audit, notifications, webhooks and billing. Highlighted boxes are "mine".</p>
+  </div></details>
   <h3>APIs</h3>
   <pre><code>POST /v1/documents                       -&gt; 201 {documentId, uploadUrl}   (pre-signed S3 PUT)
 POST /v1/workflows                       Idempotency-Key: &lt;uuid&gt;
@@ -119,14 +224,27 @@ Event: workflow-events (key = workflowId)
     </tbody>
   </table></div>
   <h3>Async flow: signer completes</h3>
+  <ol class="walk">
+    <li><span class="who">Workflow svc</span><span>One DB transaction: signer status, workflow version bump (<dfn title="Update only if the version column still matches what you read; otherwise retry">optimistic lock</dfn>), outbox row</span></li>
+    <li><span class="who">Relay</span><span>Publishes to Kafka, key = workflowId (ordered per workflow)</span></li>
+    <li><span class="who">Audit</span><span><code>hash = SHA-256(prevHash + event)</code>, append, dedupe on eventId</span></li>
+    <li><span class="who">Notification</span><span>Next signer; retries 1m, 5m, 30m, then DLQ + alert</span></li>
+    <li><span class="who">PDF job</span><span>Last signer: stamp, store in S3, emit WORKFLOW_COMPLETED</span></li>
+  </ol>
+  <details class="deep"><summary>Go deeper: the async flow step by step</summary>
   <ol>
     <li>Sign request validates the OTP token, then in <b>one DB transaction</b>: update signer status, bump workflow version (optimistic lock: <code>UPDATE … WHERE id=? AND version=?</code>), insert the outbox row.</li>
     <li>The outbox relay (polling every 200ms, or Debezium CDC) publishes to Kafka with key = workflowId so all events of a workflow stay ordered on one partition.</li>
     <li>Audit service consumes, computes <code>hash = SHA-256(prevHash + event)</code>, appends; deduplicates on eventId.</li>
     <li>Notification service notifies the next signer; vendor failures go to retry topics with backoff (1m, 5m, 30m), then a DLQ with an alert.</li>
     <li>When the last signer completes, a PDF-stamping job applies the final signature and certificate, stores the signed PDF in S3, and emits WORKFLOW_COMPLETED for webhooks and billing.</li>
-  </ol>
+  </ol></details>
   <h3>Your decisions (pick two or three)</h3>
+  <div class="vs">
+    <div class="pick"><h4>Transactional outbox <span class="tag">chosen</span></h4><ul><li class="pro">Atomic with the state change</li><li class="pro">No XA support needed; simple to operate</li></ul><p class="when">Rejected: dual write, XA, CDC on business tables (CDC is a later upgrade).</p></div>
+    <div class="pick"><h4>Optimistic locking <span class="tag">chosen</span></h4><ul><li class="pro">Conflicts are rare</li><li class="pro">No lock held across the OTP verify call</li></ul><p class="when">Rejected: SELECT FOR UPDATE, Redis lock.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: all five decisions</summary>
   <div class="tbl"><table>
     <thead><tr><th>Decision</th><th>Alternatives considered</th><th>Why</th></tr></thead>
     <tbody>
@@ -136,19 +254,28 @@ Event: workflow-events (key = workflowId)
       <tr><td>Pre-signed S3 upload</td><td>Multipart upload through the app</td><td>Removes file bytes from app pods, halves memory, uploads scale with S3 not with pods.</td></tr>
       <tr><td>Per-tenant rate limit at gateway</td><td>Global limit; none</td><td>One bank's bulk send once degraded everyone; token bucket per tenant in Redis.</td></tr>
     </tbody>
-  </table></div>
+  </table></div></details>
 
   <h2 id="diagrams"><span class="n">05</span>Diagrams to draw</h2>
-  <div class="grid">
-    <div class="card"><h4>1. Component diagram</h4><p>Always. Boxes and arrows, sync vs async marked, datastores dashed, your ownership highlighted.</p></div>
-    <div class="card"><h4>2. Sequence of one flow</h4><p>Signer completes → DB txn → outbox → Kafka → consumers. Shows you understand ordering and failure points.</p></div>
-    <div class="card"><h4>3. State machine</h4><p>CREATED → IN_PROGRESS → (SIGNER_n_DONE)* → COMPLETED / EXPIRED / DECLINED / VOIDED. Interviewers love asking about illegal transitions.</p></div>
-    <div class="card"><h4>4. Data model sketch</h4><p>3–4 tables with keys and the one or two indexes that matter.</p></div>
+  <div class="keys">
+    <div class="key"><h4>1. Component diagram</h4><p>Always. Boxes and arrows, sync vs async marked, datastores dashed, your ownership highlighted.</p></div>
+    <div class="key"><h4>2. Sequence of one flow</h4><p>Signer completes → DB txn → outbox → Kafka → consumers. Shows ordering and failure points.</p></div>
+    <div class="key"><h4>3. State machine</h4><p>CREATED → IN_PROGRESS → (SIGNER_n_DONE)* → COMPLETED / EXPIRED / DECLINED / VOIDED. Expect questions on illegal transitions.</p></div>
+    <div class="key"><h4>4. Data model sketch</h4><p>3–4 tables with keys and the one or two indexes that matter.</p></div>
   </div>
-  <p>Practise drawing them in Excalidraw (most virtual rounds) and on paper. Use a consistent legend: solid arrow = sync HTTP, dashed arrow = async event.</p>
+  <p>Practise in Excalidraw (most virtual rounds) and on paper. Legend: solid arrow = sync HTTP, dashed arrow = async event.</p>
 
   <h2 id="scale"><span class="n">06</span>"At 100× scale, what breaks first?"</h2>
-  <p>A senior answer ranks the bottlenecks by when they bite and names the fix for each. For the example: 100× means ~1.5M documents/day and ~14K writes/s at peak.</p>
+  <div class="stats"><div class="stat"><b>~1.5M</b><span>documents/day at 100×</span></div><div class="stat"><b>~14K</b><span>writes/s at peak</span></div></div>
+  <ol class="walk">
+    <li><span class="who">Postgres</span><span>Writes + connections → PgBouncer, audit on own cluster, shard by tenant</span></li>
+    <li><span class="who">Audit size</span><span>Bloat, slow vacuum → shorter partitions, cold data to S3</span></li>
+    <li><span class="who">Outbox relay</span><span>Lag → CDC (Debezium), multiple relays</span></li>
+    <li><span class="who">Vendors</span><span>429s, cost → per-vendor limits, multi-vendor fallback</span></li>
+    <li><span class="who">PDF CPU</span><span>Month-end backlog → autoscaled worker pool on queue lag</span></li>
+    <li><span class="who">Noisy tenants</span><span>One bulk job hurts all → per-tenant quotas, cells</span></li>
+  </ol>
+  <details class="deep"><summary>Go deeper: symptoms and fixes table</summary>
   <div class="tbl"><table>
     <thead><tr><th>Order</th><th>What breaks</th><th>Symptom</th><th>Fix</th></tr></thead>
     <tbody>
@@ -159,18 +286,19 @@ Event: workflow-events (key = workflowId)
       <tr><td class="num">5</td><td>PDF processing CPU</td><td>Stamping queue backlog at month-end</td><td>Separate autoscaled worker pool off a queue, KEDA on lag; pre-render templates.</td></tr>
       <tr><td class="num">6</td><td>Noisy-neighbour tenants</td><td>One bank's bulk job hurts all</td><td>Per-tenant quotas at every tier, separate Kafka topics/consumer groups for bulk, cell-based isolation for top tenants.</td></tr>
     </tbody>
-  </table></div>
+  </table></div></details>
+  <p>A senior answer ranks bottlenecks by when they bite and names a fix for each.</p>
   <div class="callout info"><b>Phrase it like this</b><p>"The first thing to break is the Postgres primary: at 14K writes/s we'd be beyond a comfortable single-node envelope and well beyond our connection budget. I'd first split audit onto its own cluster because it's 70% of writes and append-only, then shard workflows by tenant. Kafka would be fine with more partitions. The vendors would be the next real constraint, and that's a commercial as much as a technical problem."</p></div>
 
   <h2 id="differently"><span class="n">07</span>"What would you do differently?"</h2>
-  <p>Have three honest answers ready: one design choice, one process choice, one thing you would keep. Never say "nothing".</p>
-  <ul>
-    <li><b>Design:</b> "I'd have introduced the outbox from day one. We spent six months debugging lost events from dual writes."</li>
-    <li><b>Design:</b> "I'd model the workflow as an explicit state machine with a transitions table from the start; ad hoc status checks caused illegal transitions."</li>
-    <li><b>Operability:</b> "We added per-tenant metrics late. Today I'd tag every metric and log with tenantId from the first commit."</li>
-    <li><b>Process:</b> "I'd write a one-page design doc even for 'small' changes. The Redis rate limiter had a race we'd have caught in review of a doc."</li>
-    <li><b>What I'd keep:</b> "Hash-chained audit. Cheap, simple, and it held up in a customer's legal review."</li>
-  </ul>
+  <div class="keys">
+    <div class="key"><h4>Design</h4><p>"I'd have introduced the outbox from day one. We spent six months debugging lost events from dual writes."</p></div>
+    <div class="key"><h4>Design</h4><p>"I'd model the workflow as an explicit state machine with a transitions table from the start; ad hoc status checks caused illegal transitions."</p></div>
+    <div class="key"><h4>Operability</h4><p>"We added per-tenant metrics late. Today I'd tag every metric and log with tenantId from the first commit."</p></div>
+    <div class="key"><h4>Process</h4><p>"I'd write a one-page design doc even for 'small' changes. The Redis rate limiter had a race we'd have caught in review of a doc."</p></div>
+    <div class="key"><h4>What I'd keep</h4><p>"Hash-chained audit. Cheap, simple, and it held up in a customer's legal review."</p></div>
+  </div>
+  <p>Have three ready: one design choice, one process choice, one thing you would keep. Never say "nothing".</p>
 
   <h2 id="probes"><span class="n">08</span>Probing questions to rehearse</h2>
   <details class="qa"><summary>How do you guarantee a signer can't sign twice?</summary><p>Signer row status check plus optimistic lock on the workflow version inside one transaction; the sign endpoint also accepts an idempotency key, so retries return the original response rather than a conflict.</p></details>
@@ -183,22 +311,56 @@ Event: workflow-events (key = workflowId)
   <details class="qa"><summary>What was your personal contribution versus the team's?</summary><p>Be exact: "I designed and built the outbox and the audit chain, led the rate-limiter design; Priya built the notification consumers; the platform team owns the gateway."</p></details>
 
   <h2 id="prep"><span class="n">09</span>Prep worksheet</h2>
-  <ul>
-    <li>One-sentence context and your role.</li>
-    <li>Component diagram, redrawn from memory in under 3 minutes.</li>
-    <li>Four APIs and one event, with idempotency.</li>
-    <li>Four tables with keys and indexes.</li>
-    <li>One async flow with retry/DLQ and consistency guarantee.</li>
-    <li>The nine numbers from the table above, with sources.</li>
-    <li>Three decisions with rejected alternatives.</li>
-    <li>Ranked 100× bottlenecks with fixes.</li>
-    <li>Three "do differently" answers.</li>
-    <li>A clear "I vs we" statement.</li>
-    <li>Recorded a 10-minute run-through and watched it back.</li>
-  </ul>
+  <div class="tbl"><table>
+    <thead><tr><th>Item</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td>Context</td><td>One-sentence context and your role.</td></tr>
+      <tr><td>Diagram</td><td>Component diagram, redrawn from memory in under 3 minutes.</td></tr>
+      <tr><td>APIs</td><td>Four APIs and one event, with idempotency.</td></tr>
+      <tr><td>Data</td><td>Four tables with keys and indexes.</td></tr>
+      <tr><td>Async</td><td>One async flow with retry/DLQ and consistency guarantee.</td></tr>
+      <tr><td>Numbers</td><td>The nine numbers from the table above, with sources.</td></tr>
+      <tr><td>Decisions</td><td>Three decisions with rejected alternatives.</td></tr>
+      <tr><td>100×</td><td>Ranked 100× bottlenecks with fixes.</td></tr>
+      <tr><td>Self-critique</td><td>Three "do differently" answers.</td></tr>
+      <tr><td>Ownership</td><td>A clear "I vs we" statement.</td></tr>
+      <tr><td>Rehearsal</td><td>Recorded a 10-minute run-through and watched it back.</td></tr>
+    </tbody>
+  </table></div>
   <p>Pair this with the HLD vocabulary in <a href="hld-toolkit.html">HLD toolkit</a> and the outbox/saga depth in <a href="distributed-transactions.html">Distributed transactions</a>.</p>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>Describing features instead of architecture.</li>
+    <li>No scale numbers, or invented ones.</li>
+    <li>"The team decided" for every choice.</li>
+    <li>Freezing or getting defensive on "what would you change?".</li>
+    <li>Internal jargon and service nicknames the interviewer cannot follow.</li>
+  </ul></div>
 
-  <h2 id="sources"><span class="n">10</span>Sources</h2>
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">"What happens if Kafka is down when a signer signs?"</p>
+    <div class="opts"><button class="opt" type="button">The sign request fails and the user retries</button><button class="opt" type="button">The sign commits; the outbox row waits and the relay publishes later</button><button class="opt" type="button">The event is lost but audit reconciles it nightly</button></div>
+    <p class="why">The outbox row is in the same DB transaction as the state change, so events are delayed, not lost. Alert on outbox age.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">At 100×, what usually breaks first in this design?</p>
+    <div class="opts"><button class="opt" type="button">Postgres primary writes and connection count</button><button class="opt" type="button">Kafka partitions</button><button class="opt" type="button">The API gateway</button></div>
+    <p class="why">~14K writes/s is beyond a comfortable single primary. Split audit (70% of writes) first, then shard by tenant. Kafka just needs more partitions.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why optimistic locking on the workflow rather than SELECT FOR UPDATE?</p>
+    <div class="opts"><button class="opt" type="button">It is always faster</button><button class="opt" type="button">Postgres does not support row locks</button><button class="opt" type="button">Conflicts are rare and no lock is held across the slow OTP verify call</button></div>
+    <p class="why">Rare conflicts make retries cheap; a pessimistic lock would be held while waiting on a vendor.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">You don't know your service's p99. The interviewer asks. You say:</p>
+    <div class="opts"><button class="opt" type="button">A plausible number like 200ms</button><button class="opt" type="button">You don't have it to hand, and exactly which dashboard and percentile you would check</button><button class="opt" type="button">That latency is owned by the SRE team</button></div>
+    <p class="why">Never invent. Saying how you would find it still shows ownership.</p></div>
+
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>10 min: context 1 · boxes 2 · APIs 1.5 · tables 1.5 · async 1.5 · numbers 1 · decisions 1.5.</li>
+    <li>Highlight your boxes; say "I own… and am on call".</li>
+    <li>Nine numbers: RPS, p50/p99, volume, data size, tenants, SLO, Kafka, cost, incidents.</li>
+    <li>Back-of-envelope live: docs/day ÷ 86,400 × writes/doc × peak factor.</li>
+    <li>Decisions: outbox over dual write, optimistic lock, hash-chained audit, pre-signed S3, per-tenant limits.</li>
+    <li>100×: Postgres → audit size → relay → vendors → PDF CPU → noisy neighbours.</li>
+    <li>"Do differently": a design, a process, one thing you'd keep.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">11</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://microservices.io/patterns/data/transactional-outbox" target="_blank" rel="noopener">Transactional outbox pattern (microservices.io)</a></li>
     <li><a href="https://github.com/donnemartin/system-design-primer" target="_blank" rel="noopener">System Design Primer — back-of-envelope and scaling vocabulary</a></li>
@@ -207,5 +369,6 @@ Event: workflow-events (key = workflowId)
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="career-star-stories.html">STAR stories</a> · <a href="hld-toolkit.html">HLD toolkit</a> · <a href="distributed-transactions.html">Distributed transactions</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

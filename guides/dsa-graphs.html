@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html" aria-current="page">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../dsa.html">Lesson · DSA</a></div>
   <h1>Graphs: BFS, DFS, Topological Sort, Union-Find</h1>
-  <p class="lede">Four tools cover nearly every graph question in SDE-2 rounds: BFS for shortest steps and spreading processes, DFS for reachability, Kahn's algorithm for dependency order and cycle detection, and union-find for connectivity as edges arrive. Learn to model the problem as a graph first; the algorithm follows.</p>
+  <p class="lede">Model a problem as nodes and edges, then pick the right one of four tools: BFS, DFS, Kahn's topological sort or union-find.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 2–3 sessions of 2 h</span>
     <span class="fact"><b>Worked problems:</b> 9</span>
@@ -20,18 +20,42 @@
   </div>
   <div class="chips"><span class="chip hot">Flipkart</span><span class="chip hot">Amazon</span><span class="chip">LinkedIn</span><span class="chip">Okta</span><span class="chip">Dream11</span><span class="chip">Groww</span><span class="chip">CoinDCX</span><span class="chip">InMobi</span><span class="chip">PhonePe</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>BFS: shortest steps in unweighted graphs and spreading processes.</li>
+    <li>DFS (or BFS): reachability and counting regions.</li>
+    <li>Kahn's algorithm: dependency order; leftovers mean a cycle.</li>
+    <li>Union-find: connectivity as edges arrive, near-O(1) per edge.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>News spreading in a housing society WhatsApp group. BFS is the message hopping one floor per minute from every flat that has it; union-find is merging two family groups into one when someone marries across them.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#when">When to use this pattern</a></li>
     <li><a href="#model">The mental model</a></li>
+    <li><a href="#bfs">Watch grid BFS: Rotting Oranges</a></li>
+    <li><a href="#kahn">Watch Kahn's topological sort</a></li>
+    <li><a href="#dsu">Watch union-find</a></li>
     <li><a href="#templates">Java templates</a></li>
     <li><a href="#problems">Worked problems</a></li>
-    <li><a href="#mistakes">Mistakes and follow-ups</a></li>
-    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#interview">Interview questions</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
   <h2 id="when"><span class="n">01</span>When to use this pattern</h2>
-  <p>Most graph questions do not say "graph". Spot the nodes and edges: grid cells and their 4 neighbours, courses and prerequisites, rooms and keys, variables and ratios, bombs and "is inside the blast radius of".</p>
+  <div class="tbl"><table>
+    <tr><th>Phrase in the problem</th><th>Tool</th></tr>
+    <tr><td>"minimum steps / minutes / moves", unweighted</td><td>BFS</td></tr>
+    <tr><td>"spreads from several sources at once" (rot, fire)</td><td>Multi-source BFS</td></tr>
+    <tr><td>"can you reach / visit all", "count islands"</td><td>DFS or BFS</td></tr>
+    <tr><td>"prerequisites", "build order", directed cycle</td><td>Topological sort (Kahn)</td></tr>
+    <tr><td>"connected components", edges arriving, "extra edge"</td><td>Union-find</td></tr>
+    <tr><td>"a / b = 2, b / c = 3, what is a / c"</td><td>Weighted graph + DFS</td></tr>
+    <tr><td>weighted edges, "cheapest / fastest"</td><td>Dijkstra (<a href="dsa-heaps-intervals.html">Heaps and intervals</a>)</td></tr>
+  </table></div>
+  <details class="deep"><summary>Go deeper: why each tool fits</summary><p>Most graph questions do not say "graph". Spot the nodes and edges: grid cells and their 4 neighbours, courses and prerequisites, rooms and keys, variables and ratios, bombs and "is inside the blast radius of".</p>
   <div class="tbl"><table>
     <tr><th>Phrase in the problem</th><th>Tool</th><th>Why</th></tr>
     <tr><td>"minimum number of steps / minutes / moves", unweighted</td><td>BFS</td><td>BFS visits nodes in order of distance, so the first time you reach a node is the shortest path.</td></tr>
@@ -40,15 +64,50 @@
     <tr><td>"prerequisites", "build order", "dependencies", "is there a cycle" (directed)</td><td>Topological sort (Kahn)</td><td>Repeatedly take nodes with no remaining incoming edges; leftovers are on a cycle.</td></tr>
     <tr><td>"connected components", "are x and y connected", edges arriving one by one, "extra edge"</td><td>Union-find</td><td>Near-O(1) merge and query without rebuilding the graph.</td></tr>
     <tr><td>"a / b = 2, b / c = 3, what is a / c"</td><td>Weighted graph + DFS</td><td>Multiply edge weights along a path.</td></tr>
-    <tr><td>weighted edges, "cheapest / fastest"</td><td>Dijkstra (heap)</td><td>Covered in <a href="dsa-heaps-intervals.html">Heaps and intervals</a>.</td></tr>
+    <tr><td>weighted edges, "cheapest / fastest"</td><td>Dijkstra (heap)</td><td>Covered in Heaps and intervals.</td></tr>
   </table></div>
+  </details>
 
-  <h2 id="model"><span class="n">02</span>The mental model, from scratch</h2>
-  <p>A graph is nodes plus edges. In Java you represent it as an <b>adjacency list</b>, <code>List&lt;List&lt;Integer&gt;&gt;</code> (or <code>Map&lt;String, Map&lt;String, Double&gt;&gt;</code> for named, weighted nodes), or you leave it <b>implicit</b>: a grid where neighbours are computed from <code>(r ± 1, c)</code> and <code>(r, c ± 1)</code>. Every traversal is the same loop: take a node from a container, look at its neighbours, add the unvisited ones. A <b>queue</b> makes it BFS (wide, by distance); a <b>stack</b> or recursion makes it DFS (deep). The <b>visited</b> set is what makes it O(V + E) instead of infinite.</p>
-  <div class="callout info"><b>Mark visited when you enqueue, not when you dequeue</b><p>If you mark on dequeue, the same cell can be enqueued by several neighbours before it is processed. On a 1000×1000 grid that turns into millions of duplicate entries and a TLE or out-of-memory. Every solution below marks on enqueue.</p></div>
+  <h2 id="model"><span class="n">02</span>The mental model</h2>
+  <div class="keys">
+    <div class="key"><h4>Adjacency list</h4><p><code>List&lt;List&lt;Integer&gt;&gt;</code>: for each node, its neighbours. Named, weighted nodes: <code>Map&lt;String, Map&lt;String, Double&gt;&gt;</code>.</p></div>
+    <div class="key"><h4>Implicit grid</h4><p>No list at all: neighbours of (r, c) are (r ± 1, c) and (r, c ± 1).</p>
+      <div class="viz matrix"><div class="cells"><span class="cell"> </span><span class="cell win">↑</span><span class="cell"> </span></div><div class="cells"><span class="cell win">←</span><span class="cell hl">rc</span><span class="cell win">→</span></div><div class="cells"><span class="cell"> </span><span class="cell win">↓</span><span class="cell"> </span></div></div></div>
+    <div class="key"><h4>One loop, two containers</h4><p>Take a node, add its unvisited neighbours. A <b>queue</b> makes it BFS (by distance); a <b>stack</b> makes it DFS (deep).</p></div>
+    <div class="key"><h4>Visited set</h4><p>Makes it O(V + E) instead of infinite. Mark on <b>enqueue</b>, not dequeue, or a 1000×1000 grid floods the queue with duplicates.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the full mental model</summary><p>A graph is nodes plus edges. In Java you represent it as an <b>adjacency list</b>, <code>List&lt;List&lt;Integer&gt;&gt;</code> (or <code>Map&lt;String, Map&lt;String, Double&gt;&gt;</code> for named, weighted nodes), or you leave it <b>implicit</b>: a grid where neighbours are computed from <code>(r ± 1, c)</code> and <code>(r, c ± 1)</code>. Every traversal is the same loop: take a node from a container, look at its neighbours, add the unvisited ones. A <b>queue</b> makes it BFS (wide, by distance); a <b>stack</b> or recursion makes it DFS (deep). The <b>visited</b> set is what makes it O(V + E) instead of infinite.</p><p>If you mark on dequeue, the same cell can be enqueued by several neighbours before it is processed. On a 1000×1000 grid that turns into millions of duplicate entries and a TLE or out-of-memory. Every solution below marks on enqueue.</p></details>
 
-  <h3>Trace: multi-source BFS, Rotting Oranges</h3>
-  <p>Grid <code>[[2,1,1],[1,1,0],[0,1,1]]</code>: 2 = rotten, 1 = fresh, 0 = empty. Every rotten orange starts in the queue; each BFS level is one minute.</p>
+  <h2 id="bfs"><span class="n">03</span>Watch grid BFS: Rotting Oranges</h2>
+  <p>2 = rotten, 1 = fresh, 0 = empty. Every rotten orange starts in the queue; each BFS <b>level</b> is one minute.</p>
+  <div class="stepper"><b class="title">Multi-source BFS · [[2,1,1],[1,1,0],[0,1,1]]</b><div class="frames">
+    <figure class="frame">
+      <div class="matrix"><div class="cells"><span class="cell win">2</span><span class="cell">1</span><span class="cell">1</span></div><div class="cells"><span class="cell">1</span><span class="cell">1</span><span class="cell bad">0</span></div><div class="cells"><span class="cell bad">0</span><span class="cell">1</span><span class="cell">1</span></div></div>
+      <div class="ptrs"><span class="on">minute=0</span><span>queue=[(0,0)]</span><span>fresh=6</span></div>
+      <figcaption>Seed: the only rotten orange (0,0) is in the queue. Count fresh oranges up front: 6.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix"><div class="cells"><span class="cell ok">2</span><span class="cell win">2</span><span class="cell">1</span></div><div class="cells"><span class="cell win">2</span><span class="cell">1</span><span class="cell bad">0</span></div><div class="cells"><span class="cell bad">0</span><span class="cell">1</span><span class="cell">1</span></div></div>
+      <div class="ptrs"><span class="on">minute=1</span><span>queue=[(1,0),(0,1)]</span><span>fresh=4</span></div>
+      <figcaption>Poll (0,0). Its fresh neighbours rot and are marked <b>as they enter</b> the queue.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix"><div class="cells"><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell win">2</span></div><div class="cells"><span class="cell ok">2</span><span class="cell win">2</span><span class="cell bad">0</span></div><div class="cells"><span class="cell bad">0</span><span class="cell">1</span><span class="cell">1</span></div></div>
+      <div class="ptrs"><span class="on">minute=2</span><span>queue=[(1,1),(0,2)]</span><span>fresh=2</span></div>
+      <figcaption>One level per minute (<code>queue.size()</code> snapshot). (1,1) has two rotten neighbours but is queued once.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix"><div class="cells"><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell ok">2</span></div><div class="cells"><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell bad">0</span></div><div class="cells"><span class="cell bad">0</span><span class="cell win">2</span><span class="cell">1</span></div></div>
+      <div class="ptrs"><span class="on">minute=3</span><span>queue=[(2,1)]</span><span>fresh=1</span></div>
+      <figcaption>The empty cell (1,2) blocks the shortcut, so the rot goes round through (2,1).</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix"><div class="cells"><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell ok">2</span></div><div class="cells"><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell bad">0</span></div><div class="cells"><span class="cell bad">0</span><span class="cell ok">2</span><span class="cell hl">2</span></div></div>
+      <div class="ptrs"><span class="on">minute=4</span><span>queue=[(2,2)]</span><span>fresh=0</span></div>
+      <figcaption>fresh hits 0: answer <b>4</b>. Stopping on the count avoids one extra minute.</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: the trace as a table</summary>
   <div class="tbl"><table>
     <tr><th>Minute</th><th>Cells polled this level</th><th>Newly rotten (enqueued)</th><th>Fresh left</th></tr>
     <tr><td class="num">0</td><td>–</td><td>(0,0) is the seed</td><td>6</td></tr>
@@ -57,9 +116,9 @@
     <tr><td class="num">3</td><td>(1,1), (0,2)</td><td>(2,1)</td><td>1</td></tr>
     <tr><td class="num">4</td><td>(2,1)</td><td>(2,2)</td><td>0 → answer 4</td></tr>
   </table></div>
+  </details>
 
-  <h3>Trace: Kahn's algorithm</h3>
-  <p>4 courses, prerequisites <code>[[1,0],[2,0],[3,1],[3,2]]</code> (to take 1 you need 0, and so on). Edges 0→1, 0→2, 1→3, 2→3.</p>
+  <h2 id="kahn"><span class="n">04</span>Watch Kahn's topological sort</h2>
   <div class="flow">
     <span class="node hl">0<small>indegree 0</small></span><span class="arrow">→</span>
     <span class="node">1<small>indegree 1</small></span><span class="arrow">→</span>
@@ -69,7 +128,36 @@
     <span class="node">2<small>indegree 1</small></span><span class="arrow">→</span>
     <span class="node">3</span>
   </div>
-  <p class="flow-caption">Figure: the dependency graph drawn as its two paths; node 3 waits for both 1 and 2.</p>
+  <p class="flow-caption">Prerequisites [[1,0],[2,0],[3,1],[3,2]]: node 3 waits for both 1 and 2.</p>
+  <p><dfn title="Number of edges pointing into a node: how many prerequisites are still pending">Indegree</dfn> = prerequisites still pending. Cells are indegrees.</p>
+  <div class="stepper"><b class="title">Course Schedule II · Kahn's algorithm</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">0</span><span class="cell" data-i="1">1</span><span class="cell" data-i="2">1</span><span class="cell" data-i="3">2</span></div>
+      <div class="ptrs"><span class="on">queue=[0]</span><span>order=[]</span></div>
+      <figcaption>Start: only course 0 has indegree 0, so it alone goes in the queue.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell ok" data-i="0">0</span><span class="cell win" data-i="1">0</span><span class="cell win" data-i="2">0</span><span class="cell" data-i="3">2</span></div>
+      <div class="ptrs"><span class="on">queue=[1,2]</span><span>order=[0]</span></div>
+      <figcaption>Poll 0. Decrement its neighbours 1 and 2; both reach 0 and join the queue.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell ok" data-i="0">0</span><span class="cell ok" data-i="1">0</span><span class="cell win" data-i="2">0</span><span class="cell hl" data-i="3">1</span></div>
+      <div class="ptrs"><span class="on">queue=[2]</span><span>order=[0,1]</span></div>
+      <figcaption>Poll 1. Course 3 drops to 1: it still waits for course 2.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell ok" data-i="0">0</span><span class="cell ok" data-i="1">0</span><span class="cell ok" data-i="2">0</span><span class="cell win" data-i="3">0</span></div>
+      <div class="ptrs"><span class="on">queue=[3]</span><span>order=[0,1,2]</span></div>
+      <figcaption>Poll 2. Course 3 reaches 0 and joins the queue.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell ok" data-i="0">0</span><span class="cell ok" data-i="1">0</span><span class="cell ok" data-i="2">0</span><span class="cell ok" data-i="3">0</span></div>
+      <div class="ptrs"><span>queue=[]</span><span class="on">order=[0,1,2,3]</span></div>
+      <figcaption>All 4 polled: no cycle. Nodes on a cycle never reach 0, so a short order means a cycle.</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: the trace as a table</summary>
   <div class="tbl"><table>
     <tr><th>Step</th><th>Poll</th><th>Indegree updates</th><th>Queue after</th><th>Order so far</th></tr>
     <tr><td class="num">start</td><td>–</td><td>[0, 1, 1, 2]</td><td>[0]</td><td>[]</td></tr>
@@ -79,19 +167,59 @@
     <tr><td class="num">4</td><td>3</td><td>–</td><td>[]</td><td>[0, 1, 2, 3]</td></tr>
   </table></div>
   <p>All 4 nodes were output, so there is no cycle. If there were a cycle, the nodes on it would never reach indegree 0 and the order would come out short. That is the cycle detection, for free.</p>
+  </details>
 
-  <h3>Union-find in one paragraph</h3>
-  <p>Each node points to a parent; a root points to itself and names the component. <code>find(x)</code> follows parents to the root. <code>union(a, b)</code> finds both roots and, if different, hangs one under the other. Two optimisations make it practically O(1): <b>path compression</b> (while finding, re-point nodes closer to the root) and <b>union by rank</b> (hang the shorter tree under the taller, so trees stay shallow). Together the amortised cost is O(α(n)), the inverse Ackermann function, which is ≤ 4 for any input that fits in memory. Use either one alone and you still pass most interviews; use both and say why.</p>
+  <h2 id="dsu"><span class="n">05</span>Watch union-find</h2>
+  <p>Each node points to a <b>parent</b>; a root points to itself and names the group. Cells are <code>parent[1..3]</code>.</p>
+  <div class="stepper"><b class="title">Redundant Connection · parent[] array</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell ok" data-i="1">1</span><span class="cell ok" data-i="2">2</span><span class="cell ok" data-i="3">3</span></div>
+      <div class="ptrs"><span>groups: {1} {2} {3}</span></div>
+      <figcaption>Start: every node is its own root (<code>parent[i] = i</code>). Three groups.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell hl" data-i="1">2</span><span class="cell ok" data-i="2">2</span><span class="cell ok" data-i="3">3</span></div>
+      <div class="ptrs"><span class="on">edge [1,2]</span><span>find(1)=1, find(2)=2</span><span>1→2</span></div>
+      <figcaption>Different roots: hang 1 under 2 (<code>parent[1] = 2</code>). Groups: {1,2} {3}.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell" data-i="1">2</span><span class="cell hl" data-i="2">3</span><span class="cell ok" data-i="3">3</span></div>
+      <div class="ptrs"><span class="on">edge [1,3]</span><span>find(1)=2, find(3)=3</span><span>1→2→3</span></div>
+      <figcaption>find(1) walks 1 → 2. Roots 2 and 3 differ, so <code>parent[2] = 3</code>. One group.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell" data-i="1">2</span><span class="cell bad" data-i="2">3</span><span class="cell bad" data-i="3">3</span></div>
+      <div class="ptrs"><span class="on">edge [2,3]</span><span>find(2)=3, find(3)=3</span></div>
+      <figcaption>Same root: 2 and 3 are already connected. This edge closes a cycle, so it is the <b>redundant</b> one.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell hl" data-i="1">3</span><span class="cell" data-i="2">3</span><span class="cell ok" data-i="3">3</span></div>
+      <div class="ptrs"><span class="on">find(1) later</span><span>1→3</span></div>
+      <figcaption><b>Path compression</b>: while finding, point 1 at its grandparent 3. Next time find(1) is one hop.</figcaption>
+    </figure>
+  </div></div>
+  <div class="keys">
+    <div class="key"><h4>Path compression</h4><p>While finding, re-point nodes closer to the root. Repeated finds get fast.</p></div>
+    <div class="key"><h4>Union by rank</h4><p>Hang the shorter tree under the taller, so trees stay O(log n) deep.</p></div>
+    <div class="key"><h4>Both together</h4><p>O(α(n)) amortised: the inverse Ackermann function, ≤ 4 for any real input.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: union-find in one paragraph</summary><p>Each node points to a parent; a root points to itself and names the component. <code>find(x)</code> follows parents to the root. <code>union(a, b)</code> finds both roots and, if different, hangs one under the other. Two optimisations make it practically O(1): <b>path compression</b> (while finding, re-point nodes closer to the root) and <b>union by rank</b> (hang the shorter tree under the taller, so trees stay shallow). Together the amortised cost is O(α(n)), the inverse Ackermann function, which is ≤ 4 for any input that fits in memory. Use either one alone and you still pass most interviews; use both and say why.</p>
   <div class="tbl"><table>
     <tr><th>Edge</th><th>find(a)</th><th>find(b)</th><th>Action</th></tr>
     <tr><td>[1,2]</td><td>1</td><td>2</td><td>different roots: parent[1] = 2</td></tr>
     <tr><td>[1,3]</td><td>2</td><td>3</td><td>different roots: parent[2] = 3</td></tr>
     <tr><td>[2,3]</td><td>3</td><td>3</td><td>same root: this edge closes a cycle → redundant</td></tr>
-  </table></div>
+  </table></div></details>
 
-  <h2 id="templates"><span class="n">03</span>Java templates</h2>
-  <p>BFS on an adjacency list (shortest unweighted distances) and a reusable union-find. Grid BFS is the Number of Islands solution below; Kahn's algorithm is Course Schedule II.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <h2 id="templates"><span class="n">06</span>Java templates</h2>
+  <div class="tbl"><table>
+    <tr><th>Algorithm</th><th>Time</th><th>Space</th></tr>
+    <tr><td>BFS / DFS</td><td>O(V + E); grid O(R·C)</td><td>O(V)</td></tr>
+    <tr><td>Kahn's topological sort</td><td>O(V + E)</td><td>O(V + E)</td></tr>
+    <tr><td>Union-find, both optimisations</td><td>O(α(n)) amortised per op</td><td>O(n)</td></tr>
+  </table></div>
+  <p>Grid BFS is the <a href="#p-isl">Number of Islands</a> solution; Kahn's algorithm is <a href="#p-cs2">Course Schedule II</a>.</p>
+  <details class="code"><summary>Show Java solution: adjacency-list BFS and a reusable union-find</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
@@ -161,21 +289,19 @@ class GraphTemplates {
             return components;
         }
     }
-}</code></pre>
-  <div class="tbl"><table>
-    <tr><th>Algorithm</th><th>Time</th><th>Space</th></tr>
-    <tr><td>BFS / DFS</td><td>O(V + E); grid O(R·C)</td><td>O(V)</td></tr>
-    <tr><td>Kahn's topological sort</td><td>O(V + E)</td><td>O(V + E)</td></tr>
-    <tr><td>Union-find, both optimisations</td><td>O(α(n)) amortised per op</td><td>O(n)</td></tr>
-  </table></div>
-  <div class="callout tip"><b>Recursion depth in Java</b><p>Recursive DFS on a 300×300 all-land grid can go 90,000 frames deep; the default thread stack (512 KB–1 MB) overflows somewhere around 10–20k frames depending on frame size. Prefer an explicit <code>ArrayDeque</code> stack or BFS for grids, and mention it. The recursive <code>find</code> in the DSU is fine because union by rank keeps trees O(log n) deep.</p></div>
+}</code></pre></details>
+  <div class="callout tip"><b>Recursion depth in Java</b><p>Recursive DFS on a 300×300 grid can go 90,000 frames deep and overflow. Use an explicit stack or BFS.</p></div>
+  <details class="deep"><summary>Go deeper: stack sizes and the recursive find</summary><p>Recursive DFS on a 300×300 all-land grid can go 90,000 frames deep; the default thread stack (512 KB–1 MB) overflows somewhere around 10–20k frames depending on frame size. Prefer an explicit <code>ArrayDeque</code> stack or BFS for grids, and mention it. The recursive <code>find</code> in the DSU is fine because union by rank keeps trees O(log n) deep.</p></details>
 
-  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+  <h2 id="problems"><span class="n">07</span>Worked problems</h2>
 
-  <h3 id="p-isl">1. Number of Islands</h3>
-  <p><a href="https://leetcode.com/problems/number-of-islands/" target="_blank" rel="noopener">LeetCode 200</a> · Medium. Grid of '1' (land) and '0' (water). Count islands: groups of land connected up/down/left/right.</p>
-  <p><b>Key insight:</b> count connected components. Scan every cell; each unvisited land cell starts a new island, and a BFS from it marks the whole island visited. Here the grid itself is the visited set (land is overwritten with '0'); if mutating input is not allowed, use a <code>boolean[][]</code>.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-isl">
+    <h3>1. Number of Islands <a href="https://leetcode.com/problems/number-of-islands/" target="_blank" rel="noopener">LeetCode 200 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Count groups of '1' cells connected up/down/left/right.</dd>
+        <dt>Insight</dt><dd>Each unvisited land cell starts an island; BFS from it sinks the whole island.</dd>
+        <dt>Cost</dt><dd>O(R·C) time, O(min(R, C)) queue space</dd></dl>
+    <div class="matrix"><div class="cells"><span class="cell win">1</span><span class="cell win">1</span><span class="cell">0</span><span class="cell">0</span></div><div class="cells"><span class="cell win">1</span><span class="cell">0</span><span class="cell">0</span><span class="cell ok">1</span></div><div class="cells"><span class="cell">0</span><span class="cell">0</span><span class="cell ok">1</span><span class="cell ok">1</span></div></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 
 class Solution {
@@ -206,14 +332,18 @@ class Solution {
         }
         return islands;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(R·C) time, O(min(R, C)) queue space for BFS (the frontier is a diagonal band).</p>
-  <p><b>Edge cases:</b> all water → 0; all land → 1; a single row or column; diagonal neighbours do not connect. Interviewers often ask whether you may modify the input: ask, then choose.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Details and edge cases</summary><p>Here the grid itself is the visited set (land is overwritten with '0'); if mutating input is not allowed, use a <code>boolean[][]</code>. The BFS frontier is a diagonal band, hence O(min(R, C)) space.</p><p>All water → 0; all land → 1; a single row or column; diagonal neighbours do not connect. Interviewers often ask whether you may modify the input: ask, then choose.</p></details>
+  </div>
 
-  <h3 id="p-rot">2. Rotting Oranges</h3>
-  <p><a href="https://leetcode.com/problems/rotting-oranges/" target="_blank" rel="noopener">LeetCode 994</a> · Medium. Every minute, each rotten orange rots its 4-neighbour fresh oranges. Return the minutes until no fresh orange remains, or −1 if some can never rot.</p>
-  <p><b>Key insight:</b> multi-source BFS. Put all rotten oranges in the queue at time 0 and process level by level (<code>queue.size()</code> snapshot). Count fresh oranges up front so the answer check is O(1) and so you can stop as soon as the count hits 0 (otherwise you count one extra minute for the last level).</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-rot">
+    <h3>2. Rotting Oranges <a href="https://leetcode.com/problems/rotting-oranges/" target="_blank" rel="noopener">LeetCode 994 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Minutes until no fresh orange remains, or −1 if some never rot.</dd>
+        <dt>Insight</dt><dd>Multi-source BFS, level by level (the stepper above). Count fresh up front; stop when it hits 0.</dd>
+        <dt>Cost</dt><dd>O(R·C) time and space</dd></dl>
+    <div class="ptrs"><span>minute each cell rots</span></div>
+    <div class="matrix"><div class="cells"><span class="cell ok">0</span><span class="cell">1</span><span class="cell">2</span></div><div class="cells"><span class="cell">1</span><span class="cell">2</span><span class="cell bad">·</span></div><div class="cells"><span class="cell bad">·</span><span class="cell">3</span><span class="cell hl">4</span></div></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 
 class Solution {
@@ -247,14 +377,18 @@ class Solution {
         }
         return fresh == 0 ? minutes : -1;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(R·C) time and space.</p>
-  <p><b>Edge cases:</b> no fresh oranges at all → 0 (even with no rotten ones); fresh but no rotten → −1; an isolated fresh orange → −1. The BFS-from-each-rotten-orange approach is O((R·C)²) and is the classic wrong first answer.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>No fresh oranges at all → 0 (even with no rotten ones); fresh but no rotten → −1; an isolated fresh orange → −1. The BFS-from-each-rotten-orange approach is O((R·C)²) and is the classic wrong first answer.</p></details>
+  </div>
 
-  <h3 id="p-keys">3. Keys and Rooms</h3>
-  <p><a href="https://leetcode.com/problems/keys-and-rooms/" target="_blank" rel="noopener">LeetCode 841</a> · Medium · CoinDCX. Room 0 is open; every other room is locked. Each room holds keys to other rooms. Can you visit every room?</p>
-  <p><b>Key insight:</b> rooms are nodes, keys are directed edges. The question is "is every node reachable from 0?". Any traversal works; this one is iterative DFS with a counter so you do not need a final scan.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-keys">
+    <h3>3. Keys and Rooms <a href="https://leetcode.com/problems/keys-and-rooms/" target="_blank" rel="noopener">LeetCode 841 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Room 0 is open; rooms hold keys to other rooms. Can you visit every room? CoinDCX.</dd>
+        <dt>Insight</dt><dd>Rooms = nodes, keys = edges: is everything reachable from 0? Iterative DFS.</dd>
+        <dt>Cost</dt><dd>O(N + K) time (K = total keys), O(N) space</dd></dl>
+    <div class="ptrs"><span>rooms [[1],[2],[3],[]]: 0 → 1 → 2 → 3</span></div>
+    <div class="cells idx"><span class="cell ok" data-i="0">1</span><span class="cell ok" data-i="1">2</span><span class="cell ok" data-i="2">3</span><span class="cell ok" data-i="3">–</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 
@@ -276,14 +410,18 @@ class Solution {
         }
         return visited == rooms.size();
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(N + K) time where K = total keys, O(N) space.</p>
-  <p><b>Edge cases:</b> a room containing its own key; duplicate keys; keys only to already-visited rooms; a single room → true.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>A room containing its own key; duplicate keys; keys only to already-visited rooms; a single room → true.</p></details>
+  </div>
 
-  <h3 id="p-cs1">4. Course Schedule</h3>
-  <p><a href="https://leetcode.com/problems/course-schedule/" target="_blank" rel="noopener">LeetCode 207</a> · Medium. <code>numCourses</code> courses and pairs <code>[a, b]</code> meaning "take b before a". Can you finish all courses?</p>
-  <p><b>Key insight:</b> this is "does the directed graph have a cycle?". Kahn's algorithm: if every course gets polled, there is no cycle. Get the edge direction right: <code>[a, b]</code> is an edge b → a, and it increments <code>indegree[a]</code>.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-cs1">
+    <h3>4. Course Schedule <a href="https://leetcode.com/problems/course-schedule/" target="_blank" rel="noopener">LeetCode 207 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Pairs <code>[a, b]</code> mean "take b before a". Can you finish all courses?</dd>
+        <dt>Insight</dt><dd>"Directed cycle?" Kahn: all polled → no cycle. <code>[a, b]</code> is edge b → a.</dd>
+        <dt>Cost</dt><dd>O(V + E) time and space</dd></dl>
+    <div class="ptrs"><span>[[1,0],[0,1]]: indegrees never reach 0 → false</span></div>
+    <div class="cells idx"><span class="cell bad" data-i="0">1</span><span class="cell bad" data-i="1">1</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -317,14 +455,17 @@ class Solution {
         }
         return taken == numCourses;                 // anything left over sits on a cycle
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(V + E) time and space.</p>
-  <p><b>Edge cases:</b> no prerequisites → true; self-loop <code>[0,0]</code> → false; duplicate pairs (indegree counts them twice but each is also decremented twice, so it still works); disconnected components. The DFS alternative uses three colours (unvisited, in progress, done); hitting an "in progress" node means a back edge, which is a cycle.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases and the DFS alternative</summary><p>No prerequisites → true; self-loop <code>[0,0]</code> → false; duplicate pairs (indegree counts them twice but each is also decremented twice, so it still works); disconnected components. The DFS alternative uses three colours (unvisited, in progress, done); hitting an "in progress" node means a back edge, which is a cycle.</p></details>
+  </div>
 
-  <h3 id="p-cs2">5. Course Schedule II</h3>
-  <p><a href="https://leetcode.com/problems/course-schedule-ii/" target="_blank" rel="noopener">LeetCode 210</a> · Medium. Same input; return one valid order to take all courses, or an empty array if impossible.</p>
-  <p><b>Key insight:</b> the order in which Kahn's algorithm polls nodes is a topological order. Return it when its length is <code>numCourses</code>; otherwise there was a cycle. (The trace in section 02 is this problem.)</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-cs2">
+    <h3>5. Course Schedule II <a href="https://leetcode.com/problems/course-schedule-ii/" target="_blank" rel="noopener">LeetCode 210 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Return one valid course order, or an empty array if impossible.</dd>
+        <dt>Insight</dt><dd>Kahn's poll order is a topological order (the stepper above). Return it if its length is <code>numCourses</code>.</dd>
+        <dt>Cost</dt><dd>O(V + E) time and space</dd></dl>
+    <div class="cells"><span class="cell ok">0</span><span class="cell ok">1</span><span class="cell ok">2</span><span class="cell ok">3</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -359,14 +500,18 @@ class Solution {
         }
         return k == numCourses ? order : new int[0];
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(V + E) time and space.</p>
-  <p><b>Edge cases:</b> many valid orders exist and any is accepted. If the interviewer wants the lexicographically smallest order, swap the queue for a <code>PriorityQueue&lt;Integer&gt;</code> (O((V + E) log V)). If they want "minimum number of semesters", process level by level like Rotting Oranges and count levels.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Follow-ups</summary><p>Many valid orders exist and any is accepted. If the interviewer wants the lexicographically smallest order, swap the queue for a <code>PriorityQueue&lt;Integer&gt;</code> (O((V + E) log V)). If they want "minimum number of semesters", process level by level like Rotting Oranges and count levels.</p></details>
+  </div>
 
-  <h3 id="p-prov">6. Number of Provinces</h3>
-  <p><a href="https://leetcode.com/problems/number-of-provinces/" target="_blank" rel="noopener">LeetCode 547</a> · Medium. An n×n adjacency matrix says which cities are directly connected. A province is a group of cities connected directly or indirectly. Count provinces.</p>
-  <p><b>Key insight:</b> connected components again, this time with union-find: start with n components and decrement every time a union actually merges two different roots. DFS over the matrix works equally well; union-find shines when edges arrive as a stream.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-prov">
+    <h3>6. Number of Provinces <a href="https://leetcode.com/problems/number-of-provinces/" target="_blank" rel="noopener">LeetCode 547 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Count connected groups of cities from an n×n matrix.</dd>
+        <dt>Insight</dt><dd>Start at n; subtract one per union that merges two different roots.</dd>
+        <dt>Cost</dt><dd>O(n² · α(n)) time (reading the matrix dominates), O(n) space</dd></dl>
+    <div class="ptrs"><span>[[1,1,0],[1,1,0],[0,0,1]] → parent[] after unions → 2 provinces</span></div>
+    <div class="cells idx"><span class="cell win" data-i="0">0</span><span class="cell win" data-i="1">0</span><span class="cell ok" data-i="2">2</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     private int[] parent;
     private int[] rank;
 
@@ -411,14 +556,17 @@ class Solution {
         }
         return true;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n² · α(n)) time (reading the matrix dominates), O(n) space.</p>
-  <p><b>Edge cases:</b> the diagonal is always 1 (ignore it); one city → 1; fully connected → 1. The matrix is symmetric, so only the upper triangle is read.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>The diagonal is always 1 (ignore it); one city → 1; fully connected → 1. The matrix is symmetric, so only the upper triangle is read.</p></details>
+  </div>
 
-  <h3 id="p-red">7. Redundant Connection</h3>
-  <p><a href="https://leetcode.com/problems/redundant-connection/" target="_blank" rel="noopener">LeetCode 684</a> · Medium. A tree with n nodes (labelled 1..n) had one extra edge added. Given the n edges, return an edge whose removal leaves a tree; if several qualify, return the one that appears last.</p>
-  <p><b>Key insight:</b> process edges in order with union-find. The first edge whose endpoints are already connected closes the only cycle. It is also the last cycle edge in the input, because the cycle is incomplete until its final edge arrives, so it satisfies the "last" tie-break.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-red">
+    <h3>7. Redundant Connection <a href="https://leetcode.com/problems/redundant-connection/" target="_blank" rel="noopener">LeetCode 684 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>A tree got one extra edge. Return the edge to remove (the last one if several).</dd>
+        <dt>Insight</dt><dd>The first edge whose ends already share a root closes the cycle (the stepper).</dd>
+        <dt>Cost</dt><dd>O(n · α(n)) time, O(n) space</dd></dl>
+    <div class="cells"><span class="cell ok">1–2</span><span class="cell ok">1–3</span><span class="cell bad">2–3</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int[] findRedundantConnection(int[][] edges) {
         int[] parent = new int[edges.length + 1];       // nodes are 1..n and there are n edges
         for (int i = 0; i &lt; parent.length; i++) {
@@ -441,14 +589,17 @@ class Solution {
         }
         return x;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n · α(n)) time, O(n) space.</p>
-  <p><b>Edge cases:</b> nodes are 1-indexed (array size n + 1); the extra edge might be the first or last in the list. Follow-up: the <b>directed</b> version (LeetCode 685) also has to handle a node with two parents, which union-find alone does not catch; check indegrees first.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Why it is also the "last" edge, and edge cases</summary><p>It is also the last cycle edge in the input, because the cycle is incomplete until its final edge arrives, so it satisfies the "last" tie-break.</p><p>Nodes are 1-indexed (array size n + 1); the extra edge might be the first or last in the list. Follow-up: the <b>directed</b> version (LeetCode 685) also has to handle a node with two parents, which union-find alone does not catch; check indegrees first.</p></details>
+  </div>
 
-  <h3 id="p-div">8. Evaluate Division</h3>
-  <p><a href="https://leetcode.com/problems/evaluate-division/" target="_blank" rel="noopener">LeetCode 399</a> · Medium · InMobi. You get equations like a / b = 2.0 and b / c = 3.0, then queries like a / c. Answer each query, or −1.0 if it cannot be determined.</p>
-  <p><b>Key insight:</b> variables are nodes; a / b = v gives an edge a → b with weight v and b → a with weight 1 / v. The value of x / y is the product of weights along any path from x to y (the intermediate variables cancel: a/b · b/c = a/c). Unknown variables answer −1, even for x / x.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-div">
+    <h3>8. Evaluate Division <a href="https://leetcode.com/problems/evaluate-division/" target="_blank" rel="noopener">LeetCode 399 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Given a / b = 2.0 and b / c = 3.0, answer queries like a / c, or −1.0. InMobi.</dd>
+        <dt>Insight</dt><dd>a / b = v gives edges a → b (v) and b → a (1/v). x / y = product of weights along a path.</dd>
+        <dt>Cost</dt><dd>O(Q · (V + E)) time for Q queries, O(V + E) space</dd></dl>
+    <div class="cells"><span class="cell hl">a</span><span class="cell dim">×2</span><span class="cell win">b</span><span class="cell dim">×3</span><span class="cell hl">c</span><span class="cell ok">a/c = 6</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -497,14 +648,18 @@ class Solution {
         }
         return -1.0;                                      // different components
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(Q · (V + E)) time for Q queries, O(V + E) space. With many queries, a weighted union-find (store each node's ratio to its root) answers each query in near-O(1): x / y = ratio(x) / ratio(y) when they share a root.</p>
-  <p><b>Edge cases:</b> query variable never seen → −1; x / x for a known x → 1; variables in different components → −1; floating-point accumulation is fine at this scale (answers compared to 1e-5).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Weighted union-find and edge cases</summary><p>The intermediate variables cancel: a/b · b/c = a/c. Unknown variables answer −1, even for x / x. With many queries, a weighted union-find (store each node's ratio to its root) answers each query in near-O(1): x / y = ratio(x) / ratio(y) when they share a root.</p><p>Query variable never seen → −1; x / x for a known x → 1; variables in different components → −1; floating-point accumulation is fine at this scale (answers compared to 1e-5).</p></details>
+  </div>
 
-  <h3 id="p-bomb">9. Detonate the Maximum Bombs</h3>
-  <p><a href="https://leetcode.com/problems/detonate-the-maximum-bombs/" target="_blank" rel="noopener">LeetCode 2101</a> · Medium · PhonePe. Each bomb has a position and a radius. Detonating a bomb detonates every bomb inside its circle, which chain-react. You may detonate one bomb; return the maximum number that explode.</p>
-  <p><b>Key insight:</b> edges are <b>directed</b>: a big bomb can reach a small one that cannot reach it back. That is why union-find (which assumes symmetric connectivity) gives wrong answers here, and the most common mistake in this problem. Build the directed graph with a squared-distance check, then BFS from every bomb and take the largest reach.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-bomb">
+    <h3>9. Detonate the Maximum Bombs <a href="https://leetcode.com/problems/detonate-the-maximum-bombs/" target="_blank" rel="noopener">LeetCode 2101 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Bombs chain-react inside their radius. Max bombs from one detonation. PhonePe.</dd>
+        <dt>Insight</dt><dd>Edges are <b>directed</b> (big reaches small, not back), so BFS from every bomb, not union-find.</dd>
+        <dt>Cost</dt><dd>O(n³) worst case; n ≤ 100 ≈ 10^6 ops</dd></dl>
+    <div class="ptrs"><span>B1 (r=4) reaches B0; B0 (r=3) can't reach B1</span></div>
+    <div class="cells"><span class="cell win">B0 r3</span><span class="cell dim">←</span><span class="cell hl">B1 r4</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -542,34 +697,60 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n²) to build the graph, O(n · (n + E)) = O(n³) worst case for the BFS runs; n ≤ 100 makes that about 10^6 operations.</p>
-  <p><b>Edge cases:</b> squared distances overflow int (2 × (10^5)² = 2×10^10), so use <code>long</code>; comparing with <code>Math.sqrt</code> introduces floating-point error at the boundary; a bomb exactly on the circle edge counts; a single bomb → 1.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Details and edge cases</summary><p>O(n²) to build the graph, O(n · (n + E)) = O(n³) worst case for the BFS runs. Union-find assumes symmetric connectivity and gives wrong answers here; it is the most common mistake in this problem. Build the directed graph with a squared-distance check, then BFS from every bomb and take the largest reach.</p><p>Squared distances overflow int (2 × (10^5)² = 2×10^10), so use <code>long</code>; comparing with <code>Math.sqrt</code> introduces floating-point error at the boundary; a bomb exactly on the circle edge counts; a single bomb → 1.</p></details>
+  </div>
 
-  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
+  <h2 id="mistakes"><span class="n">08</span>Common mistakes</h2>
   <div class="callout warn"><b>Mistakes that cost candidates the round</b><ul>
     <li>Marking visited on dequeue (duplicates in the queue, TLE on large grids).</li>
     <li>Reversed edge direction in course problems (<code>[a, b]</code> means b before a).</li>
     <li>Using union-find for directed reachability (Detonate Bombs).</li>
-    <li>Running a separate BFS from every source in a spreading problem instead of one multi-source BFS.</li>
+    <li>A separate BFS per source instead of one multi-source BFS.</li>
     <li>Recursive DFS on big grids in Java without mentioning stack overflow.</li>
-    <li>Not saying the complexity in terms of V and E, or for grids R·C.</li>
+    <li>Not stating complexity in V and E, or R·C for grids.</li>
   </ul></div>
+
+  <h2 id="interview"><span class="n">09</span>Interview questions</h2>
   <details class="qa"><summary>Number of Islands: the grid is 10^6 × 10^6 and does not fit in memory. What now?</summary><p>Stream it row by row with union-find over the current and previous row only: union land cells with their left and upper neighbours, and count components that close (no land below them) as you go. Memory O(columns). In a distributed setting, partition into tiles, solve each, then merge components across tile borders with union-find.</p></details>
   <details class="qa"><summary>Number of Islands II: land is added one cell at a time; report the count after each addition.</summary><p>Union-find over cells (id = r · cols + c). Adding a cell increments the count; each successful union with a land neighbour decrements it. O(k · α(RC)) for k additions; re-running BFS each time would be O(k · RC).</p></details>
   <details class="qa"><summary>Kahn's algorithm vs DFS for topological sort: which do you prefer?</summary><p>Kahn: iterative (no stack overflow), detects cycles by counting, naturally gives levels (parallel build stages). DFS: reverse post-order, needs three colours to detect cycles, recursion depth risk. In production (a build tool, a workflow DAG, migration ordering) I would use Kahn for the level information.</p></details>
   <details class="qa"><summary>Course Schedule: return the minimum number of semesters if you can take any number of courses per semester.</summary><p>Run Kahn level by level; the number of levels is the length of the longest path in the DAG, which is the answer. With a cap of k courses per semester (LeetCode 1494) it becomes NP-hard in general and the intended solution is bitmask DP for n ≤ 15.</p></details>
   <details class="qa"><summary>Rotting Oranges: what if some oranges take 2 minutes to rot their neighbours?</summary><p>Edges now have weights, so plain BFS breaks. Use 0-1 BFS for weights 0/1, or Dijkstra with a min-heap keyed on time. Multi-source still works: push every rotten orange at time 0.</p></details>
   <details class="qa"><summary>Where does this show up in backend work?</summary><p>Topological sort orders Flyway-style migrations, Spring bean initialisation and workflow DAGs (Airflow, Temporal). Union-find appears in deduplicating accounts that share an email or phone (LeetCode 721, Accounts Merge). BFS is the "degrees of separation" query in social graphs. Saying one of these shows you can map the pattern to systems.</p></details>
-
-  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
   <details class="qa"><summary>Why does BFS find shortest paths in an unweighted graph but DFS does not?</summary><p>BFS processes all nodes at distance d before any node at distance d + 1, so the first time it reaches a node is via a shortest path. DFS may reach a node first along a long path.</p></details>
   <details class="qa"><summary>How does Kahn's algorithm detect a cycle?</summary><p>Nodes on a cycle always have an incoming edge from another cycle node, so their indegree never reaches 0 and they are never polled. If the number of polled nodes is less than V, there is a cycle.</p></details>
   <details class="qa"><summary>What do path compression and union by rank each fix?</summary><p>Union by rank keeps trees shallow (O(log n) height) when merging; path compression flattens paths during find so repeated queries are fast. Together the amortised cost is O(α(n)).</p></details>
   <details class="qa"><summary>Given a / b = 2 and b / c = 3, what is c / a, and which edges does the DFS use?</summary><p>c → b with weight 1/3, then b → a with weight 1/2: c / a = 1/6 ≈ 0.1667.</p></details>
   <details class="qa"><summary>Why can't Detonate the Maximum Bombs be solved with union-find?</summary><p>Reachability is directed: bomb A reaching B does not mean B reaches A. Union-find merges symmetrically and would overcount.</p></details>
 
-  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Grid BFS on a 1000×1000 board gets TLE. Most likely cause?</p>
+    <div class="opts"><button class="opt" type="button">Using ArrayDeque instead of LinkedList</button><button class="opt" type="button">Marking cells visited when polled, so they're enqueued many times</button><button class="opt" type="button">Checking 4 neighbours instead of 8</button></div>
+    <p class="why">Mark on enqueue. Otherwise every neighbour of an unprocessed cell queues it again.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Fire starts in 50 cells at once. How do you get the time to burn the whole grid?</p>
+    <div class="opts"><button class="opt" type="button">BFS from each fire cell, take the max</button><button class="opt" type="button">DFS from the first fire cell</button><button class="opt" type="button">One BFS with all 50 cells in the queue at time 0</button></div>
+    <p class="why">Multi-source BFS: O(R·C) once, instead of 50 separate BFS runs. Levels = minutes.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Kahn's algorithm polls 5 of 7 nodes and the queue is empty. What does that tell you?</p>
+    <div class="opts"><button class="opt" type="button">The graph has a cycle; no valid order exists</button><button class="opt" type="button">The graph is disconnected</button><button class="opt" type="button">You started from the wrong node</button></div>
+    <p class="why">Nodes on a cycle never reach indegree 0. Disconnected parts are fine: their sources start in the queue too.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why is union-find wrong for Detonate the Maximum Bombs?</p>
+    <div class="opts"><button class="opt" type="button">It is too slow for n = 100</button><button class="opt" type="button">Reach is one-way, but union-find merges both ways</button><button class="opt" type="button">It can't handle circles</button></div>
+    <p class="why">A big bomb may reach a small one that can't reach back. Union-find would put them in one group and overcount.</p></div>
+
+  <h2 id="cheat"><span class="n">11</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Fewest steps, unweighted → BFS. Several sources → one multi-source BFS, levels = time.</li>
+    <li>Reachability / count regions → DFS or BFS; iterative on big grids in Java.</li>
+    <li>Mark visited on enqueue.</li>
+    <li>Dependencies / directed cycle → Kahn: indegree-0 queue; short order = cycle.</li>
+    <li><code>[a, b]</code> prerequisite = edge b → a.</li>
+    <li>Connectivity with edges arriving → union-find, path compression + rank, O(α(n)).</li>
+    <li>Directed reach (bombs) → BFS per node, not union-find.</li>
+    <li>Ratios → weighted graph, multiply along the path.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">12</span>Sources / go deeper</h2>
   <ul class="sources">
     <li>Company tags: the 2025–26 interview reports collected in <a href="../index.html">the playbook</a>.</li>
     <li><a href="https://cp-algorithms.com/graph/breadth-first-search.html" target="_blank" rel="noopener">cp-algorithms: breadth-first search</a></li>
@@ -581,5 +762,6 @@ class Solution {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-heaps-intervals.html">Heaps and intervals</a> · <a href="dsa-dynamic-programming.html">Dynamic programming</a> · <a href="dsa-mixed-set.html">Mixed set</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

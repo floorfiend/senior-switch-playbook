@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html" aria-current="page">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../backend.html">Lesson · Java &amp; backend</a></div>
   <h1>Java Concurrency</h1>
-  <p class="lede">The Java memory model, locks, atomics, executors, CompletableFuture and virtual threads, explained from the ground up, plus the exact coding questions companies ask: double-checked locking, odd/even printers, a semaphore gate, a thread pool on a bounded queue, a custom CompletableFuture, and five LeetCode concurrency problems.</p>
+  <p class="lede">Reason about races, visibility and deadlocks in Java, and write the thread-safe classes companies ask for in machine-coding rounds.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 6–8 hours</span>
     <span class="fact"><b>Round:</b> Java core / machine coding / LLD viva</span>
@@ -20,19 +20,48 @@
   </div>
   <div class="chips"><span class="chip hot">Goldman Sachs</span><span class="chip hot">Walmart</span><span class="chip">Media.net</span><span class="chip">Nykaa</span><span class="chip">Freshworks</span><span class="chip">Google</span><span class="chip">Rubrik</span><span class="chip">CleverTap</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Every bug is atomicity, visibility or ordering.</li>
+    <li><code>volatile</code> fixes visibility; only locks or atomics fix <code>count++</code>.</li>
+    <li>Deadlock needs a cycle: lock in one global order or use <code>tryLock</code>.</li>
+    <li>Bound every queue and pool; virtual threads for blocking I/O.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Two clerks updating one railway reservation chart. If both read "seat 12 free" and both write a name, one booking is lost (atomicity). If one clerk works from a photocopy, she never sees the other's update (visibility). If each grabs one register and waits for the other's, nobody moves (deadlock).</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#why">Why interviewers ask this</a></li>
-    <li><a href="#concepts">Core concepts</a></li>
-    <li><a href="#internals">How it works internally</a></li>
+    <li><a href="#concepts">Memory model, volatile and DCL</a></li>
+    <li><a href="#locks">Locks and deadlock</a></li>
+    <li><a href="#atomics">Atomics and CAS</a></li>
+    <li><a href="#executors">Executors and pool sizing</a></li>
+    <li><a href="#cf">CompletableFuture</a></li>
+    <li><a href="#virtual">Virtual threads</a></li>
     <li><a href="#practical">Company questions, solved</a></li>
     <li><a href="#leetcode">Worked LeetCode problems</a></li>
+    <li><a href="#quiz">Quick check</a></li>
     <li><a href="#qa">Interview questions</a></li>
-    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
-  <p>Backend services are concurrent whether you think about it or not: every Tomcat request thread, Kafka listener, <code>@Async</code> method and scheduled job shares beans and caches. Interviewers use concurrency to separate engineers who have debugged a production race from those who have only read about one. What the reports show:</p>
+  <div class="tbl"><table>
+    <tr><th>Company</th><th>Question</th></tr>
+    <tr><td>Media.net, Nykaa, Goldman Sachs, Walmart</td><td>Double-checked locking Singleton; why <code>volatile</code>?</td></tr>
+    <tr><td>Freshworks</td><td>Deadlocks you have seen in production: found how, fixed how?</td></tr>
+    <tr><td>Google (L5)</td><td>Your own CompletableFuture with chaining.</td></tr>
+    <tr><td>Rubrik</td><td>Bounded blocking queue, then a thread pool on it.</td></tr>
+    <tr><td>Goldman Sachs</td><td>Two threads print odd and even in order.</td></tr>
+    <tr><td>CleverTap</td><td>At most two threads in a section (Semaphore).</td></tr>
+  </table></div>
+  <div class="keys">
+    <div class="key"><h4>Atomicity</h4><p>A compound action (read, add, write) is not interleaved with another thread's.</p></div>
+    <div class="key"><h4>Visibility</h4><p>A write by one thread is actually seen by another.</p></div>
+    <div class="key"><h4>Ordering</h4><p>The compiler and CPU do not reorder steps in a way that breaks you.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: why every backend engineer gets this</summary>
+    <p>Backend services are concurrent whether you think about it or not: every Tomcat request thread, Kafka listener, <code>@Async</code> method and scheduled job shares beans and caches. Interviewers use concurrency to separate engineers who have debugged a production race from those who have only read about one. What the reports show:</p>
   <ul>
     <li><b>Media.net, Nykaa, Goldman Sachs, Walmart</b>: write a thread-safe Singleton with double-checked locking, then explain why <code>volatile</code> is required.</li>
     <li><b>Freshworks</b>: "tell me about deadlocks you have seen in production", how you found them and how you fixed them.</li>
@@ -42,34 +71,35 @@
     <li><b>CleverTap</b>: allow at most two threads into a section at once (Semaphore).</li>
   </ul>
   <p>These all test the same three ideas: <b>atomicity</b> (a compound action is not interleaved), <b>visibility</b> (a write by one thread is seen by another) and <b>ordering</b> (the compiler and CPU do not reorder in a way that breaks you). Learn those and every question becomes a variation.</p>
+  </details>
 
-  <h2 id="concepts"><span class="n">02</span>Core concepts, from scratch</h2>
-  <h3>The Java memory model and happens-before</h3>
-  <p>Each core has caches and store buffers; the JIT keeps values in registers, hoists reads out of loops and reorders independent statements. Without synchronisation, a thread may never see another thread's write, or may see writes in a different order than they were made. The JMM (JLS chapter 17) defines when a write is guaranteed visible: if write W <em>happens-before</em> read R, R sees W (or something later). The edges you use daily:</p>
-  <div class="tbl"><table>
-    <tr><th>Rule</th><th>Happens-before edge</th></tr>
-    <tr><td>Program order</td><td>Each action in a thread happens-before later actions in that same thread.</td></tr>
-    <tr><td>Monitor lock</td><td>Unlocking a monitor happens-before every later lock of that same monitor.</td></tr>
-    <tr><td>Volatile</td><td>A write to a volatile field happens-before every later read of that field.</td></tr>
-    <tr><td>Thread start / join</td><td><code>t.start()</code> happens-before anything in <code>t</code>; everything in <code>t</code> happens-before <code>t.join()</code> returns.</td></tr>
-    <tr><td>Final fields</td><td>Values written to <code>final</code> fields in a constructor are visible to any thread that sees the reference, if <code>this</code> did not escape.</td></tr>
-    <tr><td>java.util.concurrent</td><td>Putting into a <code>BlockingQueue</code>/<code>ConcurrentHashMap</code>, releasing a lock or semaphore, completing a Future: all happen-before the matching take/get/acquire.</td></tr>
-    <tr><td>Transitivity</td><td>If A hb B and B hb C, then A hb C. This is how a volatile flag "publishes" ordinary fields written before it.</td></tr>
-  </table></div>
-
-  <h3>volatile versus synchronized</h3>
-  <div class="tbl"><table>
-    <tr><th></th><th>volatile</th><th>synchronized / Lock</th></tr>
-    <tr><td>Visibility</td><td>Yes</td><td>Yes (on unlock/lock of the same monitor)</td></tr>
-    <tr><td>Prevents reordering around it</td><td>Yes (acquire/release semantics)</td><td>Yes</td></tr>
-    <tr><td>Atomic compound actions (<code>count++</code>, check-then-act)</td><td>No</td><td>Yes</td></tr>
-    <tr><td>Blocking</td><td>Never</td><td>Threads wait for the lock</td></tr>
-    <tr><td>Use for</td><td>Flags (<code>running</code>), safe publication of an immutable object, DCL</td><td>Invariants that span several fields or steps</td></tr>
-  </table></div>
-  <p><code>volatile int count; count++</code> is still three steps (read, add, write) and loses updates. For a counter use <code>AtomicInteger</code>/<code>LongAdder</code>.</p>
-
-  <h3>Double-checked locking Singleton</h3>
-  <pre><code>final class ConfigRegistry {
+  <h2 id="concepts"><span class="n">02</span>Memory model, volatile and DCL</h2>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>count</th></tr></thead><tbody>
+    <tr><td>t1</td><td>read count = 5</td><td></td><td>5</td></tr>
+    <tr><td>t2</td><td></td><td>read count = 5</td><td>5</td></tr>
+    <tr><td>t3</td><td>write 6</td><td></td><td>6</td></tr>
+    <tr><td>t4</td><td></td><td>write 6</td><td class="bad">6, not 7</td></tr>
+  </tbody></table></div>
+  <p><code>volatile int count; count++</code> still loses updates like this: it is three steps. Use <code>AtomicInteger</code>/<code>LongAdder</code>.</p>
+  <p>The <dfn title="Java Memory Model, JLS chapter 17: the rules for when one thread's write is visible to another">JMM</dfn> guarantees a read sees a write only if the write <dfn title="A guaranteed ordering edge: everything before the edge is visible after it">happens-before</dfn> the read. The edges you use daily:</p>
+  <div class="keys">
+    <div class="key"><h4>Unlock → lock</h4><p>Releasing a monitor happens-before the next lock of the same monitor.</p></div>
+    <div class="key"><h4>Volatile write → read</h4><p>Everything before a volatile write is visible after reading it.</p></div>
+    <div class="key"><h4>start / join</h4><p><code>t.start()</code> before anything in <code>t</code>; all of <code>t</code> before <code>join()</code> returns.</p></div>
+    <div class="key"><h4>j.u.c handoffs</h4><p>Queue put, lock release, Future completion happen-before the matching take, acquire, get.</p></div>
+  </div>
+  <div class="vs">
+    <div><h4>volatile</h4><ul><li class="pro">Visibility and ordering</li><li class="pro">Never blocks</li><li class="con">No atomic <code>count++</code> or check-then-act</li></ul><p class="when">Flags, publishing an immutable object, DCL.</p></div>
+    <div class="pick"><h4>synchronized / Lock <span class="tag">invariants</span></h4><ul><li class="pro">Visibility, ordering and atomicity</li><li class="con">Threads wait for the lock</li></ul><p class="when">Invariants spanning several fields or steps.</p></div>
+  </div>
+  <h3>Double-checked locking: why volatile</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A (no volatile)</th><th>Thread B</th></tr></thead><tbody>
+    <tr><td>t1</td><td>lock; <code>instance == null</code>; allocate</td><td></td></tr>
+    <tr><td>t2</td><td>reference published <b>before</b> constructor writes</td><td></td></tr>
+    <tr><td>t3</td><td></td><td>first check: <code>instance != null</code>, skip lock</td></tr>
+    <tr><td>t4</td><td>constructor finishes</td><td class="bad">uses a half-built object</td></tr>
+  </tbody></table></div>
+  <details class="code"><summary>Show Java: DCL, holder idiom and enum Singleton</summary><pre><code>final class ConfigRegistry {
     private static volatile ConfigRegistry instance;   // volatile is what makes DCL correct
 
     private ConfigRegistry() { }
@@ -116,23 +146,165 @@ class Singletons {
             throw new AssertionError();
         System.out.println("one instance: " + seen.size() + " " + EnumSingleton.INSTANCE);
     }
-}</code></pre>
-  <p>Why <code>volatile</code>: <code>instance = new ConfigRegistry()</code> is allocate, run constructor, assign reference. Without volatile the JIT or CPU may publish the reference before the constructor's writes are visible. A second thread passes the first null check without locking and uses a half-built object. The volatile write creates a happens-before edge to the unlocked read, which forbids that. Copying to a local (<code>local</code>) means one volatile read on the hot path instead of two. In an interview, write DCL because they asked, then say the holder idiom is simpler (class initialisation is lazy and guarded by the JVM), and the enum is the only form that survives reflection and serialisation attacks. In Spring, the container already gives you singletons; you rarely write any of these.</p>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: the memory model and DCL in full</summary>
+    <p><code>volatile int count; count++</code> is still three steps (read, add, write) and loses updates. For a counter use <code>AtomicInteger</code>/<code>LongAdder</code>.</p>
+    <p>Each core has caches and store buffers; the JIT keeps values in registers, hoists reads out of loops and reorders independent statements. Without synchronisation, a thread may never see another thread's write, or may see writes in a different order than they were made. The JMM (JLS chapter 17) defines when a write is guaranteed visible: if write W <em>happens-before</em> read R, R sees W (or something later). The edges you use daily:</p>
+    <div class="tbl"><table>
+      <tr><th>Rule</th><th>Happens-before edge</th></tr>
+      <tr><td>Program order</td><td>Each action in a thread happens-before later actions in that same thread.</td></tr>
+      <tr><td>Monitor lock</td><td>Unlocking a monitor happens-before every later lock of that same monitor.</td></tr>
+      <tr><td>Volatile</td><td>A write to a volatile field happens-before every later read of that field.</td></tr>
+      <tr><td>Thread start / join</td><td><code>t.start()</code> happens-before anything in <code>t</code>; everything in <code>t</code> happens-before <code>t.join()</code> returns.</td></tr>
+      <tr><td>Final fields</td><td>Values written to <code>final</code> fields in a constructor are visible to any thread that sees the reference, if <code>this</code> did not escape.</td></tr>
+      <tr><td>java.util.concurrent</td><td>Putting into a <code>BlockingQueue</code>/<code>ConcurrentHashMap</code>, releasing a lock or semaphore, completing a Future: all happen-before the matching take/get/acquire.</td></tr>
+      <tr><td>Transitivity</td><td>If A hb B and B hb C, then A hb C. This is how a volatile flag "publishes" ordinary fields written before it.</td></tr>
+    </table></div>
+    <div class="tbl"><table>
+      <tr><th></th><th>volatile</th><th>synchronized / Lock</th></tr>
+      <tr><td>Visibility</td><td>Yes</td><td>Yes (on unlock/lock of the same monitor)</td></tr>
+      <tr><td>Prevents reordering around it</td><td>Yes (acquire/release semantics)</td><td>Yes</td></tr>
+      <tr><td>Atomic compound actions (<code>count++</code>, check-then-act)</td><td>No</td><td>Yes</td></tr>
+      <tr><td>Blocking</td><td>Never</td><td>Threads wait for the lock</td></tr>
+      <tr><td>Use for</td><td>Flags (<code>running</code>), safe publication of an immutable object, DCL</td><td>Invariants that span several fields or steps</td></tr>
+    </table></div>
+    <p>Why <code>volatile</code>: <code>instance = new ConfigRegistry()</code> is allocate, run constructor, assign reference. Without volatile the JIT or CPU may publish the reference before the constructor's writes are visible. A second thread passes the first null check without locking and uses a half-built object. The volatile write creates a happens-before edge to the unlocked read, which forbids that. Copying to a local (<code>local</code>) means one volatile read on the hot path instead of two. In an interview, write DCL because they asked, then say the holder idiom is simpler (class initialisation is lazy and guarded by the JVM), and the enum is the only form that survives reflection and serialisation attacks. In Spring, the container already gives you singletons; you rarely write any of these.</p>
+  </details>
 
-  <h2 id="internals"><span class="n">03</span>How it works internally</h2>
-  <h3>synchronized and monitors</h3>
-  <p>Every object can act as a monitor. HotSpot starts with a cheap lightweight lock (a CAS on the object header's mark word) and inflates to a heavyweight <code>ObjectMonitor</code> with an OS-level wait queue only under contention or when <code>wait()</code> is called. Biased locking was disabled by default in JDK 15 (JEP 374) and later removed. <code>synchronized</code> is reentrant, cannot be interrupted while waiting for the lock, has no timeout and no fairness option. <code>wait</code>/<code>notify</code> must be called while holding the monitor, and <code>wait</code> must always sit inside a <code>while</code> loop because of spurious wake-ups and because another thread may have changed the condition before you reacquired the lock.</p>
+  <h2 id="locks"><span class="n">03</span>Locks and deadlock</h2>
+  <div class="stepper"><b class="title">Two transfers, two accounts, one deadlock</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node">transfer-a-to-b<small>transferUnsafe(a, b, 10)</small></span><span class="node">transfer-b-to-a<small>transferUnsafe(b, a, 20)</small></span></div>
+        <div class="down">↓ <small>synchronized</small></div>
+        <div class="tier"><small>Monitors</small><span class="node store">Account 1 (a)<small>free</small></span><span class="node store">Account 2 (b)<small>free</small></span></div>
+      </div>
+      <figcaption>Both threads start. Each will lock its <code>from</code> account, sleep 50 ms, then lock <code>to</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node hl">transfer-a-to-b<small>holds a, sleeping</small></span><span class="node">transfer-b-to-a<small>starting</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><small>Monitors</small><span class="node hl">Account 1 (a)<small>held by a-to-b</small></span><span class="node store">Account 2 (b)<small>free</small></span></div>
+      </div>
+      <figcaption>T1 enters <code>synchronized (a)</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node hl">transfer-a-to-b<small>holds a, sleeping</small></span><span class="node hl">transfer-b-to-a<small>holds b, sleeping</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><small>Monitors</small><span class="node hl">Account 1 (a)<small>held by a-to-b</small></span><span class="node hl">Account 2 (b)<small>held by b-to-a</small></span></div>
+      </div>
+      <figcaption>T2 enters <code>synchronized (b)</code>. Each now holds one lock: hold-and-wait is set up.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node bad">transfer-a-to-b<small>BLOCKED on b</small></span><span class="node hl">transfer-b-to-a<small>holds b</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><small>Monitors</small><span class="node hl">Account 1 (a)<small>held by a-to-b</small></span><span class="node hl">Account 2 (b)<small>held by b-to-a</small></span></div>
+      </div>
+      <figcaption>T1 wakes and asks for b. It is taken, so T1 blocks, still holding a.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node bad">transfer-a-to-b<small>BLOCKED on b</small></span><span class="node bad">transfer-b-to-a<small>BLOCKED on a</small></span></div>
+        <div class="down">↓ <small>circular wait</small></div>
+        <div class="tier"><small>Monitors</small><span class="node bad">Account 1 (a)</span><span class="node bad">Account 2 (b)</span></div>
+      </div>
+      <figcaption>T2 asks for a: a cycle. Both wait forever; CPU near zero, request threads pile up.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="ptrs"><span class="on">jcmd &lt;pid&gt; Thread.print</span><span>jstack</span><span>kill -3</span><span>/actuator/threaddump</span></div>
+      <div class="cells"><span class="cell bad">Found one Java-level deadlock</span></div>
+      <figcaption>A thread dump names the cycle: "locked X, waiting to lock Y" on both threads.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><small>Threads</small><span class="node hl">transfer-a-to-b<small>locks 1, then 2</small></span><span class="node dim">transfer-b-to-a<small>waits for 1, holds nothing</small></span></div>
+        <div class="down">↓ <small>global order by id</small></div>
+        <div class="tier"><small>Monitors</small><span class="node hl">Account 1</span><span class="node hl">Account 2</span></div>
+      </div>
+      <figcaption>Fix (<code>transferSafe</code>): both lock the lower id first, so no cycle can form. Output: <code>110 90</code>.</figcaption>
+    </figure>
+  </div></div>
+  <details class="code"><summary>Show Java: Deadlock demo</summary><pre><code>class Account {
+    final long id;
+    long balance;
 
-  <h3>ReentrantLock, ReadWriteLock, Condition, tryLock</h3>
-  <p><code>ReentrantLock</code> is built on <code>AbstractQueuedSynchronizer</code> (AQS): an <code>int state</code> changed by CAS (0 = free, n = hold count) and a FIFO queue of parked waiter nodes. Semaphore, CountDownLatch and ReentrantReadWriteLock are the same AQS with a different meaning for <code>state</code>. What ReentrantLock adds over <code>synchronized</code>:</p>
-  <ul>
-    <li><code>tryLock()</code> and <code>tryLock(timeout)</code>: give up instead of waiting forever. The standard tool against deadlock in code paths you cannot order.</li>
-    <li><code>lockInterruptibly()</code>: a blocked thread can be cancelled.</li>
-    <li>Fairness option (<code>new ReentrantLock(true)</code>): FIFO handoff, lower throughput.</li>
-    <li>Multiple <code>Condition</code>s per lock (<code>notFull</code>, <code>notEmpty</code>), so you wake only the right waiters instead of <code>notifyAll</code>.</li>
-  </ul>
-  <p>The cost: you must <code>unlock()</code> in <code>finally</code>. <code>ReentrantReadWriteLock</code> lets many readers in at once and gives writers exclusive access; it pays off only for read-heavy data where reads are not trivially short. It is not upgradable (holding the read lock and asking for the write lock deadlocks); <code>StampedLock</code> adds optimistic reads.</p>
-  <pre><code>import java.util.HashMap;
+    Account(long id, long balance) { this.id = id; this.balance = balance; }
+}
+
+class Deadlock {
+    static void transferUnsafe(Account from, Account to, long amount) {
+        synchronized (from) {                  // T1 locks A then wants B; T2 locks B then wants A
+            sleep(50);
+            synchronized (to) {
+                from.balance -= amount;
+                to.balance += amount;
+            }
+        }
+    }
+
+    static void transferSafe(Account from, Account to, long amount) {
+        Account first = from.id &lt; to.id ? from : to;     // global lock order by id
+        Account second = first == from ? to : from;
+        synchronized (first) {
+            synchronized (second) {
+                from.balance -= amount;
+                to.balance += amount;
+            }
+        }
+    }
+
+    static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Account a = new Account(1, 100);
+        Account b = new Account(2, 100);
+        boolean unsafe = args.length &gt; 0;
+        Thread t1 = new Thread(() -&gt; { if (unsafe) transferUnsafe(a, b, 10); else transferSafe(a, b, 10); }, "transfer-a-to-b");
+        Thread t2 = new Thread(() -&gt; { if (unsafe) transferUnsafe(b, a, 20); else transferSafe(b, a, 20); }, "transfer-b-to-a");
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println(a.balance + " " + b.balance);  // 110 90 with transferSafe
+    }
+}</code></pre></details>
+  <details class="code"><summary>Show the real thread dump</summary><pre><code>Found one Java-level deadlock:
+=============================
+"transfer-a-to-b":
+  waiting to lock monitor 0x00000009c70c5340 (object 0x00000004e4e18fb0, a Account),
+  which is held by "transfer-b-to-a"
+
+"transfer-b-to-a":
+  waiting to lock monitor 0x00000009c70c5260 (object 0x00000004e4e18f90, a Account),
+  which is held by "transfer-a-to-b"
+
+Java stack information for the threads listed above:
+===================================================
+"transfer-a-to-b":
+        at Deadlock.transferUnsafe(Deadlock.java:13)
+        - waiting to lock &lt;0x00000004e4e18fb0&gt; (a Account)
+        - locked &lt;0x00000004e4e18f90&gt; (a Account)
+
+Found 1 deadlock.</code></pre></details>
+  <div class="keys">
+    <div class="key"><h4>Four conditions</h4><p>Mutual exclusion, hold-and-wait, no pre-emption, circular wait (Coffman). Break any one.</p></div>
+    <div class="key"><h4>Break the cycle</h4><p>One global lock order (by id), or <code>tryLock(timeout)</code> with back-off.</p></div>
+    <div class="key"><h4>Three dumps, 5 s apart</h4><p>Threads stuck on the same frame in all three are suspects. Also catches livelock and pool starvation.</p></div>
+  </div>
+  <div class="vs">
+    <div><h4>synchronized</h4><ul><li class="pro">Auto-released, simplest</li><li class="con">No timeout, not interruptible, no fairness</li><li class="con">One wait set per monitor</li></ul><p class="when">Short critical sections.</p></div>
+    <div class="pick"><h4>ReentrantLock <span class="tag">when you need control</span></h4><ul><li class="pro"><code>tryLock</code>, <code>lockInterruptibly</code>, fairness</li><li class="pro">Several <code>Condition</code>s (notFull, notEmpty)</li><li class="con">Must <code>unlock()</code> in <code>finally</code></li></ul><p class="when">Deadlock-prone paths, bounded queues.</p></div>
+  </div>
+  <details class="code"><summary>Show Java: ReentrantLock, ReadWriteLock and tryLock</summary><pre><code>import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -189,84 +361,38 @@ class Locks {
         Wallet w = new Wallet();
         System.out.println(c.get("pro") + " " + w.tryDebit(60) + " " + w.tryDebit(60)); // 999 true false
     }
-}</code></pre>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: monitors, AQS, ReadWriteLock and reading dumps</summary>
+    <h3>synchronized and monitors</h3>
+    <p>Every object can act as a monitor. HotSpot starts with a cheap lightweight lock (a CAS on the object header's mark word) and inflates to a heavyweight <code>ObjectMonitor</code> with an OS-level wait queue only under contention or when <code>wait()</code> is called. Biased locking was disabled by default in JDK 15 (JEP 374) and later removed. <code>synchronized</code> is reentrant, cannot be interrupted while waiting for the lock, has no timeout and no fairness option. <code>wait</code>/<code>notify</code> must be called while holding the monitor, and <code>wait</code> must always sit inside a <code>while</code> loop because of spurious wake-ups and because another thread may have changed the condition before you reacquired the lock.</p>
+    <h3>ReentrantLock, ReadWriteLock, Condition, tryLock</h3>
+    <p><code>ReentrantLock</code> is built on <code>AbstractQueuedSynchronizer</code> (AQS): an <code>int state</code> changed by CAS (0 = free, n = hold count) and a FIFO queue of parked waiter nodes. Semaphore, CountDownLatch and ReentrantReadWriteLock are the same AQS with a different meaning for <code>state</code>. What ReentrantLock adds over <code>synchronized</code>:</p>
+    <ul>
+      <li><code>tryLock()</code> and <code>tryLock(timeout)</code>: give up instead of waiting forever. The standard tool against deadlock in code paths you cannot order.</li>
+      <li><code>lockInterruptibly()</code>: a blocked thread can be cancelled.</li>
+      <li>Fairness option (<code>new ReentrantLock(true)</code>): FIFO handoff, lower throughput.</li>
+      <li>Multiple <code>Condition</code>s per lock (<code>notFull</code>, <code>notEmpty</code>), so you wake only the right waiters instead of <code>notifyAll</code>.</li>
+    </ul>
+    <p>The cost: you must <code>unlock()</code> in <code>finally</code>. <code>ReentrantReadWriteLock</code> lets many readers in at once and gives writers exclusive access; it pays off only for read-heavy data where reads are not trivially short. It is not upgradable (holding the read lock and asking for the write lock deadlocks); <code>StampedLock</code> adds optimistic reads.</p>
+    <h3>Deadlock: causes and how to find one</h3>
+    <p>A deadlock needs all four Coffman conditions: mutual exclusion, hold-and-wait, no pre-emption, circular wait. Break any one. In practice you break circular wait with a global lock order, or hold-and-wait with <code>tryLock</code> and back-off. The classic production causes: two transfers locking accounts in opposite order; nested <code>synchronized</code> calls across two services' beans; a thread holding a lock while blocking on a bounded pool whose threads need that lock; database row locks taken in different orders by two transactions (Postgres detects and aborts one with <code>deadlock detected</code>).</p>
+    <p>Run it with an argument to use <code>transferUnsafe</code> and it hangs. Take a thread dump with <code>jstack &lt;pid&gt;</code>, <code>jcmd &lt;pid&gt; Thread.print</code>, <code>kill -3 &lt;pid&gt;</code> (prints to stdout), or Spring Boot Actuator's <code>/actuator/threaddump</code>. The JVM detects monitor and <code>ReentrantLock</code> cycles and prints them at the end. This is real output from the program above (shown in "Show the real thread dump").</p>
+    <p>Read it as: thread state <code>BLOCKED (on object monitor)</code>, "locked X, waiting to lock Y", and another thread "locked Y, waiting to lock X". For <code>ReentrantLock</code> the threads show <code>WAITING (parking)</code> and the dump lists "Locked ownable synchronizers". Take three dumps 5 seconds apart: threads stuck on the same frame in all three are your suspects, which also catches livelocks and pool starvation that the JVM does not flag as deadlocks. A good Freshworks-style answer names the symptom (request latency climbing, Tomcat threads exhausted, CPU near zero), the evidence (thread dump), the fix (lock ordering or <code>tryLock</code> with timeout) and the guard (an alert on busy thread count).</p>
+  </details>
 
-  <h3>Deadlock: causes and how to find one</h3>
-  <p>A deadlock needs all four Coffman conditions: mutual exclusion, hold-and-wait, no pre-emption, circular wait. Break any one. In practice you break circular wait with a global lock order, or hold-and-wait with <code>tryLock</code> and back-off. The classic production causes: two transfers locking accounts in opposite order; nested <code>synchronized</code> calls across two services' beans; a thread holding a lock while blocking on a bounded pool whose threads need that lock; database row locks taken in different orders by two transactions (Postgres detects and aborts one with <code>deadlock detected</code>).</p>
-  <pre><code>class Account {
-    final long id;
-    long balance;
-
-    Account(long id, long balance) { this.id = id; this.balance = balance; }
-}
-
-class Deadlock {
-    static void transferUnsafe(Account from, Account to, long amount) {
-        synchronized (from) {                  // T1 locks A then wants B; T2 locks B then wants A
-            sleep(50);
-            synchronized (to) {
-                from.balance -= amount;
-                to.balance += amount;
-            }
-        }
-    }
-
-    static void transferSafe(Account from, Account to, long amount) {
-        Account first = from.id &lt; to.id ? from : to;     // global lock order by id
-        Account second = first == from ? to : from;
-        synchronized (first) {
-            synchronized (second) {
-                from.balance -= amount;
-                to.balance += amount;
-            }
-        }
-    }
-
-    static void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    public static void main(String[] args) throws Exception {
-        Account a = new Account(1, 100);
-        Account b = new Account(2, 100);
-        boolean unsafe = args.length &gt; 0;
-        Thread t1 = new Thread(() -&gt; { if (unsafe) transferUnsafe(a, b, 10); else transferSafe(a, b, 10); }, "transfer-a-to-b");
-        Thread t2 = new Thread(() -&gt; { if (unsafe) transferUnsafe(b, a, 20); else transferSafe(b, a, 20); }, "transfer-b-to-a");
-        t1.start();
-        t2.start();
-        t1.join();
-        t2.join();
-        System.out.println(a.balance + " " + b.balance);  // 110 90 with transferSafe
-    }
-}</code></pre>
-  <p>Run it with an argument to use <code>transferUnsafe</code> and it hangs. Take a thread dump with <code>jstack &lt;pid&gt;</code>, <code>jcmd &lt;pid&gt; Thread.print</code>, <code>kill -3 &lt;pid&gt;</code> (prints to stdout), or Spring Boot Actuator's <code>/actuator/threaddump</code>. The JVM detects monitor and <code>ReentrantLock</code> cycles and prints them at the end. This is real output from the program above:</p>
-  <pre><code>Found one Java-level deadlock:
-=============================
-"transfer-a-to-b":
-  waiting to lock monitor 0x00000009c70c5340 (object 0x00000004e4e18fb0, a Account),
-  which is held by "transfer-b-to-a"
-
-"transfer-b-to-a":
-  waiting to lock monitor 0x00000009c70c5260 (object 0x00000004e4e18f90, a Account),
-  which is held by "transfer-a-to-b"
-
-Java stack information for the threads listed above:
-===================================================
-"transfer-a-to-b":
-        at Deadlock.transferUnsafe(Deadlock.java:13)
-        - waiting to lock &lt;0x00000004e4e18fb0&gt; (a Account)
-        - locked &lt;0x00000004e4e18f90&gt; (a Account)
-
-Found 1 deadlock.</code></pre>
-  <p>Read it as: thread state <code>BLOCKED (on object monitor)</code>, "locked X, waiting to lock Y", and another thread "locked Y, waiting to lock X". For <code>ReentrantLock</code> the threads show <code>WAITING (parking)</code> and the dump lists "Locked ownable synchronizers". Take three dumps 5 seconds apart: threads stuck on the same frame in all three are your suspects, which also catches livelocks and pool starvation that the JVM does not flag as deadlocks. A good Freshworks-style answer names the symptom (request latency climbing, Tomcat threads exhausted, CPU near zero), the evidence (thread dump), the fix (lock ordering or <code>tryLock</code> with timeout) and the guard (an alert on busy thread count).</p>
-
-  <h3>Atomics and CAS</h3>
-  <p><code>compareAndSet(expected, new)</code> is one CPU instruction (<code>LOCK CMPXCHG</code> on x86, LSE <code>CAS</code> or LL/SC on ARM): it writes only if the current value is still <code>expected</code>. Atomics loop until their CAS wins, so they never block, but under heavy contention many threads spin and retry. <code>LongAdder</code> fixes contention by spreading increments across cells and summing on read: use it for metrics counters, use <code>AtomicLong</code> when you need the exact value on each update (ID generators, compare-and-set state machines). The ABA problem (value goes A to B to A and a CAS wrongly succeeds) matters for lock-free stacks; <code>AtomicStampedReference</code> adds a version.</p>
-  <pre><code>import java.util.concurrent.atomic.AtomicLong;
+  <h2 id="atomics"><span class="n">04</span>Atomics and CAS</h2>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>value</th></tr></thead><tbody>
+    <tr><td>t1</td><td>read 5</td><td>read 5</td><td>5</td></tr>
+    <tr><td>t2</td><td><code>CAS(5 → 6)</code> succeeds</td><td></td><td class="ok">6</td></tr>
+    <tr><td>t3</td><td></td><td><code>CAS(5 → 6)</code> fails: value is 6</td><td>6</td></tr>
+    <tr><td>t4</td><td></td><td>re-read 6, <code>CAS(6 → 7)</code> succeeds</td><td class="ok">7</td></tr>
+  </tbody></table></div>
+  <p><dfn title="Compare-and-swap: one CPU instruction that writes only if the value is still the expected one">CAS</dfn> never blocks; the loser just retries. Under heavy contention many threads spin.</p>
+  <div class="vs">
+    <div><h4>AtomicLong</h4><ul><li class="pro">Exact value on every update</li><li class="con">One hot cache line under contention</li></ul><p class="when">ID generators, CAS state machines.</p></div>
+    <div class="pick"><h4>LongAdder <span class="tag">counters</span></h4><ul><li class="pro">Spreads increments across cells</li><li class="con">Sum is computed on read</li></ul><p class="when">Metrics and hit counters.</p></div>
+  </div>
+  <details class="code"><summary>Show Java: atomics demo</summary><pre><code>import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 class Atomics {
@@ -300,9 +426,10 @@ class Atomics {
         maxSeen.accumulateAndGet(1500, Math::max);           // same thing, library-provided
         System.out.println(maxSeen.get());                    // 1500
     }
-}</code></pre>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: CAS instructions and ABA</summary><p><code>compareAndSet(expected, new)</code> is one CPU instruction (<code>LOCK CMPXCHG</code> on x86, LSE <code>CAS</code> or LL/SC on ARM): it writes only if the current value is still <code>expected</code>. Atomics loop until their CAS wins, so they never block, but under heavy contention many threads spin and retry. <code>LongAdder</code> fixes contention by spreading increments across cells and summing on read: use it for metrics counters, use <code>AtomicLong</code> when you need the exact value on each update (ID generators, compare-and-set state machines). The ABA problem (value goes A to B to A and a CAS wrongly succeeds) matters for lock-free stacks; <code>AtomicStampedReference</code> adds a version.</p></details>
 
-  <h3>ExecutorService and pool sizing</h3>
+  <h2 id="executors"><span class="n">05</span>Executors and pool sizing</h2>
   <div class="flow">
     <span class="node">submit(task)</span><span class="arrow">→</span>
     <span class="node hl">threads &lt; core?<small>start a new worker</small></span><span class="arrow">→</span>
@@ -311,9 +438,19 @@ class Atomics {
     <span class="node">RejectedExecutionHandler<small>Abort / CallerRuns / Discard</small></span>
   </div>
   <p class="flow-caption">Figure: ThreadPoolExecutor decision order. Threads beyond core are created only when the queue is full.</p>
-  <p>Consequences seniors are expected to know: <code>Executors.newFixedThreadPool</code> uses an unbounded <code>LinkedBlockingQueue</code>, so under overload it queues until OutOfMemoryError and <code>maximumPoolSize</code> never applies. <code>newCachedThreadPool</code> uses a <code>SynchronousQueue</code> and can create unbounded threads. In production build <code>ThreadPoolExecutor</code> yourself with a bounded queue, named threads, and a rejection policy that applies backpressure.</p>
-  <p>Sizing (Goetz): <code>threads = cores × target utilisation × (1 + wait time / compute time)</code>. CPU-bound work: about one thread per core. A task that waits 90 ms on HTTP for every 10 ms of CPU on 8 cores: 8 × 1 × (1 + 9) = 80 threads. Then check the real limit, which is usually downstream: a Hikari pool of 20 connections means more than 20 threads doing DB work just queue on the pool. Little's law (concurrency = throughput × latency) gives the same number from the other direction: 400 req/s × 0.2 s = 80 in flight.</p>
-  <pre><code>import java.util.concurrent.ArrayBlockingQueue;
+  <div class="stats">
+    <div class="stat"><b>8 × (1 + 90/10) = 80</b><span>threads: 8 cores, 90 ms wait per 10 ms CPU</span></div>
+    <div class="stat"><b>400/s × 0.2 s = 80</b><span>in flight, by Little's law</span></div>
+    <div class="stat"><b>20</b><span>Hikari connections: the real DB limit</span></div>
+  </div>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li><code>newFixedThreadPool</code>: unbounded queue, grows until OOM; max size never applies.</li>
+    <li><code>newCachedThreadPool</code>: unbounded threads.</li>
+    <li>Blocking I/O on <code>ForkJoinPool.commonPool()</code>.</li>
+    <li><code>wait()</code> or <code>await()</code> inside <code>if</code> instead of <code>while</code>.</li>
+    <li>Forgetting <code>unlock()</code> or <code>release()</code> in <code>finally</code>.</li>
+  </ul></div>
+  <details class="code"><summary>Show Java: a production ThreadPoolExecutor</summary><pre><code>import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -337,17 +474,24 @@ class PoolConfig {
         System.out.println(p.submit(() -&gt; 6 * 7).get());
         p.shutdown();
     }
-}</code></pre>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: pool defaults and the sizing formula</summary>
+    <p>Consequences seniors are expected to know: <code>Executors.newFixedThreadPool</code> uses an unbounded <code>LinkedBlockingQueue</code>, so under overload it queues until OutOfMemoryError and <code>maximumPoolSize</code> never applies. <code>newCachedThreadPool</code> uses a <code>SynchronousQueue</code> and can create unbounded threads. In production build <code>ThreadPoolExecutor</code> yourself with a bounded queue, named threads, and a rejection policy that applies backpressure.</p>
+    <p>Sizing (Goetz): <code>threads = cores × target utilisation × (1 + wait time / compute time)</code>. CPU-bound work: about one thread per core. A task that waits 90 ms on HTTP for every 10 ms of CPU on 8 cores: 8 × 1 × (1 + 9) = 80 threads. Then check the real limit, which is usually downstream: a Hikari pool of 20 connections means more than 20 threads doing DB work just queue on the pool. Little's law (concurrency = throughput × latency) gives the same number from the other direction: 400 req/s × 0.2 s = 80 in flight.</p>
+  </details>
 
-  <h3>CompletableFuture</h3>
-  <ul>
-    <li><code>thenApply(fn)</code>: transform the value with a synchronous function (<code>map</code>). <code>thenCompose(fn)</code>: <code>fn</code> returns another CompletableFuture and the result is flattened (<code>flatMap</code>). Using thenApply with an async call gives <code>CompletableFuture&lt;CompletableFuture&lt;T&gt;&gt;</code>.</li>
-    <li><code>thenCombine</code>: two independent futures to one value. <code>allOf</code>: returns <code>CompletableFuture&lt;Void&gt;</code>; read the results with <code>join()</code> on each input inside a following stage. <code>anyOf</code>: first to finish.</li>
-    <li>Exceptions: <code>exceptionally</code> (recover), <code>handle</code> (value or exception, always runs), <code>whenComplete</code> (side effect, does not change the result). An exception from an upstream stage arrives wrapped in <code>CompletionException</code>; <code>get()</code> wraps in <code>ExecutionException</code>, <code>join()</code> throws <code>CompletionException</code>.</li>
-    <li>Threads: the non-<code>Async</code> variants run on whichever thread completes the previous stage (or the caller, if already complete). <code>supplyAsync</code> without an executor uses <code>ForkJoinPool.commonPool()</code>, sized to cores minus one and shared JVM-wide: never do blocking I/O there. Always pass your own executor.</li>
-    <li>Timeouts: <code>orTimeout(d)</code> and <code>completeOnTimeout(value, d)</code> (Java 9+). Cancelling a CompletableFuture does not interrupt the running task.</li>
-  </ul>
-  <pre><code>import java.util.List;
+  <h2 id="cf"><span class="n">06</span>CompletableFuture</h2>
+  <div class="vs">
+    <div><h4>thenApply (map)</h4><ul><li class="pro">Sync function on the value</li><li class="con">With an async call you get <code>CF&lt;CF&lt;T&gt;&gt;</code></li></ul></div>
+    <div class="pick"><h4>thenCompose (flatMap)</h4><ul><li class="pro">Function returns a CF; result is flattened</li></ul><p class="when">Chaining async calls.</p></div>
+  </div>
+  <div class="keys">
+    <div class="key"><h4>Combine</h4><p><code>thenCombine</code> two futures; <code>allOf</code> then <code>join()</code> each input; <code>anyOf</code> first wins.</p></div>
+    <div class="key"><h4>Errors</h4><p><code>exceptionally</code> recovers, <code>handle</code> always runs, <code>whenComplete</code> is a side effect.</p></div>
+    <div class="key"><h4>Threads</h4><p>No executor means the shared common pool. Always pass your own.</p></div>
+    <div class="key"><h4>Timeouts</h4><p><code>orTimeout</code>, <code>completeOnTimeout</code>. Cancel does not interrupt the task.</p></div>
+  </div>
+  <details class="code"><summary>Show Java: CompletableFuture demo</summary><pre><code>import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
@@ -395,11 +539,31 @@ class CfDemo {
         System.out.println(safe.join());
         IO.shutdown();
     }
-}</code></pre>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: CompletableFuture rules in full</summary>
+    <ul>
+      <li><code>thenApply(fn)</code>: transform the value with a synchronous function (<code>map</code>). <code>thenCompose(fn)</code>: <code>fn</code> returns another CompletableFuture and the result is flattened (<code>flatMap</code>). Using thenApply with an async call gives <code>CompletableFuture&lt;CompletableFuture&lt;T&gt;&gt;</code>.</li>
+      <li><code>thenCombine</code>: two independent futures to one value. <code>allOf</code>: returns <code>CompletableFuture&lt;Void&gt;</code>; read the results with <code>join()</code> on each input inside a following stage. <code>anyOf</code>: first to finish.</li>
+      <li>Exceptions: <code>exceptionally</code> (recover), <code>handle</code> (value or exception, always runs), <code>whenComplete</code> (side effect, does not change the result). An exception from an upstream stage arrives wrapped in <code>CompletionException</code>; <code>get()</code> wraps in <code>ExecutionException</code>, <code>join()</code> throws <code>CompletionException</code>.</li>
+      <li>Threads: the non-<code>Async</code> variants run on whichever thread completes the previous stage (or the caller, if already complete). <code>supplyAsync</code> without an executor uses <code>ForkJoinPool.commonPool()</code>, sized to cores minus one and shared JVM-wide: never do blocking I/O there. Always pass your own executor.</li>
+      <li>Timeouts: <code>orTimeout(d)</code> and <code>completeOnTimeout(value, d)</code> (Java 9+). Cancelling a CompletableFuture does not interrupt the running task.</li>
+    </ul>
+  </details>
 
-  <h3>Virtual threads (Java 21)</h3>
-  <p>A virtual thread (JEP 444) is a <code>Thread</code> scheduled by the JVM, not the OS. It runs <em>mounted</em> on a carrier platform thread from a ForkJoinPool (parallelism = cores). When it blocks on I/O, a lock in <code>java.util.concurrent</code>, <code>sleep</code> or a queue, the JVM copies its stack to the heap and unmounts it, freeing the carrier. A million virtual threads cost a few hundred MB of heap; a million platform threads are impossible. The point is throughput for I/O-bound thread-per-request code without reactive rewrites.</p>
-  <pre><code>import java.time.Duration;
+  <h2 id="virtual"><span class="n">07</span>Virtual threads (Java 21)</h2>
+  <div class="stats">
+    <div class="stat"><b>1,064 ms</b><span>10,000 blocking tasks on virtual threads</span></div>
+    <div class="stat"><b>~50 s</b><span>same work on a 200-thread pool</span></div>
+    <div class="stat"><b>20</b><span>DB connections: still the limit</span></div>
+  </div>
+  <p>A <dfn title="A Thread scheduled by the JVM, not the OS (JEP 444)">virtual thread</dfn> runs on a carrier thread. When it blocks on I/O, the JVM parks its stack on the heap and frees the carrier.</p>
+  <div class="keys">
+    <div class="key"><h4>Pinning (21–23)</h4><p>Blocking inside <code>synchronized</code> holds the carrier. Use <code>ReentrantLock</code>; JDK 24 (JEP 491) fixes it.</p></div>
+    <div class="key"><h4>Never pool them</h4><p>One per task. Limit downstream calls with a <code>Semaphore</code>.</p></div>
+    <div class="key"><h4>Not faster CPU</h4><p>They help I/O-bound thread-per-request code only.</p></div>
+    <div class="key"><h4>Spring Boot 3.2+</h4><p><code>spring.threads.virtual.enabled=true</code></p></div>
+  </div>
+  <details class="code"><summary>Show Java: 10,000 virtual threads</summary><pre><code>import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.IntStream;
@@ -415,20 +579,27 @@ class VirtualThreads {
         }                                                // close() waits for all tasks
         System.out.printf("10000 blocking tasks in %d ms%n", (System.nanoTime() - start) / 1_000_000);
     }
-}</code></pre>
-  <p>This printed <code>10000 blocking tasks in 1064 ms</code>. With a 200-thread pool the same work takes about 50 seconds.</p>
-  <ul>
-    <li><b>Pinning</b>: on Java 21–23, a virtual thread that blocks inside a <code>synchronized</code> block or method cannot unmount, so it holds its carrier. Enough of those and the whole scheduler stalls. Fixes on 21: replace <code>synchronized</code> around blocking calls with <code>ReentrantLock</code>; diagnose with <code>-Djdk.tracePinnedThreads=full</code> or the JFR event <code>jdk.VirtualThreadPinned</code>. JDK 24 (JEP 491) lets virtual threads unmount inside <code>synchronized</code> and removed the trace property; native frames (JNI) still pin.</li>
-    <li>Do not pool virtual threads; create one per task. To limit concurrency against a downstream (DB, vendor API), use a <code>Semaphore</code>, not a small pool.</li>
-    <li>They do not make CPU-bound work faster. They do not remove the DB connection limit: 10,000 virtual threads still share 20 Hikari connections.</li>
-    <li><code>ThreadLocal</code> works but each of a million threads gets its own copy; avoid caching heavy objects in ThreadLocals. Scoped values are the forward-looking replacement.</li>
-    <li>In Spring Boot 3.2+, <code>spring.threads.virtual.enabled=true</code> runs Tomcat request handling, <code>@Async</code> and scheduling on virtual threads.</li>
-  </ul>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: how virtual threads work, pinning and ThreadLocal</summary>
+    <p>A virtual thread (JEP 444) is a <code>Thread</code> scheduled by the JVM, not the OS. It runs <em>mounted</em> on a carrier platform thread from a ForkJoinPool (parallelism = cores). When it blocks on I/O, a lock in <code>java.util.concurrent</code>, <code>sleep</code> or a queue, the JVM copies its stack to the heap and unmounts it, freeing the carrier. A million virtual threads cost a few hundred MB of heap; a million platform threads are impossible. The point is throughput for I/O-bound thread-per-request code without reactive rewrites.</p>
+    <p>This printed <code>10000 blocking tasks in 1064 ms</code>. With a 200-thread pool the same work takes about 50 seconds.</p>
+    <ul>
+      <li><b>Pinning</b>: on Java 21–23, a virtual thread that blocks inside a <code>synchronized</code> block or method cannot unmount, so it holds its carrier. Enough of those and the whole scheduler stalls. Fixes on 21: replace <code>synchronized</code> around blocking calls with <code>ReentrantLock</code>; diagnose with <code>-Djdk.tracePinnedThreads=full</code> or the JFR event <code>jdk.VirtualThreadPinned</code>. JDK 24 (JEP 491) lets virtual threads unmount inside <code>synchronized</code> and removed the trace property; native frames (JNI) still pin.</li>
+      <li>Do not pool virtual threads; create one per task. To limit concurrency against a downstream (DB, vendor API), use a <code>Semaphore</code>, not a small pool.</li>
+      <li>They do not make CPU-bound work faster. They do not remove the DB connection limit: 10,000 virtual threads still share 20 Hikari connections.</li>
+      <li><code>ThreadLocal</code> works but each of a million threads gets its own copy; avoid caching heavy objects in ThreadLocals. Scoped values are the forward-looking replacement.</li>
+      <li>In Spring Boot 3.2+, <code>spring.threads.virtual.enabled=true</code> runs Tomcat request handling, <code>@Async</code> and scheduling on virtual threads.</li>
+    </ul>
+  </details>
 
-  <h2 id="practical"><span class="n">04</span>Company questions, solved</h2>
-  <h3>Rubrik: bounded blocking queue, then a thread pool</h3>
-  <p>One lock, two conditions. Producers wait on <code>notFull</code>, consumers on <code>notEmpty</code>; each operation signals the other side. Then workers loop on <code>take()</code>. Shutdown with a "poison pill" per worker so queued tasks finish first; catch exceptions per task so one failure does not kill a worker.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <h2 id="practical"><span class="n">08</span>Company questions, solved</h2>
+  <div class="prob">
+    <h3>Rubrik: bounded blocking queue, then a thread pool</h3>
+    <dl><dt>Task</dt><dd>A blocking queue with a capacity, then worker threads that run tasks from it.</dd>
+        <dt>Insight</dt><dd>One lock, two conditions: producers wait on <code>notFull</code>, consumers on <code>notEmpty</code>. Shut down with one poison pill per worker.</dd>
+        <dt>Cost</dt><dd>O(1) put/take; threads block, never spin</dd></dl>
+    <div class="cells"><span class="cell win">t1</span><span class="cell win">t2</span><span class="cell win">t3</span><span class="cell bad">full: put waits</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -521,12 +692,16 @@ final class SimpleThreadPool {
             t.join();
         }
     }
-}</code></pre>
-  <p>Viva follow-ups: why <code>while</code> not <code>if</code> around <code>await</code> (spurious wake-ups and another consumer taking the item first); why <code>signal</code> not <code>signalAll</code> (each put frees exactly one slot, and conditions separate producers from consumers); how to add <code>submit</code> returning a Future (wrap in <code>FutureTask</code>); how to reject instead of block (<code>offer</code> with timeout).</p>
-
-  <h3>Goldman Sachs: two threads print odd and even in order</h3>
-  <p>A shared counter guarded by one monitor. Each thread waits while it is not its turn, prints, increments and notifies. Exit condition is checked inside the lock so neither thread waits forever after the last number.</p>
-  <pre><code>class OddEvenPrinter {
+}</code></pre></details>
+    <details class="deep"><summary>Viva follow-ups</summary><p>One lock, two conditions. Producers wait on <code>notFull</code>, consumers on <code>notEmpty</code>; each operation signals the other side. Then workers loop on <code>take()</code>. Shutdown with a "poison pill" per worker so queued tasks finish first; catch exceptions per task so one failure does not kill a worker.</p><p>Viva follow-ups: why <code>while</code> not <code>if</code> around <code>await</code> (spurious wake-ups and another consumer taking the item first); why <code>signal</code> not <code>signalAll</code> (each put frees exactly one slot, and conditions separate producers from consumers); how to add <code>submit</code> returning a Future (wrap in <code>FutureTask</code>); how to reject instead of block (<code>offer</code> with timeout).</p></details>
+  </div>
+  <div class="prob">
+    <h3>Goldman Sachs: odd and even in order</h3>
+    <dl><dt>Task</dt><dd>Two threads print 1, 2, 3, … alternately.</dd>
+        <dt>Insight</dt><dd>Shared counter, one monitor. Wait while it is not your turn; print, increment, <code>notifyAll</code>. Check the exit condition inside the lock.</dd>
+        <dt>Cost</dt><dd>One handoff per number</dd></dl>
+    <div class="cells"><span class="cell win">odd: 1</span><span class="cell ok">even: 2</span><span class="cell win">odd: 3</span><span class="cell ok">even: 4</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class OddEvenPrinter {
     private final int max;
     private int next = 1;                             // guarded by this
 
@@ -563,11 +738,16 @@ final class SimpleThreadPool {
         odd.join();
         even.join();
     }
-}</code></pre>
-  <p>Alternative: two semaphores handing a baton back and forth (the FooBar pattern below). Mention both; the semaphore version generalises to N threads in round robin with N semaphores.</p>
-
-  <h3>CleverTap: at most two threads at once</h3>
-  <pre><code>import java.util.concurrent.ExecutorService;
+}</code></pre></details>
+    <details class="deep"><summary>Alternative</summary><p>A shared counter guarded by one monitor. Each thread waits while it is not its turn, prints, increments and notifies. Exit condition is checked inside the lock so neither thread waits forever after the last number. Alternative: two semaphores handing a baton back and forth (the FooBar pattern below). Mention both; the semaphore version generalises to N threads in round robin with N semaphores.</p></details>
+  </div>
+  <div class="prob">
+    <h3>CleverTap: at most two threads at once</h3>
+    <dl><dt>Task</dt><dd>Let at most two threads into a section.</dd>
+        <dt>Insight</dt><dd><code>Semaphore(2)</code>; <code>release()</code> in <code>finally</code> or the gate slowly closes. Fair mode avoids starvation.</dd>
+        <dt>Cost</dt><dd>O(1) acquire/release</dd></dl>
+    <div class="cells"><span class="cell ok">T1 in</span><span class="cell ok">T2 in</span><span class="cell bad">T3 waits</span><span class="cell bad">T4 waits</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -600,12 +780,15 @@ class AtMostTwo {
         System.out.println("peak concurrency = " + gate.peak.get());   // 2
         if (gate.peak.get() != 2) throw new AssertionError();
     }
-}</code></pre>
-  <p>Release in <code>finally</code>, or a thrown exception leaks a permit and the gate slowly closes. A fair semaphore avoids starvation. This is exactly how you cap calls to a rate-limited vendor (e-sign, SMS, KYC) from a pool of virtual threads.</p>
-
-  <h3>Google L5: implement your own CompletableFuture</h3>
-  <p>The interviewer wants: a completion that happens once, blocking <code>get</code> with <code>wait</code>/<code>notifyAll</code>, callbacks registered before completion run on completion, callbacks registered after completion run immediately, errors propagate down the chain, and <code>thenCompose</code> flattens. Run callbacks outside the lock to avoid deadlocks with user code.</p>
-  <pre><code>import java.util.ArrayList;
+}</code></pre></details>
+    <details class="deep"><summary>Where this shows up in production</summary><p>Release in <code>finally</code>, or a thrown exception leaks a permit and the gate slowly closes. A fair semaphore avoids starvation. This is exactly how you cap calls to a rate-limited vendor (e-sign, SMS, KYC) from a pool of virtual threads.</p></details>
+  </div>
+  <div class="prob">
+    <h3>Google L5: your own CompletableFuture</h3>
+    <dl><dt>Task</dt><dd>Complete once, blocking <code>get</code>, callbacks, error propagation, <code>thenCompose</code>.</dd>
+        <dt>Insight</dt><dd>Callbacks registered before completion run on completion; after, they run immediately. Run them outside the lock.</dd>
+        <dt>Cost</dt><dd>O(callbacks) on completion</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -721,13 +904,18 @@ final class MiniFuture&lt;T&gt; {
         });
         return next;
     }
-}</code></pre>
-  <p>Tested: chain of <code>thenApply</code> and <code>thenCompose</code> gives 42, a thrown exception surfaces from <code>get</code> as <code>ExecutionException</code>, <code>exceptionally</code> recovers, and the second <code>complete</code> returns false. Extensions to discuss: <code>thenApplyAsync(fn, executor)</code> (submit the callback instead of running it inline), <code>allOf</code> with an <code>AtomicInteger</code> countdown, timeouts with a <code>ScheduledExecutorService</code>, and a lock-free version using an <code>AtomicReference</code> to a result or a stack of callbacks (what the JDK does).</p>
+}</code></pre></details>
+    <details class="deep"><summary>What was tested and extensions</summary><p>The interviewer wants: a completion that happens once, blocking <code>get</code> with <code>wait</code>/<code>notifyAll</code>, callbacks registered before completion run on completion, callbacks registered after completion run immediately, errors propagate down the chain, and <code>thenCompose</code> flattens. Run callbacks outside the lock to avoid deadlocks with user code.</p><p>Tested: chain of <code>thenApply</code> and <code>thenCompose</code> gives 42, a thrown exception surfaces from <code>get</code> as <code>ExecutionException</code>, <code>exceptionally</code> recovers, and the second <code>complete</code> returns false. Extensions to discuss: <code>thenApplyAsync(fn, executor)</code> (submit the callback instead of running it inline), <code>allOf</code> with an <code>AtomicInteger</code> countdown, timeouts with a <code>ScheduledExecutorService</code>, and a lock-free version using an <code>AtomicReference</code> to a result or a stack of callbacks (what the JDK does).</p></details>
+  </div>
 
-  <h2 id="leetcode"><span class="n">05</span>Worked LeetCode concurrency problems</h2>
-  <h3>Print FooBar Alternately</h3>
-  <p><a href="https://leetcode.com/problems/print-foobar-alternately/" target="_blank" rel="noopener">leetcode.com/problems/print-foobar-alternately</a>. Two threads call <code>foo</code> and <code>bar</code>; output must be "foobar" n times. Insight: a baton passed between two semaphores, one starting with a permit.</p>
-  <pre><code>import java.util.concurrent.Semaphore;
+  <h2 id="leetcode"><span class="n">09</span>Worked LeetCode concurrency problems</h2>
+  <div class="prob">
+    <h3>Print FooBar Alternately <a href="https://leetcode.com/problems/print-foobar-alternately/" target="_blank" rel="noopener">Solve on LeetCode ↗</a></h3>
+    <dl><dt>Task</dt><dd>Two threads; print "foobar" n times.</dd>
+        <dt>Insight</dt><dd>A baton passed between two semaphores; foo's starts with one permit.</dd>
+        <dt>Cost</dt><dd>At most one block per iteration, no busy-wait</dd></dl>
+    <div class="cells"><span class="cell hl">foo: 1 permit</span><span class="cell">bar: 0</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.concurrent.Semaphore;
 
 class FooBar {
     private final int n;
@@ -753,12 +941,16 @@ class FooBar {
             fooTurn.release();
         }
     }
-}</code></pre>
-  <p>Each thread blocks at most once per iteration; no busy-waiting. Edge case: whichever thread starts first, the permits force foo first.</p>
-
-  <h3>Print Zero Even Odd</h3>
-  <p><a href="https://leetcode.com/problems/print-zero-even-odd/" target="_blank" rel="noopener">leetcode.com/problems/print-zero-even-odd</a>. Three threads print "0102030405..." up to n. Insight: <code>zero</code> is the scheduler; after each 0 it releases odd or even based on the next number, and those threads hand control back to zero.</p>
-  <pre><code>import java.util.concurrent.Semaphore;
+}</code></pre></details>
+    <details class="deep"><summary>Problem statement and notes</summary><p><a href="https://leetcode.com/problems/print-foobar-alternately/" target="_blank" rel="noopener">leetcode.com/problems/print-foobar-alternately</a>. Two threads call <code>foo</code> and <code>bar</code>; output must be "foobar" n times. Insight: a baton passed between two semaphores, one starting with a permit.</p><p>Each thread blocks at most once per iteration; no busy-waiting. Edge case: whichever thread starts first, the permits force foo first.</p></details>
+  </div>
+  <div class="prob">
+    <h3>Print Zero Even Odd <a href="https://leetcode.com/problems/print-zero-even-odd/" target="_blank" rel="noopener">Solve on LeetCode ↗</a></h3>
+    <dl><dt>Task</dt><dd>Three threads print "0102030405…" up to n.</dd>
+        <dt>Insight</dt><dd><code>zero</code> is the scheduler: after each 0 it releases odd or even, which hand control back.</dd>
+        <dt>Cost</dt><dd>O(n) handoffs</dd></dl>
+    <div class="cells"><span class="cell">0</span><span class="cell win">1</span><span class="cell">0</span><span class="cell ok">2</span><span class="cell">0</span><span class="cell win">3</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.concurrent.Semaphore;
 import java.util.function.IntConsumer;
 
 class ZeroEvenOdd {
@@ -798,12 +990,16 @@ class ZeroEvenOdd {
             zeroTurn.release();
         }
     }
-}</code></pre>
-  <p>Edge case: n = 1 means the even thread's loop never runs, which is correct since it never receives a permit.</p>
-
-  <h3>Building H2O</h3>
-  <p><a href="https://leetcode.com/problems/building-h2o/" target="_blank" rel="noopener">leetcode.com/problems/building-h2o</a>. Hydrogen and oxygen threads arrive in any order; every group of three releases must be two H and one O. Insight: semaphores cap each molecule at 2 H and 1 O; a <code>CyclicBarrier(3)</code> makes the three wait for each other. Releasing the semaphore only after printing stops the next molecule from overtaking.</p>
-  <pre><code>import java.util.concurrent.BrokenBarrierException;
+}</code></pre></details>
+    <details class="deep"><summary>Problem statement and notes</summary><p><a href="https://leetcode.com/problems/print-zero-even-odd/" target="_blank" rel="noopener">leetcode.com/problems/print-zero-even-odd</a>. Three threads print "0102030405..." up to n. Insight: <code>zero</code> is the scheduler; after each 0 it releases odd or even based on the next number, and those threads hand control back to zero.</p><p>Edge case: n = 1 means the even thread's loop never runs, which is correct since it never receives a permit.</p></details>
+  </div>
+  <div class="prob">
+    <h3>Building H2O <a href="https://leetcode.com/problems/building-h2o/" target="_blank" rel="noopener">Solve on LeetCode ↗</a></h3>
+    <dl><dt>Task</dt><dd>Release threads in groups of two H and one O.</dd>
+        <dt>Insight</dt><dd>Semaphores cap 2 H and 1 O; <code>CyclicBarrier(3)</code> makes the three wait for each other. Release after printing.</dd>
+        <dt>Cost</dt><dd>O(1) per atom</dd></dl>
+    <div class="cells"><span class="cell win">H</span><span class="cell win">H</span><span class="cell hl">O</span><span class="cell dim">|</span><span class="cell win">H</span><span class="cell hl">O</span><span class="cell win">H</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Semaphore;
 
@@ -836,12 +1032,15 @@ class H2O {
             throw new IllegalStateException(e);
         }
     }
-}</code></pre>
-  <p>Tested with 50 random arrival orders of 60 threads; every consecutive triple contains exactly one O.</p>
-
-  <h3>The Dining Philosophers</h3>
-  <p><a href="https://leetcode.com/problems/the-dining-philosophers/" target="_blank" rel="noopener">leetcode.com/problems/the-dining-philosophers</a>. Five philosophers, five forks; each needs both neighbouring forks to eat. Avoid deadlock. Insight: deadlock needs a cycle in the wait-for graph; acquiring forks in a global order (lower index first) makes a cycle impossible. Alternatives: a <code>Semaphore(4)</code> so at most four try at once, or <code>tryLock</code> and back off.</p>
-  <pre><code>import java.util.concurrent.locks.ReentrantLock;
+}</code></pre></details>
+    <details class="deep"><summary>Problem statement and notes</summary><p><a href="https://leetcode.com/problems/building-h2o/" target="_blank" rel="noopener">leetcode.com/problems/building-h2o</a>. Hydrogen and oxygen threads arrive in any order; every group of three releases must be two H and one O. Insight: semaphores cap each molecule at 2 H and 1 O; a <code>CyclicBarrier(3)</code> makes the three wait for each other. Releasing the semaphore only after printing stops the next molecule from overtaking.</p><p>Hydrogen and oxygen threads arrive in any order; every group of three releases must be two H and one O. Releasing the semaphore only after printing stops the next molecule from overtaking. Tested with 50 random arrival orders of 60 threads; every consecutive triple contains exactly one O.</p></details>
+  </div>
+  <div class="prob">
+    <h3>The Dining Philosophers <a href="https://leetcode.com/problems/the-dining-philosophers/" target="_blank" rel="noopener">Solve on LeetCode ↗</a></h3>
+    <dl><dt>Task</dt><dd>Five philosophers, five forks, each needs both neighbours' forks. No deadlock.</dd>
+        <dt>Insight</dt><dd>Take the lower-index fork first: no cycle is possible. Same fix as the transfer deadlock.</dd>
+        <dt>Cost</dt><dd>O(1) per meal</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.concurrent.locks.ReentrantLock;
 
 class DiningPhilosophers {
     private final ReentrantLock[] forks = new ReentrantLock[5];
@@ -871,12 +1070,15 @@ class DiningPhilosophers {
             first.unlock();
         }
     }
-}</code></pre>
-  <p>Tested with 5 threads × 2,000 meals, no hang. This is the same fix as the account transfer above.</p>
-
-  <h3>Design Bounded Blocking Queue (Premium)</h3>
-  <p><a href="https://leetcode.com/problems/design-bounded-blocking-queue/" target="_blank" rel="noopener">leetcode.com/problems/design-bounded-blocking-queue</a> (Premium). <code>enqueue</code> blocks when full, <code>dequeue</code> blocks when empty, <code>size</code> returns the count; many producer and consumer threads. Same design as the Rubrik queue, specialised to int.</p>
-  <pre><code>import java.util.ArrayDeque;
+}</code></pre></details>
+    <details class="deep"><summary>Problem statement and notes</summary><p><a href="https://leetcode.com/problems/the-dining-philosophers/" target="_blank" rel="noopener">leetcode.com/problems/the-dining-philosophers</a>. Five philosophers, five forks; each needs both neighbouring forks to eat. Avoid deadlock. Insight: deadlock needs a cycle in the wait-for graph; acquiring forks in a global order (lower index first) makes a cycle impossible. Alternatives: a <code>Semaphore(4)</code> so at most four try at once, or <code>tryLock</code> and back off.</p><p>Deadlock needs a cycle in the wait-for graph; acquiring forks in a global order (lower index first) makes a cycle impossible. Alternatives: a <code>Semaphore(4)</code> so at most four try at once, or <code>tryLock</code> and back off. Tested with 5 threads × 2,000 meals, no hang. This is the same fix as the account transfer above.</p></details>
+  </div>
+  <div class="prob">
+    <h3>Design Bounded Blocking Queue (Premium) <a href="https://leetcode.com/problems/design-bounded-blocking-queue/" target="_blank" rel="noopener">Solve on LeetCode ↗</a></h3>
+    <dl><dt>Task</dt><dd><code>enqueue</code> blocks when full, <code>dequeue</code> when empty; many producers and consumers.</dd>
+        <dt>Insight</dt><dd>The Rubrik queue specialised to int. Read <code>size()</code> under the lock too.</dd>
+        <dt>Cost</dt><dd>O(1) per operation</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -927,10 +1129,25 @@ class BoundedBlockingQueue {
             lock.unlock();
         }
     }
-}</code></pre>
-  <p>Tested with 4 producers and 4 consumers moving 4,000 items through capacity 3; the sum matches and the queue ends empty. Read <code>size()</code> under the lock too, or it may return a stale value.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Problem statement and notes</summary><p><a href="https://leetcode.com/problems/design-bounded-blocking-queue/" target="_blank" rel="noopener">leetcode.com/problems/design-bounded-blocking-queue</a> (Premium). <code>enqueue</code> blocks when full, <code>dequeue</code> blocks when empty, <code>size</code> returns the count; many producer and consumer threads. Same design as the Rubrik queue, specialised to int.</p><p>Tested with 4 producers and 4 consumers moving 4,000 items through capacity 3; the sum matches and the queue ends empty. Read <code>size()</code> under the lock too, or it may return a stale value.</p></details>
+  </div>
 
-  <h2 id="qa"><span class="n">06</span>Interview questions with crisp answers</h2>
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">A counter is <code>volatile int count</code> and 8 threads do <code>count++</code>. Is the total correct?</p>
+    <div class="opts"><button class="opt" type="button">Yes, volatile makes it thread-safe</button><button class="opt" type="button">No: volatile gives visibility, but ++ is read, add, write</button><button class="opt" type="button">Only on x86</button></div>
+    <p class="why">Two threads can read the same value and both write +1. Use AtomicInteger or LongAdder.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">In double-checked locking, what goes wrong without volatile?</p>
+    <div class="opts"><button class="opt" type="button">Two instances get created</button><button class="opt" type="button">The lock is never released</button><button class="opt" type="button">Another thread can see the reference before the constructor's writes</button></div>
+    <p class="why">The second thread skips the lock on the first check and uses a half-built object.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Production: latency climbs, Tomcat threads are exhausted, CPU is near zero. First move?</p>
+    <div class="opts"><button class="opt" type="button">Take three thread dumps a few seconds apart</button><button class="opt" type="button">Double the thread pool</button><button class="opt" type="button">Restart and add more CPU</button></div>
+    <p class="why">Idle CPU with stuck threads means waiting, not working. Dumps show the lock cycle or the starved pool.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why can <code>Executors.newFixedThreadPool(10)</code> cause an OutOfMemoryError?</p>
+    <div class="opts"><button class="opt" type="button">It creates unbounded threads</button><button class="opt" type="button">Its LinkedBlockingQueue is unbounded, so tasks pile up</button><button class="opt" type="button">Threads leak after each task</button></div>
+    <p class="why">Extra threads beyond core are only created when the queue is full, which never happens.</p></div>
+
+  <h2 id="qa"><span class="n">11</span>Interview questions with crisp answers</h2>
   <details class="qa"><summary>What is a race condition versus a data race?</summary><p>A data race is two threads accessing the same variable without happens-before, at least one writing: the JMM gives no guarantee about the value read. A race condition is a correctness bug from timing, such as check-then-act, and can happen even with every access synchronised individually (ConcurrentHashMap get-then-put).</p></details>
   <details class="qa"><summary>Can volatile replace synchronized?</summary><p>Only when there is a single writer or each write does not depend on the current value, and the variable is not part of an invariant with other variables. A stop flag, yes; a counter or a balance, no.</p></details>
   <details class="qa"><summary>Why does double-checked locking need volatile?</summary><p>Construction and publication can be reordered, so another thread may see a non-null reference to an object whose fields are still defaults. The volatile write/read pair creates the happens-before edge that forbids it.</p></details>
@@ -944,16 +1161,28 @@ class BoundedBlockingQueue {
   <details class="qa"><summary>AtomicLong or LongAdder?</summary><p>LongAdder for high-contention counters read rarely (metrics); AtomicLong when each update needs the exact current value or you need compareAndSet.</p></details>
   <details class="qa"><summary>What does ConcurrentHashMap give you that Collections.synchronizedMap does not?</summary><p>Per-bin locking with lock-free reads, atomic compute/merge/putIfAbsent, and weakly consistent iterators that do not throw. synchronizedMap has one lock for everything and requires manual locking while iterating.</p></details>
   <details class="qa"><summary>How would you make a method run at most once across threads?</summary><p>An <code>AtomicBoolean</code> with <code>compareAndSet(false, true)</code> guarding the body, or the holder idiom for lazy initialisation. Across instances of a service, a database unique constraint or a distributed lock, because JVM-level tools stop at the process boundary.</p></details>
+  <details class="deep"><summary>Hands-on exercise (60 minutes)</summary>
+    <ol>
+      <li>Run <code>Deadlock</code> with an argument, take a thread dump with <code>jcmd &lt;pid&gt; Thread.print</code>, and find the cycle. Then change <code>transferUnsafe</code> to use <code>ReentrantLock.tryLock(50, MILLISECONDS)</code> with retry and random back-off, and confirm it completes.</li>
+      <li>Extend <code>SimpleThreadPool</code> with <code>&lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt;)</code> using <code>FutureTask</code>, and a <code>shutdownNow()</code> that interrupts workers and returns unstarted tasks.</li>
+      <li>Add <code>allOf(MiniFuture&lt;?&gt;...)</code> to <code>MiniFuture</code> using an <code>AtomicInteger</code> countdown. Test it with one failing input.</li>
+      <li>On a Java 21 runtime, put a <code>synchronized</code> block around <code>Thread.sleep</code> inside the virtual-thread demo, run with <code>-Djdk.tracePinnedThreads=full</code>, and watch the runtime jump from 1 second to many seconds. Swap in a ReentrantLock and compare.</li>
+    </ol>
+  </details>
 
-  <h2 id="exercise"><span class="n">07</span>Hands-on exercise (60 minutes)</h2>
-  <ol>
-    <li>Run <code>Deadlock</code> with an argument, take a thread dump with <code>jcmd &lt;pid&gt; Thread.print</code>, and find the cycle. Then change <code>transferUnsafe</code> to use <code>ReentrantLock.tryLock(50, MILLISECONDS)</code> with retry and random back-off, and confirm it completes.</li>
-    <li>Extend <code>SimpleThreadPool</code> with <code>&lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt;)</code> using <code>FutureTask</code>, and a <code>shutdownNow()</code> that interrupts workers and returns unstarted tasks.</li>
-    <li>Add <code>allOf(MiniFuture&lt;?&gt;...)</code> to <code>MiniFuture</code> using an <code>AtomicInteger</code> countdown. Test it with one failing input.</li>
-    <li>On a Java 21 runtime, put a <code>synchronized</code> block around <code>Thread.sleep</code> inside the virtual-thread demo, run with <code>-Djdk.tracePinnedThreads=full</code>, and watch the runtime jump from 1 second to many seconds. Swap in a ReentrantLock and compare.</li>
-  </ol>
+  <h2 id="cheat"><span class="n">12</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Atomicity, visibility, ordering. Happens-before: unlock→lock, volatile write→read, start, join.</li>
+    <li>volatile: flags and publication. count++ needs a lock or AtomicInteger/LongAdder.</li>
+    <li>DCL needs volatile; holder idiom is simpler; enum survives reflection.</li>
+    <li>Deadlock: 4 conditions; fix with global lock order or tryLock + back-off; find with jcmd Thread.print.</li>
+    <li>wait/await always in while; unlock/release in finally.</li>
+    <li>Pool: bounded queue, named threads, rejection policy. threads = cores × (1 + wait/compute).</li>
+    <li>CF: thenCompose for async chains, own executor, orTimeout.</li>
+    <li>Virtual threads: I/O only, never pooled, Semaphore for limits, avoid synchronized pinning on 21.</li>
+  </ul></div>
 
-  <h2 id="sources"><span class="n">08</span>Sources and go deeper</h2>
+  <h2 id="sources"><span class="n">13</span>Sources and go deeper</h2>
   <ul class="sources">
     <li><a href="https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html" target="_blank" rel="noopener">JLS 21, chapter 17: Threads and Locks (memory model, happens-before, final fields)</a></li>
     <li><a href="https://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html" target="_blank" rel="noopener">The "Double-Checked Locking is Broken" Declaration (Pugh et al.)</a></li>
@@ -968,5 +1197,6 @@ class BoundedBlockingQueue {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="java-collections-internals.html">Collections internals</a> · <a href="spring-rapid-fire.html">Spring rapid fire</a> · <a href="lld-message-queue.html">Message queue LLD</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

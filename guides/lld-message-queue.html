@@ -12,38 +12,60 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>In-memory Message Queue / Pub-Sub</h1>
-  <p class="lede">Build a mini Kafka in one process: topics split into partitions, producers that append, consumer groups that read in order and commit offsets, all thread-safe. A senior answer shows ordering only where it is promised (per partition), a clean consumer lifecycle, and concurrency you can defend line by line in the code-review round that follows.</p>
+  <p class="lede">Build and defend a thread-safe mini Kafka in 90 minutes: topics, partitions, consumer groups and offsets.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 90 min code + 30 min review</span>
     <span class="fact"><b>Seen:</b> Flipkart SDE-3 machine coding; queue/thread-pool variants at Rubrik, Goldman Sachs, LinkedIn, CleverTap</span>
   </div>
   <div class="chips"><span class="chip hot">Flipkart</span><span class="chip hot">Rubrik</span><span class="chip">Goldman Sachs</span><span class="chip">LinkedIn</span><span class="chip">CleverTap</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>A topic is split into partitions; each partition is an append-only list.</li>
+    <li>Same key → same partition, so order holds per key, not per topic.</li>
+    <li>Each consumer group keeps its own offset per partition.</li>
+    <li>Lock per partition, <code>Condition</code> for waiting, generation number to fence rebalances.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A railway reservation office with several counters (partitions). Each counter keeps a numbered register. Billing clerks and audit clerks (two consumer groups) each read every register, and each group bookmarks the last line it read (the offset).</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
     <li><a href="#clarify">Clarifying questions</a></li>
     <li><a href="#reqs">Requirements</a></li>
     <li><a href="#design">Class design</a></li>
+    <li><a href="#watch">Watch it work</a></li>
     <li><a href="#code">Core code</a></li>
     <li><a href="#concurrency">Concurrency and edge cases</a></li>
     <li><a href="#extensions">Extensions</a></li>
     <li><a href="#tests">Tests to write</a></li>
     <li><a href="#mistakes">Mistakes and review questions</a></li>
     <li><a href="#plan">90-minute plan</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
-  <p>The Flipkart SDE-3 report (Oct 2025, selected) is the template: a 90-minute machine-coding round to build "a working MVP for an in-memory message streaming service supporting multiple topics, producers, and consumers" with ordering within partitions, thread safety and real-time streaming. Then a separate 30-minute evaluation round: "in-depth discussion about my solution ... modularity, OOP principles, design patterns and concurrency." So you are graded twice on the same code.</p>
   <div class="grid">
     <div class="card"><h4>Runnable MVP</h4><p>A <code>main</code> or a JUnit test that creates a topic, runs several producers and consumers on threads, and prints ordered output. Not running at minute 90 is usually fatal at Flipkart.</p></div>
     <div class="card"><h4>Correct ordering semantics</h4><p>Ordered per partition, not per topic. Same key → same partition. One consumer per partition inside a group.</p></div>
     <div class="card"><h4>Concurrency you can explain</h4><p>Where the locks are, why a <code>Condition</code> instead of busy-polling, what happens during rebalance, what "at-least-once" means in your commit order.</p></div>
     <div class="card"><h4>Extensibility</h4><p>Partitioner as a strategy, handlers as an interface, retry/DLQ as a decorator. New requirements should add classes, not edit the broker.</p></div>
   </div>
-  <p>The queue family shows up elsewhere in a lower-level form. Rubrik's screening round asks for a bounded blocking queue and then a thread pool built on it (<code>submit</code>, <code>execute</code>, <code>shutdown</code>, <code>shutdownNow</code>); the candidate was marked "lean hire" because <code>shutdown()</code> and the exceptions caught were not convincing. CleverTap's associate-director round probed Kafka brokers, topics and partitions, asked for a "generic queue system for teams to use", then a "at most two threads in parallel" exercise (a <code>Semaphore(2)</code>). Prepare the primitives, not only the façade.</p>
+  <p>You are graded twice on the same code: 90 minutes of coding, then a 30-minute review of OOP, patterns and concurrency.</p>
+  <details class="deep"><summary>Go deeper: the interview reports behind this page</summary>
+    <p>The Flipkart SDE-3 report (Oct 2025, selected) is the template: a 90-minute machine-coding round to build "a working MVP for an in-memory message streaming service supporting multiple topics, producers, and consumers" with ordering within partitions, thread safety and real-time streaming. Then a separate 30-minute evaluation round: "in-depth discussion about my solution ... modularity, OOP principles, design patterns and concurrency." So you are graded twice on the same code.</p>
+    <p>The queue family shows up elsewhere in a lower-level form. Rubrik's screening round asks for a bounded blocking queue and then a thread pool built on it (<code>submit</code>, <code>execute</code>, <code>shutdown</code>, <code>shutdownNow</code>); the candidate was marked "lean hire" because <code>shutdown()</code> and the exceptions caught were not convincing. CleverTap's associate-director round probed Kafka brokers, topics and partitions, asked for a "generic queue system for teams to use", then a "at most two threads in parallel" exercise (a <code>Semaphore(2)</code>). Prepare the primitives, not only the façade.</p>
+  </details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
+  <div class="keys">
+    <div class="key"><h4>Pub-sub or queue?</h4><p>Consumer groups give both: different groups broadcast, one group shares load.</p></div>
+    <div class="key"><h4>Global or per-key order?</h4><p>Per key. Global order means one partition and no parallelism.</p></div>
+    <div class="key"><h4>Pull or push?</h4><p>Pull with a long-poll wait: free backpressure.</p></div>
+    <div class="key"><h4>Delivery guarantee?</h4><p>At-least-once: commit after processing; handlers idempotent.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: all eight questions and why each matters</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
     <tr><td>Pub-sub (every subscriber gets every message) or queue (each message to one worker)?</td><td>Consumer groups give you both: different groups = broadcast, same group = load sharing. Say this and you have answered both.</td></tr>
@@ -55,6 +77,7 @@
     <tr><td>Bounded memory? What happens when full?</td><td>Block the producer, reject, or drop oldest. Backpressure is a senior talking point.</td></tr>
     <tr><td>Failed message handling: retry how many times? Dead letter?</td><td>Shapes the handler wrapper and whether a poison message blocks a partition.</td></tr>
   </table></div>
+  </details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
@@ -83,6 +106,34 @@
   </div>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
+  <div class="uml">
+    <div class="cls"><b>Broker <small>«façade»</small></b><ul><li>- topics: Map&lt;String, Topic&gt;</li><li>- groups: Map&lt;String, ConsumerGroup&gt;</li><li>- workers: ExecutorService</li></ul><ul><li>+ createTopic(name, n, partitioner)</li><li>+ publish(topic, key, payload)</li><li>+ subscribe(topic, group, handler)</li><li>+ close()</li></ul></div>
+    <div class="cls"><b>Topic</b><ul><li>- partitions: List&lt;Partition&gt;</li><li>- partitioner: Partitioner</li></ul><ul><li>+ publish(Message): Record</li><li>+ partition(p): Partition</li></ul></div>
+    <div class="cls hl"><b>Partition <small>the heart</small></b><ul><li>- log: List&lt;Message&gt;</li><li>- lock: ReentrantLock</li><li>- appended: Condition</li></ul><ul><li>+ append(m): long offset</li><li>+ read(from, max, wait)</li></ul></div>
+    <div class="cls"><b>ConsumerGroup</b><ul><li>- members: List&lt;String&gt;</li><li>- committed: Map&lt;Integer, Long&gt;</li><li>- assignment: volatile Assignment</li></ul><ul><li>+ join / leave(member)</li><li>+ commit(p, offset, generation)</li></ul></div>
+    <div class="cls"><b>ConsumerWorker <small>Runnable</small></b><ul><li>- memberId, group, handler</li><li>- running: volatile boolean</li></ul><ul><li>+ run(): poll → handle → commit</li><li>+ stop()</li></ul></div>
+    <div class="cls"><b>Partitioner <small>«interface»</small></b><ul><li>+ partition(key, n): int</li></ul><ul><li>KeyHashPartitioner</li><li>RoundRobinPartitioner</li></ul></div>
+    <div class="cls"><b>MessageHandler <small>«interface»</small></b><ul><li>+ handle(Record)</li></ul><ul><li>wrapped by RetryingHandler</li></ul></div>
+    <div class="cls"><b>Message / Record <small>«record»</small></b><ul><li>Message: key, payload, publishedAt</li><li>Record: topic, partition, offset, message</li></ul></div>
+  </div>
+  <div class="flow">
+    <span class="node">Producer</span><span class="arrow">→</span>
+    <span class="node hl">Broker<small>façade</small></span><span class="arrow">→</span>
+    <span class="node">Topic<small>Partitioner</small></span><span class="arrow">→</span>
+    <span class="node store">Partition 0..N-1<small>append-only log</small></span><span class="arrow">←<small>read(offset)</small></span>
+    <span class="node">ConsumerWorker<small>one thread each</small></span><span class="arrow">↔</span>
+    <span class="node hl">ConsumerGroup<small>assignment + offsets</small></span>
+  </div>
+  <p class="flow-caption">Figure: producers append through the broker; workers pull from the partitions their group assigned them and commit offsets back to the group.</p>
+  <h3>Patterns and why</h3>
+  <div class="keys">
+    <div class="key"><h4>Strategy</h4><p>For <code>Partitioner</code> and the group's assignment strategy (range vs round-robin): the interviewer will ask "what if I want sticky assignment" and you add a class.</p></div>
+    <div class="key"><h4>Observer / pub-sub</h4><p>The domain itself; groups are the subscribers.</p></div>
+    <div class="key"><h4>Decorator</h4><p><code>RetryingHandler</code> and <code>DeadLetterHandler</code> wrap the user's <code>MessageHandler</code>.</p></div>
+    <div class="key"><h4>Façade</h4><p><code>Broker</code>, so the demo and tests touch one class.</p></div>
+    <div class="key"><h4>Not Singleton</h4><p>Inject the broker; singletons make tests share state and reviewers notice.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: responsibility table for every class</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
     <tr><td><code>Message</code> (record)</td><td>Immutable payload</td><td>key, payload, headers, publishedAt</td></tr>
@@ -95,27 +146,68 @@
     <tr><td><code>MessageHandler</code> (interface)</td><td>User code</td><td><code>handle(Record)</code>; wrapped by <code>RetryingHandler</code></td></tr>
     <tr><td><code>Broker</code></td><td>Façade, registry of topics and groups</td><td><code>createTopic</code>, <code>publish</code>, <code>subscribe</code>, <code>shutdown</code></td></tr>
   </table></div>
-  <div class="flow">
-    <span class="node">Producer</span><span class="arrow">→</span>
-    <span class="node hl">Broker<small>façade</small></span><span class="arrow">→</span>
-    <span class="node">Topic<small>Partitioner</small></span><span class="arrow">→</span>
-    <span class="node store">Partition 0..N-1<small>append-only log</small></span><span class="arrow">←<small>read(offset)</small></span>
-    <span class="node">ConsumerWorker<small>one thread each</small></span><span class="arrow">↔</span>
-    <span class="node hl">ConsumerGroup<small>assignment + offsets</small></span>
-  </div>
-  <p class="flow-caption">Figure: producers append through the broker; workers pull from the partitions their group assigned them and commit offsets back to the group.</p>
-  <h3>Patterns and why</h3>
-  <ul>
-    <li><b>Strategy</b> for <code>Partitioner</code> and the group's assignment strategy (range vs round-robin): the interviewer will ask "what if I want sticky assignment" and you add a class.</li>
-    <li><b>Observer / publish-subscribe</b> is the domain itself; groups are the subscribers.</li>
-    <li><b>Decorator</b> for <code>RetryingHandler</code> and <code>DeadLetterHandler</code> around the user's <code>MessageHandler</code>.</li>
-    <li><b>Façade</b> (<code>Broker</code>) so the demo and tests touch one class.</li>
-    <li>Not Singleton. Inject the broker; singletons make tests share state and reviewers notice.</li>
-  </ul>
+  </details>
 
-  <h2 id="code"><span class="n">05</span>Core code</h2>
+  <h2 id="watch"><span class="n">05</span>Watch it work</h2>
+  <p>Topic <code>orders</code> with 2 partitions. Group <code>billing</code> has consumers C1 and C2. Each row is a partition; the small number under a cell is its <dfn title="The position of a message inside one partition, starting at 0">offset</dfn>.</p>
+  <div class="stepper"><b class="title">Publish, consume, commit, rebalance</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span></div>
+      <div class="cells idx"><span class="cell">P1</span></div>
+      <div class="ptrs"><span>gen=1</span><span>C1 → P0</span><span>C2 → P1</span><span>committed P0=0, P1=0</span></div>
+      <figcaption>Both partitions are empty. The group assigned one partition to each consumer: generation 1.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell hl" data-i="0">o-1 #1</span></div>
+      <div class="cells idx"><span class="cell">P1</span></div>
+      <div class="ptrs"><span class="on">publish key=order-1</span><span>hash % 2 = 0</span><span>returns (P0, 0)</span></div>
+      <figcaption><code>KeyHashPartitioner</code> maps <code>order-1</code> to P0. Append under P0's lock gives offset 0 and wakes C1.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell" data-i="0">o-1 #1</span><span class="cell" data-i="1">o-3 #1</span><span class="cell hl" data-i="2">o-1 #2</span></div>
+      <div class="cells idx"><span class="cell">P1</span><span class="cell" data-i="0">o-2 #1</span><span class="cell" data-i="1">o-2 #2</span></div>
+      <div class="ptrs"><span>committed P0=0, P1=0</span></div>
+      <figcaption>Four producers keep publishing. Every <code>order-1</code> message lands on P0, so #1 always sits before #2.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
+      <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell" data-i="1">o-2 #2</span></div>
+      <div class="ptrs"><span class="on">committed P0=2</span><span class="on">committed P1=1</span></div>
+      <figcaption>C1 handles offsets 0–1, then commits 2 (the next offset to read). Commit after handling = <dfn title="A crash between handling and commit means the message is delivered again, never lost">at-least-once</dfn>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
+      <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell bad" data-i="1">o-2 #2</span></div>
+      <div class="ptrs"><span class="on">C2 leaves</span><span class="on">gen=2</span><span>C1 → P0, P1</span></div>
+      <figcaption>C2 leaves mid-batch. <code>rebalance()</code> publishes a new assignment with generation 2; C1 now owns both partitions.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
+      <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell bad" data-i="1">o-2 #2</span></div>
+      <div class="ptrs"><span class="on">C2 commit(P1, 2, gen=1) → false</span><span>committed P1=1</span></div>
+      <figcaption>C2's late commit carries generation 1, so it is rejected. The committed offset stays at 1.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell ok" data-i="2">o-1 #2</span></div>
+      <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell ok" data-i="1">o-2 #2</span></div>
+      <div class="ptrs"><span>gen=2</span><span class="on">committed P0=3, P1=2</span></div>
+      <figcaption>C1 resumes P1 from committed offset 1. If C2 had already handled it, <code>o-2 #2</code> is seen twice: the at-least-once contract.</figcaption>
+    </figure>
+  </div></div>
+
+  <h2 id="code"><span class="n">06</span>Core code</h2>
   <p>Java 21. Records for value types, virtual threads for workers. The partition log is the heart; get it right first.</p>
-  <pre><code>public record Message(String key, String payload, Instant publishedAt) {}
+  <pre><code>    long append(Message m) {
+        lock.lock();
+        try {
+            log.add(m);
+            appended.signalAll(); // wake long-polling readers
+            return log.size() - 1L;
+        } finally {
+            lock.unlock();
+        }
+    }</code></pre>
+  <details class="code"><summary>Show Java: Message, Record, Partitioner</summary><pre><code>public record Message(String key, String payload, Instant publishedAt) {}
 
 public record Record(String topic, int partition, long offset, Message message) {}
 
@@ -133,9 +225,8 @@ public final class KeyHashPartitioner implements Partitioner {
         }
         return Math.floorMod(key.hashCode(), numPartitions); // floorMod: hashCode can be negative
     }
-}</code></pre>
-
-  <pre><code>final class Partition {
+}</code></pre></details>
+  <details class="code"><summary>Show Java: Partition</summary><pre><code>final class Partition {
     private final String topic;
     private final int id;
     private final List&lt;Message&gt; log = new ArrayList&lt;&gt;();
@@ -176,9 +267,8 @@ public final class KeyHashPartitioner implements Partitioner {
             lock.unlock();
         }
     }
-}</code></pre>
-
-  <pre><code>public final class Topic {
+}</code></pre></details>
+  <details class="code"><summary>Show Java: Topic</summary><pre><code>public final class Topic {
     private final String name;
     private final List&lt;Partition&gt; partitions;
     private final Partitioner partitioner;
@@ -198,8 +288,8 @@ public final class KeyHashPartitioner implements Partitioner {
     Partition partition(int p) { return partitions.get(p); }
     int partitionCount() { return partitions.size(); }
     String name() { return name; }
-}</code></pre>
-
+}</code></pre></details>
+  <details class="code"><summary>Show Java: ConsumerGroup</summary>
   <p>The consumer group owns membership and offsets. Every structural change bumps a generation number; a worker holding a stale generation cannot commit, which is the same fencing idea Kafka uses.</p>
   <pre><code>final class ConsumerGroup {
     private final String id;
@@ -238,9 +328,8 @@ public final class KeyHashPartitioner implements Partitioner {
         committed.merge(partition, nextOffset, Math::max); // offsets never move backwards
         return true;
     }
-}</code></pre>
-
-  <pre><code>@FunctionalInterface
+}</code></pre></details>
+  <details class="code"><summary>Show Java: MessageHandler, ConsumerWorker</summary><pre><code>@FunctionalInterface
 public interface MessageHandler {
     void handle(Record record) throws Exception;
 }
@@ -293,9 +382,8 @@ final class ConsumerWorker implements Runnable {
     }
 
     void stop() { running = false; }
-}</code></pre>
-
-  <pre><code>public final class Broker implements AutoCloseable {
+}</code></pre></details>
+  <details class="code"><summary>Show Java: Broker, Subscription</summary><pre><code>public final class Broker implements AutoCloseable {
     private final Map&lt;String, Topic&gt; topics = new ConcurrentHashMap&lt;&gt;();
     private final Map&lt;String, ConsumerGroup&gt; groups = new ConcurrentHashMap&lt;&gt;();
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
@@ -339,11 +427,24 @@ final class ConsumerWorker implements Runnable {
 @FunctionalInterface
 public interface Subscription extends AutoCloseable {
     @Override void close();
-}</code></pre>
-
+}</code></pre></details>
   <div class="callout tip"><b>The demo that sells it</b><p>In <code>main</code>: topic "orders" with 3 partitions, two groups ("billing" with 2 consumers, "audit" with 1), 4 producer threads publishing keys <code>order-1..order-10</code> with sequence numbers. Each handler asserts the sequence for its key never goes backwards. Print "OK: per-key order held across 4,000 messages". That one line answers the ordering question before it is asked.</p></div>
 
-  <h2 id="concurrency"><span class="n">06</span>Concurrency and edge cases</h2>
+  <h2 id="concurrency"><span class="n">07</span>Concurrency and edge cases</h2>
+  <p>The bug reviewers hunt: a rebalance lands while a worker is mid-batch.</p>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker C2 (old owner)</th><th>Worker C1 (new owner)</th><th>committed P1</th></tr></thead><tbody>
+    <tr><td>t1</td><td>reads P1 from offset 1</td><td></td><td>1</td></tr>
+    <tr><td>t2</td><td>handling offset 1…</td><td>rebalance: gets P1, reads from 1</td><td>1</td></tr>
+    <tr><td>t3</td><td></td><td>handles offsets 1–4, commits 5</td><td>5</td></tr>
+    <tr><td>t4</td><td>no fence: commits 2</td><td></td><td class="bad">2 (regressed, 2–4 redelivered)</td></tr>
+    <tr><td>t4 (fixed)</td><td><code>commit(P1, 2, gen=1)</code> → false</td><td></td><td class="ok">5</td></tr>
+  </tbody></table></div>
+  <ul>
+    <li><b>Fence:</b> check the generation before each record and again on commit.</li>
+    <li><b>Never go backwards:</b> <code>committed.merge(p, next, Math::max)</code>.</li>
+    <li>A record already inside a handler can still be redelivered once. That is at-least-once, so handlers must be <dfn title="Running it twice has the same effect as running it once">idempotent</dfn>.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: every risk and how the design prevents it</summary>
   <div class="tbl"><table>
     <tr><th>Risk</th><th>What goes wrong</th><th>How the design prevents it</th></tr>
     <tr><td>Two producers append to one partition</td><td>Lost write or two messages with one offset (<code>ArrayList</code> is not thread-safe)</td><td>Append and offset assignment happen under the partition lock, so offset = index is unique.</td></tr>
@@ -357,10 +458,21 @@ public interface Subscription extends AutoCloseable {
     <tr><td>Time</td><td>Tests depend on wall clock for retention/delays</td><td>Inject <code>java.time.Clock</code>; tests use a mutable fixed clock.</td></tr>
   </table></div>
   <p><b>Idempotency.</b> At-least-once means the handler must tolerate duplicates. Offer a producer-side idempotency key in headers and an <code>IdempotentHandler</code> decorator that keeps a bounded set of processed message ids per partition. Kafka's idempotent producer does the broker-side equivalent with producer id and sequence numbers.</p>
+  </details>
 
-  <h2 id="extensions"><span class="n">07</span>Extensions interviewers add mid-round</h2>
+  <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
+  <div class="grid">
+    <div class="card"><h4>Bounded, producers block</h4><p>Second <code>Condition notFull</code>, or a separate bounded blocking queue (code below).</p></div>
+    <div class="card"><h4>DLQ + retry with backoff</h4><p>Decorator; after the last failure publish to <code>&lt;topic&gt;.dlq</code> and let the offset advance.</p></div>
+    <div class="card"><h4>Replay from offset or time</h4><p><code>seek()</code> sets the committed offset; binary-search by <code>publishedAt</code>.</p></div>
+    <div class="card"><h4>Retention</h4><p><code>baseOffset</code> per partition; index = offset − baseOffset.</p></div>
+    <div class="card"><h4>Push delivery</h4><p>Keep the internal pull loop; the worker is the pusher.</p></div>
+    <div class="card"><h4>Filtering / wildcards</h4><p>A <code>Predicate&lt;Record&gt;</code> per subscription; offsets still advance.</p></div>
+    <div class="card"><h4>Make it real Kafka</h4><p>Segmented files, replication, a group coordinator, offsets in a compacted topic.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full answers for each extension</summary>
   <details class="qa"><summary>"Make the queue bounded; producers should block when full."</summary><p>Per-partition capacity plus a second <code>Condition notFull</code>. Producers <code>await</code> while full; consumers cannot free space in a log, so define "full" as retained-minus-slowest-committed-offset and trim. Simpler alternative the interviewer often wants: a separate bounded blocking queue, below.</p></details>
-  <pre><code>public final class BoundedBlockingQueue&lt;T&gt; {
+  <details class="code"><summary>Show Java: BoundedBlockingQueue</summary><pre><code>public final class BoundedBlockingQueue&lt;T&gt; {
     private final Object[] items;
     private int head, tail, count;
     private final ReentrantLock lock = new ReentrantLock();
@@ -389,7 +501,7 @@ public interface Subscription extends AutoCloseable {
             return item;
         } finally { lock.unlock(); }
     }
-}</code></pre>
+}</code></pre></details>
   <p>This is the same two-condition design as <code>java.util.concurrent.ArrayBlockingQueue</code>. For the thread-pool follow-up: workers loop on <code>take()</code>; <code>shutdown()</code> sets a flag, rejects new submits and lets workers drain then exit (enqueue one poison pill per worker or check the flag with <code>poll(timeout)</code>); <code>shutdownNow()</code> interrupts workers and returns the undrained tasks. <code>submit</code> wraps the task in a <code>FutureTask</code> so exceptions surface through <code>Future.get()</code> instead of killing the worker.</p>
   <details class="qa"><summary>"Add a dead-letter queue and retries with backoff."</summary><p>Decorator: <code>new RetryingHandler(userHandler, maxAttempts, backoff, dlqPublisher)</code>. After the last failure it publishes the record plus error headers to <code>&lt;topic&gt;.dlq</code> and returns normally so the offset advances. Mention that blocking retries stall the partition; for long backoff, publish to a delay/retry topic instead.</p></details>
   <details class="qa"><summary>"Consumers should be able to replay from an offset or a timestamp."</summary><p><code>seek(partition, offset)</code> on the group sets the committed offset. For timestamps, binary-search the partition log by <code>publishedAt</code> since appends are time-ordered (with an injected clock, tests stay deterministic).</p></details>
@@ -397,8 +509,16 @@ public interface Subscription extends AutoCloseable {
   <details class="qa"><summary>"Push-based delivery instead of polling."</summary><p>Keep the internal pull loop; the worker is the pusher. That gives backpressure for free (it only fetches when the handler finished). True broker-push needs per-consumer in-flight limits and acks, which is more code for no gain in one process.</p></details>
   <details class="qa"><summary>"Message filtering / wildcard subscriptions."</summary><p>A <code>Predicate&lt;Record&gt;</code> on the subscription, applied before the handler; offsets still advance for filtered records. Wildcards: resolve topic patterns at subscribe time and on <code>createTopic</code>.</p></details>
   <details class="qa"><summary>"How would this become real Kafka?" (CleverTap-style)</summary><p>Partition becomes a segmented append-only file with an offset index, replicated to followers; the leader acks once in-sync replicas have it (<code>acks=all</code>, <code>min.insync.replicas</code>). Group coordination moves to a coordinator broker with heartbeats and session timeouts. Offsets live in an internal compacted topic. Ordering is still only per partition.</p></details>
+  </details>
 
-  <h2 id="tests"><span class="n">08</span>Tests to write</h2>
+  <h2 id="tests"><span class="n">09</span>Tests to write</h2>
+  <div class="keys">
+    <div class="key"><h4>Offsets contiguous</h4><p>8 threads × 1,000 publishes to one partition → offsets 0..7999, no gaps.</p></div>
+    <div class="key"><h4>Per-key order</h4><p>Sequence numbers per key strictly increase in the handler.</p></div>
+    <div class="key"><h4>Stale commit rejected</h4><p>Old generation → <code>commit</code> returns false, offset unchanged.</p></div>
+  </div>
+  <p>Use latches with timeouts, never <code>Thread.sleep</code>.</p>
+  <details class="deep"><summary>Go deeper: all ten tests</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
     <tr><td><code>sameKeyAlwaysLandsOnSamePartition</code></td><td>1,000 publishes of key "k" return one partition id.</td></tr>
@@ -413,8 +533,9 @@ public interface Subscription extends AutoCloseable {
     <tr><td><code>closeStopsWorkersPromptly</code></td><td><code>broker.close()</code> returns and executor is terminated within timeout.</td></tr>
   </table></div>
   <p>Use <code>CountDownLatch</code> and <code>awaitility</code>-style polling with timeouts rather than <code>Thread.sleep</code>. A flaky concurrent test in a live round costs more than a missing one.</p>
+  </details>
 
-  <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected, and review questions</h2>
+  <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected, and review questions</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
       <li><b>Weak shutdown and exception handling</b> in the thread pool follow-up (Rubrik "lean hire": <code>shutdown()</code> not convincing, catching only <code>InterruptedException</code> and <code>Exception</code> was "not enough" — think about what a task's exception does to the worker thread and how callers observe it).</li>
@@ -425,6 +546,7 @@ public interface Subscription extends AutoCloseable {
       <li>No running demo at the end; code that "would work".</li>
     </ul>
   </div>
+  <h3>Interview questions</h3>
   <details class="qa"><summary>Why a lock per partition and not one lock for the broker?</summary><p>Partitions are independent units of ordering, so they are the natural unit of mutual exclusion. Producers to different partitions never contend. The topic and group maps are <code>ConcurrentHashMap</code>, so lookup is lock-free.</p></details>
   <details class="qa"><summary>Why not <code>CopyOnWriteArrayList</code> for the log?</summary><p>Every append copies the array: O(n) per write, quadratic overall. It is for read-mostly lists with rare writes, the opposite of a log.</p></details>
   <details class="qa"><summary>Why not just use <code>LinkedBlockingQueue</code> per partition?</summary><p>A queue removes on take, so a second group cannot read the same message and nobody can replay. A log plus per-group offsets gives fan-out and replay for free. For a single-group work queue a <code>BlockingQueue</code> is fine, and I would say so.</p></details>
@@ -433,7 +555,7 @@ public interface Subscription extends AutoCloseable {
   <details class="qa"><summary>Why virtual threads here?</summary><p>Workers mostly block in <code>awaitNanos</code>; virtual threads make one-thread-per-consumer cheap. <code>ReentrantLock</code> does not pin a carrier thread the way <code>synchronized</code> did before JDK 24, which is another reason for explicit locks in the partition.</p></details>
   <details class="qa"><summary>How do you add a new partitioning rule without touching <code>Topic</code>?</summary><p>Implement <code>Partitioner</code> and pass it to <code>createTopic</code>. Open/closed: the topic only depends on the interface.</p></details>
 
-  <h2 id="plan"><span class="n">10</span>A 90-minute plan</h2>
+  <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
     <div class="step"><span class="t">0–8 min</span><span>Clarify: groups, per-key ordering, pull, at-least-once, dynamic membership. Write the agreed requirements as a comment block at the top of <code>Main</code>.</span></div>
     <div class="step"><span class="t">8–15 min</span><span>Sketch classes (table above) and the publish and consume flow. Name the patterns aloud.</span></div>
@@ -445,7 +567,32 @@ public interface Subscription extends AutoCloseable {
     <div class="step"><span class="t">Review 30 min</span><span>Walk the reviewer through the lock map: which lock guards what. Expect "why", "what if a consumer crashes", "how to make it Kafka".</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">11</span>Sources</h2>
+  <h2 id="quiz"><span class="n">12</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">The interviewer wants all events for one order processed in order. What do you guarantee?</p>
+    <div class="opts"><button class="opt" type="button">Global order across the topic</button><button class="opt" type="button">Order only with a single consumer group</button><button class="opt" type="button">Order per key, because one key always maps to one partition</button></div>
+    <p class="why">Global order would force one partition. Hashing the order id to a partition keeps its events ordered while other keys run in parallel.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">You move <code>commit</code> before the handler call. What changes?</p>
+    <div class="opts"><button class="opt" type="button">Delivery becomes at-most-once: a crash after commit loses the message</button><button class="opt" type="button">Delivery becomes exactly-once</button><button class="opt" type="button">Nothing, order is the same</button></div>
+    <p class="why">The offset already moved past the message, so nobody re-reads it after a crash.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why use a log plus per-group offsets instead of a <code>LinkedBlockingQueue</code> per partition?</p>
+    <div class="opts"><button class="opt" type="button">It is faster to append</button><button class="opt" type="button">A queue removes on take, so other groups cannot read it and nobody can replay</button><button class="opt" type="button">BlockingQueue is not thread-safe</button></div>
+    <p class="why">A log keeps every message; each group tracks its own position, which gives fan-out and replay.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">A worker that lost its partition in a rebalance tries to commit. What stops it?</p>
+    <div class="opts"><button class="opt" type="button">The partition lock</button><button class="opt" type="button"><code>ConcurrentHashMap</code></button><button class="opt" type="button">The generation number: a stale generation makes <code>commit</code> return false</button></div>
+    <p class="why">Each rebalance bumps the generation. Commits carry the generation they were assigned under, so old owners are fenced out.</p></div>
+
+  <div class="cheat" id="cheat"><b>Cheat sheet</b><ul>
+    <li>Topic → N partitions; partition = append-only list, offset = index.</li>
+    <li>Same key → same partition (<code>floorMod(hash, n)</code>); order is per partition only.</li>
+    <li>Different groups = broadcast; same group = load sharing, one consumer per partition.</li>
+    <li>Lock per partition + <code>Condition</code> long-poll; no busy-waiting.</li>
+    <li>Process then commit <code>offset + 1</code> = at-least-once; handlers idempotent.</li>
+    <li>Rebalance bumps generation; stale commits rejected; <code>merge(Math::max)</code>.</li>
+    <li>Strategy (partitioner), Decorator (retry/DLQ), Façade (Broker), no Singleton.</li>
+    <li>Have a running demo by minute 70; restore the interrupt flag on shutdown.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">13</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/7240231/" target="_blank" rel="noopener">Flipkart SDE-3, Bangalore, 6 YoE: in-memory message streaming machine coding + 30-min evaluation (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/7629615/" target="_blank" rel="noopener">Rubrik SE-2: bounded queue and thread pool with submit/execute/shutdown/shutdownNow (LeetCode)</a></li>
@@ -457,5 +604,6 @@ public interface Subscription extends AutoCloseable {
 
   <div class="foot"><a href="lld-splitwise.html">← Prev: Splitwise</a><a href="../index.html">Back to the playbook</a><a href="lld-cache-library.html">Next: Cache library →</a></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

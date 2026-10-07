@@ -12,25 +12,35 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html" aria-current="page">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../dsa.html">Lesson · DSA</a></div>
   <h1>Heaps and Intervals</h1>
-  <p class="lede">Six techniques cover almost every interval or "top/median/rooms" question: sort and sweep, a min-heap of end times, two heaps for a running median, a difference array for capacity, sort + DP + binary search for weighted scheduling, and a size-K heap for top-K.</p>
+  <p class="lede">After this page you can spot any interval, "rooms", "median" or "top K" question and pick the right one of six tools in under a minute.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> ~5 h including the 8 problems</span>
     <span class="fact"><b>Seen:</b> Amazon (car pooling twice, median twice), Uber, Google, Walmart, Intuit, Salesforce</span>
   </div>
   <div class="chips"><span class="chip hot">Amazon</span><span class="chip">Uber</span><span class="chip">Google</span><span class="chip">Walmart</span><span class="chip">Intuit</span><span class="chip">Salesforce</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Sort intervals by start, then sweep once to merge or count.</li>
+    <li>A min-heap of end times tells you which room frees up first.</li>
+    <li>Two heaps (low half, high half) give a running median in O(log n).</li>
+    <li>Small coordinates? A difference array beats any heap: O(n + C).</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A railway station master assigning platforms. Trains arrive in time order; he glances at the board for the platform that empties soonest. If that train has left, reuse the platform; if not, open a new one. The board is the min-heap.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
-    <li><a href="#when">When to use these patterns</a></li>
-    <li><a href="#model">The mental model, with traces</a></li>
+    <li><a href="#when">Which tool for which phrase</a></li>
+    <li><a href="#model">Key ideas</a></li>
+    <li><a href="#watch">Watch it work</a></li>
     <li><a href="#templates">Java templates</a></li>
     <li><a href="#problems">Worked problems (8)</a></li>
     <li><a href="#mistakes">Mistakes and follow-ups</a></li>
-    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#selfcheck">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
-  <h2 id="when"><span class="n">01</span>When to use these patterns</h2>
-  <p>The input is a list of <code>[start, end]</code> pairs, or a stream where you need "the best so far". Map the phrase in the problem to the tool:</p>
+  <h2 id="when"><span class="n">01</span>Which tool for which phrase</h2>
   <div class="tbl"><table>
     <tr><th>Phrase in the problem</th><th>Tool</th><th>Cost</th></tr>
     <tr><td>"merge overlapping", "insert interval", "remove the fewest to make non-overlapping"</td><td>Sort by start (or end), sweep once</td><td class="num">O(n log n)</td></tr>
@@ -41,54 +51,142 @@
     <tr><td>"top K", "K closest", "K most frequent"</td><td>Min-heap capped at K (or bucket sort / quickselect)</td><td class="num">O(n log K)</td></tr>
     <tr><td>"book if no conflict", online inserts with overlap check</td><td><code>TreeMap</code> floor/ceiling lookups</td><td class="num">O(log n) per op</td></tr>
   </table></div>
-  <div class="callout info"><b>Decide the boundary rule first</b><p>Does <code>[1,5]</code> overlap <code>[5,8]</code>? In merge-intervals yes (they touch and merge). In meeting rooms and calendars the intervals are half-open <code>[start, end)</code>, so a meeting ending at 5 frees the room for one starting at 5. Say this out loud in the interview; it decides <code>&lt;</code> versus <code>&lt;=</code>.</p></div>
+  <div class="callout info"><b>Decide the boundary rule first</b><p>Does <code>[1,5]</code> overlap <code>[5,8]</code>? In merge-intervals, yes: touching blocks merge. Meeting rooms and calendars are <dfn title="Includes start, excludes end: a meeting ending at 5 has left by 5">half-open</dfn> <code>[start, end)</code>, so a room freed at 5 hosts a 5 o'clock meeting. Say it out loud; it decides <code>&lt;</code> versus <code>&lt;=</code>.</p></div>
 
-  <h2 id="model"><span class="n">02</span>The mental model, with traces</h2>
-  <h3>Sort and sweep</h3>
-  <p>Once intervals are sorted by start, any interval can only overlap the block you are currently building, never an older one. So you keep one "current block" and either extend its end or close it and start a new one. One pass after the sort.</p>
-
-  <h3>Min-heap of end times (counting rooms)</h3>
-  <p>Process meetings in start order. The heap holds the end time of every occupied room. Before placing a meeting, every room whose end time is <code>&lt;= start</code> is free. The smallest end time sits at the heap's root, so checking "is any room free?" is a <code>peek()</code>. The heap's size is the number of rooms in use; its maximum over the sweep is the answer.</p>
-  <p>Trace on <code>[[0,30],[5,10],[15,20],[18,40],[31,35]]</code>:</p>
-  <div class="tbl"><table>
-    <tr><th>Meeting</th><th>Root before</th><th>Action</th><th>Heap after</th><th>Rooms</th></tr>
-    <tr><td>[0,30]</td><td>empty</td><td>new room</td><td>{30}</td><td class="num">1</td></tr>
-    <tr><td>[5,10]</td><td>30 &gt; 5</td><td>new room</td><td>{10, 30}</td><td class="num">2</td></tr>
-    <tr><td>[15,20]</td><td>10 &lt;= 15</td><td>reuse the room freed at 10</td><td>{20, 30}</td><td class="num">2</td></tr>
-    <tr><td>[18,40]</td><td>20 &gt; 18</td><td>new room</td><td>{20, 30, 40}</td><td class="num">3</td></tr>
-    <tr><td>[31,35]</td><td>20 &lt;= 31</td><td>reuse</td><td>{30, 35, 40}</td><td class="num">3</td></tr>
-  </table></div>
-  <p>Answer: 3. Note that at [31,35] two rooms are actually free (ends 20 and 30), but popping only one keeps the heap size equal to the peak so far, which is all the problem asks.</p>
-
-  <h3>Two heaps (running median)</h3>
-  <p>Split the numbers into a low half (max-heap, root = largest of the small numbers) and a high half (min-heap, root = smallest of the large numbers). Keep <code>low.size() == high.size()</code> or one more. The median is then <code>low.peek()</code> or the average of both roots. Trace adding 5, 15, 1, 3:</p>
-  <div class="tbl"><table>
-    <tr><th>Add</th><th>low (max-heap)</th><th>high (min-heap)</th><th>Median</th></tr>
-    <tr><td>5</td><td>{5}</td><td>{}</td><td class="num">5</td></tr>
-    <tr><td>15</td><td>{5}</td><td>{15}</td><td class="num">10.0</td></tr>
-    <tr><td>1</td><td>{5, 1}</td><td>{15}</td><td class="num">5</td></tr>
-    <tr><td>3</td><td>{3, 1}</td><td>{5, 15}</td><td class="num">4.0</td></tr>
-  </table></div>
-
-  <h3>Difference array</h3>
-  <p>When coordinates are small integers (car pooling: 0..1000) you do not need a heap at all. Record <code>+k</code> where a range starts and <code>-k</code> where it ends; a running prefix sum then gives the load at every point. Trips <code>[[2,1,5],[3,3,7]]</code> give <code>diff[1]=+2, diff[3]=+3, diff[5]=-2, diff[7]=-3</code>, and the prefix sums are 2, 2, 5, 5, 3, 3, 0 at locations 1..7. With capacity 4, location 3 fails.</p>
-
-  <h3>Weighted interval scheduling</h3>
-  <p>Sort jobs by end time. <code>dp[i]</code> is the best profit using only the first <code>i</code> jobs. For job <code>i</code> you either skip it (<code>dp[i-1]</code>) or take it and add the best from jobs that end by its start. Those jobs form a prefix of the sorted array (ends are sorted), so a binary search finds its length <code>k</code>: <code>dp[i] = max(dp[i-1], dp[k] + profit)</code>.</p>
-  <div class="flow">
-    <span class="node">Sort by end</span><span class="arrow">→</span>
-    <span class="node hl">For job i<small>binary search k = jobs ending ≤ start</small></span><span class="arrow">→</span>
-    <span class="node">dp[i] = max(skip, dp[k] + p)</span><span class="arrow">→</span>
-    <span class="node store">dp[n]</span>
+  <h2 id="model"><span class="n">02</span>Key ideas</h2>
+  <div class="keys">
+    <div class="key"><h4>Sort and sweep</h4><p>Sorted by start, an interval can only overlap the block you are building. Extend its end or start a new block. One pass.</p>
+      <div class="viz cells"><span class="cell win">1–3</span><span class="cell win">2–6</span><span class="cell">8–10</span></div></div>
+    <div class="key"><h4>Min-heap of ends</h4><p>Heap holds each busy room's end time. Root ≤ start means a room is free. Peak heap size = rooms needed.</p>
+      <div class="viz cells"><span class="cell hl">10</span><span class="cell">30</span></div></div>
+    <div class="key"><h4>Two heaps for the median</h4><p>Max-heap keeps the low half, min-heap the high half. Sizes equal or low has one more. Median = root(s).</p>
+      <div class="viz cells"><span class="cell">1</span><span class="cell hl">3</span><span class="cell dim">|</span><span class="cell hl">5</span><span class="cell">15</span></div></div>
+    <div class="key"><h4>Difference array</h4><p><code>+k</code> where a range starts, <code>−k</code> where it ends. A running sum gives the load at every point.</p>
+      <div class="viz cells"><span class="cell">0</span><span class="cell ok">+2</span><span class="cell">0</span><span class="cell ok">+3</span><span class="cell">0</span><span class="cell bad">−2</span></div></div>
+    <div class="key"><h4>Weighted scheduling</h4><p>Sort by end. <code>dp[i] = max(skip, dp[k] + profit)</code>, where k = jobs ending by this start (binary search).</p></div>
+    <div class="key"><h4>Top-K with a min-heap</h4><p>Cap the heap at K. The root is the weakest survivor; anything bigger evicts it. O(log K) per item.</p></div>
   </div>
-  <p class="flow-caption">Figure: the three steps of weighted interval scheduling. Greedy by earliest end works only when every job has the same weight.</p>
+  <p>A <dfn title="A tree-shaped queue where the smallest (min-heap) or largest (max-heap) item is always at the root. Java: PriorityQueue">heap</dfn> gives you the smallest item in O(1) and adds or removes in O(log n). Java's <code>PriorityQueue</code> is a min-heap by default.</p>
+  <details class="deep"><summary>Go deeper: the original explanations and traces</summary>
+    <h3>Sort and sweep</h3>
+    <p>Once intervals are sorted by start, any interval can only overlap the block you are currently building, never an older one. So you keep one "current block" and either extend its end or close it and start a new one. One pass after the sort.</p>
+    <h3>Min-heap of end times (counting rooms)</h3>
+    <p>Process meetings in start order. The heap holds the end time of every occupied room. Before placing a meeting, every room whose end time is <code>&lt;= start</code> is free. The smallest end time sits at the heap's root, so checking "is any room free?" is a <code>peek()</code>. The heap's size is the number of rooms in use; its maximum over the sweep is the answer.</p>
+    <p>Trace on <code>[[0,30],[5,10],[15,20],[18,40],[31,35]]</code>:</p>
+    <div class="tbl"><table>
+      <tr><th>Meeting</th><th>Root before</th><th>Action</th><th>Heap after</th><th>Rooms</th></tr>
+      <tr><td>[0,30]</td><td>empty</td><td>new room</td><td>{30}</td><td class="num">1</td></tr>
+      <tr><td>[5,10]</td><td>30 &gt; 5</td><td>new room</td><td>{10, 30}</td><td class="num">2</td></tr>
+      <tr><td>[15,20]</td><td>10 &lt;= 15</td><td>reuse the room freed at 10</td><td>{20, 30}</td><td class="num">2</td></tr>
+      <tr><td>[18,40]</td><td>20 &gt; 18</td><td>new room</td><td>{20, 30, 40}</td><td class="num">3</td></tr>
+      <tr><td>[31,35]</td><td>20 &lt;= 31</td><td>reuse</td><td>{30, 35, 40}</td><td class="num">3</td></tr>
+    </table></div>
+    <p>Answer: 3. Note that at [31,35] two rooms are actually free (ends 20 and 30), but popping only one keeps the heap size equal to the peak so far, which is all the problem asks.</p>
+    <h3>Two heaps (running median)</h3>
+    <p>Split the numbers into a low half (max-heap, root = largest of the small numbers) and a high half (min-heap, root = smallest of the large numbers). Keep <code>low.size() == high.size()</code> or one more. The median is then <code>low.peek()</code> or the average of both roots. Trace adding 5, 15, 1, 3:</p>
+    <div class="tbl"><table>
+      <tr><th>Add</th><th>low (max-heap)</th><th>high (min-heap)</th><th>Median</th></tr>
+      <tr><td>5</td><td>{5}</td><td>{}</td><td class="num">5</td></tr>
+      <tr><td>15</td><td>{5}</td><td>{15}</td><td class="num">10.0</td></tr>
+      <tr><td>1</td><td>{5, 1}</td><td>{15}</td><td class="num">5</td></tr>
+      <tr><td>3</td><td>{3, 1}</td><td>{5, 15}</td><td class="num">4.0</td></tr>
+    </table></div>
+    <h3>Difference array</h3>
+    <p>When coordinates are small integers (car pooling: 0..1000) you do not need a heap at all. Record <code>+k</code> where a range starts and <code>-k</code> where it ends; a running prefix sum then gives the load at every point. Trips <code>[[2,1,5],[3,3,7]]</code> give <code>diff[1]=+2, diff[3]=+3, diff[5]=-2, diff[7]=-3</code>, and the prefix sums are 2, 2, 5, 5, 3, 3, 0 at locations 1..7. With capacity 4, location 3 fails.</p>
+    <h3>Weighted interval scheduling</h3>
+    <p>Sort jobs by end time. <code>dp[i]</code> is the best profit using only the first <code>i</code> jobs. For job <code>i</code> you either skip it (<code>dp[i-1]</code>) or take it and add the best from jobs that end by its start. Those jobs form a prefix of the sorted array (ends are sorted), so a binary search finds its length <code>k</code>: <code>dp[i] = max(dp[i-1], dp[k] + profit)</code>.</p>
+    <div class="flow">
+      <span class="node">Sort by end</span><span class="arrow">→</span>
+      <span class="node hl">For job i<small>binary search k = jobs ending ≤ start</small></span><span class="arrow">→</span>
+      <span class="node">dp[i] = max(skip, dp[k] + p)</span><span class="arrow">→</span>
+      <span class="node store">dp[n]</span>
+    </div>
+    <p class="flow-caption">Figure: the three steps of weighted interval scheduling. Greedy by earliest end works only when every job has the same weight.</p>
+    <h3>Top-K with a heap</h3>
+    <p>To keep the K largest, use a <em>min</em>-heap of size K. The root is the weakest of your current top K; any new item bigger than it evicts it. You never hold more than K items, so each step is O(log K), not O(log n).</p>
+  </details>
 
-  <h3>Top-K with a heap</h3>
-  <p>To keep the K largest, use a <em>min</em>-heap of size K. The root is the weakest of your current top K; any new item bigger than it evicts it. You never hold more than K items, so each step is O(log K), not O(log n).</p>
+  <h2 id="watch"><span class="n">03</span>Watch it work</h2>
+  <div class="stepper"><b class="title">Minimum meeting rooms · A[0,30) B[5,10) C[15,20) D[18,40) E[31,35)</b><div class="frames">
+    <figure class="frame">
+      <div class="matrix">
+        <div class="cells"><span class="cell dim">t</span><span class="cell dim">0</span><span class="cell dim">5</span><span class="cell dim">10</span><span class="cell dim">15</span><span class="cell dim">20</span><span class="cell dim">25</span><span class="cell dim">30</span><span class="cell dim">35</span></div>
+        <div class="cells"><span class="cell dim">R1</span><span class="cell hl">A</span><span class="cell hl">A</span><span class="cell hl">A</span><span class="cell hl">A</span><span class="cell hl">A</span><span class="cell hl">A</span><span class="cell"></span><span class="cell"></span></div>
+      </div>
+      <div class="ptrs"><span class="on">heap: [30]</span><span>rooms=1</span></div>
+      <figcaption>Each cell is a 5-minute slot. A starts at 0 with an empty heap, so it opens room 1. Push its end time 30.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix">
+        <div class="cells"><span class="cell dim">t</span><span class="cell dim">0</span><span class="cell dim">5</span><span class="cell dim">10</span><span class="cell dim">15</span><span class="cell dim">20</span><span class="cell dim">25</span><span class="cell dim">30</span><span class="cell dim">35</span></div>
+        <div class="cells"><span class="cell dim">R1</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell"></span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R2</span><span class="cell"></span><span class="cell hl">B</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+      </div>
+      <div class="cells"><span class="cell hl">10</span><span class="cell">30</span></div>
+      <div class="ptrs"><span class="on">root 30 &gt; 5</span><span>rooms=2</span></div>
+      <figcaption>B starts at 5. The earliest end is 30, still busy, so open room 2. Heap root is now 10.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix">
+        <div class="cells"><span class="cell dim">t</span><span class="cell dim">0</span><span class="cell dim">5</span><span class="cell dim">10</span><span class="cell dim">15</span><span class="cell dim">20</span><span class="cell dim">25</span><span class="cell dim">30</span><span class="cell dim">35</span></div>
+        <div class="cells"><span class="cell dim">R1</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell"></span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R2</span><span class="cell"></span><span class="cell win">B</span><span class="cell"></span><span class="cell hl">C</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+      </div>
+      <div class="cells"><span class="cell bad">10</span><span class="cell hl">20</span><span class="cell">30</span></div>
+      <div class="ptrs"><span class="on">root 10 ≤ 15: poll</span><span>rooms=2</span></div>
+      <figcaption>C starts at 15. Root 10 ≤ 15, so room 2 is free: poll 10, push 20. No new room.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix">
+        <div class="cells"><span class="cell dim">t</span><span class="cell dim">0</span><span class="cell dim">5</span><span class="cell dim">10</span><span class="cell dim">15</span><span class="cell dim">20</span><span class="cell dim">25</span><span class="cell dim">30</span><span class="cell dim">35</span></div>
+        <div class="cells"><span class="cell dim">R1</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell"></span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R2</span><span class="cell"></span><span class="cell win">B</span><span class="cell"></span><span class="cell win">C</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R3</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell hl">D</span><span class="cell hl">D</span><span class="cell hl">D</span><span class="cell hl">D</span><span class="cell hl">D</span></div>
+      </div>
+      <div class="cells"><span class="cell hl">20</span><span class="cell">30</span><span class="cell">40</span></div>
+      <div class="ptrs"><span class="on">root 20 &gt; 18</span><span>rooms=3</span></div>
+      <figcaption>D starts at 18 but the earliest room frees at 20. Open room 3. Three meetings run at once in slot 15.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="matrix">
+        <div class="cells"><span class="cell dim">t</span><span class="cell dim">0</span><span class="cell dim">5</span><span class="cell dim">10</span><span class="cell dim">15</span><span class="cell dim">20</span><span class="cell dim">25</span><span class="cell dim">30</span><span class="cell dim">35</span></div>
+        <div class="cells"><span class="cell dim">R1</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell win">A</span><span class="cell"></span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R2</span><span class="cell"></span><span class="cell win">B</span><span class="cell"></span><span class="cell win">C</span><span class="cell"></span><span class="cell"></span><span class="cell hl">E</span><span class="cell"></span></div>
+        <div class="cells"><span class="cell dim">R3</span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell win">D</span><span class="cell win">D</span><span class="cell win">D</span><span class="cell win">D</span><span class="cell win">D</span></div>
+      </div>
+      <div class="cells"><span class="cell hl">30</span><span class="cell">35</span><span class="cell">40</span></div>
+      <div class="ptrs"><span class="on">root 20 ≤ 31: poll</span><span class="on">answer = 3</span></div>
+      <figcaption>E starts at 31: poll 20, reuse room 2, push 35. The heap never grew past 3, so 3 rooms.</figcaption>
+    </figure>
+  </div></div>
 
-  <h2 id="templates"><span class="n">03</span>Java templates</h2>
-  <p>All four templates compile as one class. Sweep and heap are O(n log n) time, O(n) space; the difference array is O(n + C) time and O(C) space; top-K is O(n log K) time and O(K) space.</p>
-  <pre><code>import java.util.*;
+  <div class="stepper"><b class="title">Running median · add 5, 15, 1, 3</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">low</span><span class="cell hl">5</span><span class="cell dim">high</span></div>
+      <div class="ptrs"><span class="on">median = 5</span></div>
+      <figcaption>Add 5. It passes through low into high, then high is bigger, so it moves back. low = {5}.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">low</span><span class="cell hl">5</span><span class="cell dim">high</span><span class="cell hl">15</span></div>
+      <div class="ptrs"><span class="on">median = (5 + 15) / 2 = 10.0</span></div>
+      <figcaption>Add 15. It lands in high. Sizes are equal, so average the two roots.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">1</span><span class="cell hl">5</span><span class="cell dim">high</span><span class="cell">15</span></div>
+      <div class="ptrs"><span class="on">median = 5</span></div>
+      <figcaption>Add 1. low has one extra, so the median is low's root, 5.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">1</span><span class="cell hl">3</span><span class="cell dim">high</span><span class="cell hl">5</span><span class="cell">15</span></div>
+      <div class="ptrs"><span class="on">median = (3 + 5) / 2 = 4.0</span></div>
+      <figcaption>Add 3. 5 is pushed up to high to keep every low value ≤ every high value. Median 4.0.</figcaption>
+    </figure>
+  </div></div>
+
+  <h2 id="templates"><span class="n">04</span>Java templates</h2>
+  <div class="stats"><div class="stat"><b>O(n log n)</b><span>sweep, rooms heap</span></div><div class="stat"><b>O(n + C)</b><span>difference array, O(C) space</span></div><div class="stat"><b>O(n log K)</b><span>top-K, O(K) space</span></div></div>
+  <p>All four templates compile as one class: sweep, max overlap, difference array, top-K.</p>
+  <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class HeapTemplates {
     // 1. Sort by start, sweep, compare with the last kept interval. O(n log n).
@@ -148,16 +246,19 @@ class HeapTemplates {
         }
         return heap.stream().mapToInt(Integer::intValue).toArray();
     }
-}</code></pre>
+}</code></pre></details>
   <div class="callout tip"><b>Comparator hygiene</b><p>Use <code>Integer.compare(a[0], b[0])</code> or <code>Comparator.comparingInt</code>, never <code>a[0] - b[0]</code>. Subtraction overflows when values span negative and large positive numbers, and the sort silently goes wrong.</p></div>
 
-  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+  <h2 id="problems"><span class="n">05</span>Worked problems</h2>
 
-  <h3>4.1 Merge Intervals</h3>
-  <p><a href="https://leetcode.com/problems/merge-intervals/" target="_blank" rel="noopener">LeetCode 56: merge-intervals</a> · Medium</p>
-  <p><b>Problem.</b> Given a list of intervals, merge every group that overlaps (touching counts as overlapping) and return the merged list.</p>
-  <p><b>Key insight.</b> After sorting by start, an interval overlaps the result only if it starts at or before the end of the last merged block.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.1 Merge Intervals <a href="https://leetcode.com/problems/merge-intervals/" target="_blank" rel="noopener">LeetCode 56: merge-intervals ↗</a></h3>
+    <dl><dt>Level</dt><dd>Medium</dd>
+      <dt>Task</dt><dd>Merge every group that overlaps (touching counts) and return the merged list.</dd>
+      <dt>Insight</dt><dd>After sorting by start, an interval overlaps the result only if it starts at or before the end of the last merged block.</dd>
+      <dt>Cost</dt><dd>O(n log n) time for the sort, O(n) space for the output.</dd></dl>
+    <div class="cells"><span class="cell win">1–4</span><span class="cell win">4–5</span><span class="cell">→</span><span class="cell ok">1–5</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public int[][] merge(int[][] intervals) {
@@ -173,15 +274,17 @@ class Solution {
         }
         return out.toArray(new int[0][]);
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(n log n) time for the sort, O(n) space for the output.</p>
-  <p><b>Edge cases.</b> One interval; touching intervals <code>[1,4],[4,5]</code> merge to <code>[1,5]</code>; an interval fully inside another (<code>[1,10],[2,3]</code>) needs the <code>Math.max</code>, not a plain assignment.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases</summary><p>One interval; touching <code>[1,4],[4,5]</code> → <code>[1,5]</code>; nested <code>[1,10],[2,3]</code> needs <code>Math.max</code>, not a plain assignment.</p></details>
+  </div>
 
-  <h3>4.2 Meeting Rooms II <span class="chip">Premium</span></h3>
-  <p><a href="https://leetcode.com/problems/meeting-rooms-ii/" target="_blank" rel="noopener">LeetCode 253: meeting-rooms-ii</a> · Medium · Premium</p>
-  <p><b>Problem.</b> Given meeting times <code>[start, end)</code>, return the minimum number of conference rooms needed so no two overlapping meetings share a room.</p>
-  <p><b>Key insight.</b> The min-heap of end times from section 02. When the earliest-ending room is free, reuse it; otherwise open a room. Heap size at the end equals the peak.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.2 Meeting Rooms II <span class="chip">Premium</span> <a href="https://leetcode.com/problems/meeting-rooms-ii/" target="_blank" rel="noopener">LeetCode 253: meeting-rooms-ii ↗</a></h3>
+    <dl><dt>Level</dt><dd>Medium · Premium</dd>
+      <dt>Task</dt><dd>Given meetings <code>[start, end)</code>, return the minimum rooms so no two overlapping meetings share one.</dd>
+      <dt>Insight</dt><dd>The min-heap of end times from the stepper above. Earliest-ending room free? Reuse it; otherwise open a room. Final heap size = peak.</dd>
+      <dt>Cost</dt><dd>O(n log n) time, O(n) space.</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public int minMeetingRooms(int[][] intervals) {
@@ -195,16 +298,19 @@ class Solution {
         }
         return ends.size();
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(n log n) time, O(n) space.</p>
-  <p><b>Alternative without a heap.</b> Sort starts and ends separately. Walk the starts with pointer <code>i</code>; if <code>starts[i] &lt; ends[j]</code> you need a room (<code>rooms++</code>), otherwise a meeting ended (<code>j++</code>) and its room is reused. Same complexity, smaller constants. Interviewers like hearing both.</p>
-  <p><b>Edge cases.</b> Empty input returns 0; back-to-back meetings <code>[1,5],[5,10]</code> need one room because of <code>&lt;=</code>.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases</summary><p>Empty input returns 0; back-to-back <code>[1,5],[5,10]</code> needs one room because of <code>&lt;=</code>.</p></details>
+    <details class="deep"><summary>Go deeper: alternative without a heap</summary><p>Sort starts and ends separately. Walk the starts with pointer <code>i</code>; if <code>starts[i] &lt; ends[j]</code> you need a room (<code>rooms++</code>), otherwise a meeting ended (<code>j++</code>) and its room is reused. Same complexity, smaller constants. Interviewers like hearing both.</p></details>
+  </div>
 
-  <h3>4.3 Meeting Rooms III</h3>
-  <p><a href="https://leetcode.com/problems/meeting-rooms-iii/" target="_blank" rel="noopener">LeetCode 2402: meeting-rooms-iii</a> · Hard</p>
-  <p><b>Problem.</b> Rooms <code>0..n-1</code>. Meetings (unique starts) are assigned in start order to the lowest-numbered free room. If none is free, the meeting waits for the room that frees up first (lowest number on ties) and keeps its original duration. Return the room that hosted the most meetings (lowest number on ties).</p>
-  <p><b>Key insight.</b> Two heaps: free room numbers (min by number) and busy rooms (min by end time, then number). Before each meeting, move every room whose end is <code>&lt;= start</code> back to the free heap. If none is free, pop the earliest busy room and shift the meeting.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.3 Meeting Rooms III <a href="https://leetcode.com/problems/meeting-rooms-iii/" target="_blank" rel="noopener">LeetCode 2402: meeting-rooms-iii ↗</a></h3>
+    <dl><dt>Level</dt><dd>Hard</dd>
+      <dt>Task</dt><dd>Rooms <code>0..n-1</code>. Each meeting takes the lowest free room, or waits for the earliest-freeing one, keeping its duration. Return the most-used room.</dd>
+      <dt>Insight</dt><dd>Two heaps: free room numbers, and busy rooms ordered by (end, number). Release every busy room with end ≤ start before each meeting.</dd>
+      <dt>Cost</dt><dd>O(m log m + m log n) for m meetings, O(n + m) space.</dd></dl>
+    <div class="cells"><span class="cell dim">free</span><span class="cell hl">0</span><span class="cell">2</span><span class="cell dim">busy</span><span class="cell">(12,1)</span><span class="cell">(15,3)</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public int mostBooked(int n, int[][] meetings) {
@@ -244,15 +350,26 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(m log m + m log n) for m meetings, O(n + m) space.</p>
-  <p><b>Edge cases.</b> Delayed meetings push end times beyond the input range, so store ends as <code>long</code>; tie-break the busy heap on room number or you pick the wrong room; release <em>all</em> rooms that are free by <code>start</code> (a <code>while</code>, not an <code>if</code>) so the lowest-numbered one is chosen.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: full statement and edge cases</summary>
+      <p><b>Problem.</b> Rooms <code>0..n-1</code>. Meetings (unique starts) are assigned in start order to the lowest-numbered free room. If none is free, the meeting waits for the room that frees up first (lowest number on ties) and keeps its original duration. Return the room that hosted the most meetings (lowest number on ties).</p>
+      <p><b>Key insight.</b> Two heaps: free room numbers (min by number) and busy rooms (min by end time, then number). Before each meeting, move every room whose end is <code>&lt;= start</code> back to the free heap. If none is free, pop the earliest busy room and shift the meeting.</p>
+      <p><b>Edge cases.</b> Delayed meetings push end times beyond the input range, so store ends as <code>long</code>; tie-break the busy heap on room number or you pick the wrong room; release <em>all</em> rooms that are free by <code>start</code> (a <code>while</code>, not an <code>if</code>) so the lowest-numbered one is chosen.</p>
+    </details>
+  </div>
 
-  <h3>4.4 Car Pooling <span class="chip hot">Amazon ×2</span></h3>
-  <p><a href="https://leetcode.com/problems/car-pooling/" target="_blank" rel="noopener">LeetCode 1094: car-pooling</a> · Medium</p>
-  <p><b>Problem.</b> A car drives east only. Each trip is <code>[passengers, from, to]</code>; passengers board at <code>from</code> and leave at <code>to</code>. Return whether the car's capacity is ever exceeded.</p>
-  <p><b>Key insight.</b> The first answer most people give is "sort by start, min-heap of (end, passengers), drop finished trips": O(n log n). Amazon asked for the O(N) follow-up in both reports: locations are bounded (0..1000), so a difference array removes the sort.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.4 Car Pooling <span class="chip hot">Amazon ×2</span> <a href="https://leetcode.com/problems/car-pooling/" target="_blank" rel="noopener">LeetCode 1094: car-pooling ↗</a></h3>
+    <dl><dt>Level</dt><dd>Medium</dd>
+      <dt>Task</dt><dd>Car drives east. Trips <code>[passengers, from, to]</code>. Is capacity ever exceeded?</dd>
+      <dt>Insight</dt><dd>Most people answer with a heap, O(n log n). Amazon asked for O(N) in both reports: locations are 0..1000, so a difference array removes the sort.</dd>
+      <dt>Cost</dt><dd>O(n + C) time with C = 1001, O(C) space.</dd></dl>
+    <p>Trips <code>[[2,1,5],[3,3,7]]</code>, capacity 4. Top row: <code>diff</code>. Bottom row: running load.</p>
+    <div class="matrix">
+      <div class="cells idx"><span class="cell" data-i="0">0</span><span class="cell ok" data-i="1">+2</span><span class="cell" data-i="2">0</span><span class="cell ok" data-i="3">+3</span><span class="cell" data-i="4">0</span><span class="cell" data-i="5">−2</span><span class="cell" data-i="6">0</span><span class="cell" data-i="7">−3</span></div>
+      <div class="cells"><span class="cell">0</span><span class="cell win">2</span><span class="cell win">2</span><span class="cell bad">5</span><span class="cell bad">5</span><span class="cell win">3</span><span class="cell win">3</span><span class="cell">0</span></div>
+    </div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public boolean carPooling(int[][] trips, int capacity) {
@@ -270,15 +387,18 @@ class Solution {
         }
         return true;
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(n + C) time with C = 1001, O(C) space. If coordinates were up to 10<sup>9</sup>, you would fall back to a <code>TreeMap&lt;Integer, Integer&gt;</code> of deltas (O(n log n)) or sort the events.</p>
-  <p><b>Edge cases.</b> Drop-off and pick-up at the same location: the <code>-k</code> at <code>to</code> and <code>+k</code> at the next <code>from</code> land in the same cell, so they cancel correctly. A single trip larger than capacity fails immediately.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: large coordinates and edge cases</summary><p>If coordinates were up to 10<sup>9</sup>, you would fall back to a <code>TreeMap&lt;Integer, Integer&gt;</code> of deltas (O(n log n)) or sort the events.</p><p><b>Edge cases.</b> Drop-off and pick-up at the same location: the <code>-k</code> at <code>to</code> and <code>+k</code> at the next <code>from</code> land in the same cell, so they cancel correctly. A single trip larger than capacity fails immediately.</p></details>
+  </div>
 
-  <h3>4.5 My Calendar I <span class="chip">Uber</span></h3>
-  <p><a href="https://leetcode.com/problems/my-calendar-i/" target="_blank" rel="noopener">LeetCode 729: my-calendar-i</a> · Medium</p>
-  <p><b>Problem.</b> Implement <code>book(start, end)</code> on half-open intervals: accept and store it if it does not overlap any accepted booking, otherwise reject.</p>
-  <p><b>Key insight.</b> Store accepted bookings in a <code>TreeMap</code> keyed by start. Since accepted bookings never overlap, only two neighbours matter: the booking that starts at or before the new start (must end by <code>start</code>) and the one that starts at or after it (must start at or after <code>end</code>).</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.5 My Calendar I <span class="chip">Uber</span> <a href="https://leetcode.com/problems/my-calendar-i/" target="_blank" rel="noopener">LeetCode 729: my-calendar-i ↗</a></h3>
+    <dl><dt>Level</dt><dd>Medium</dd>
+      <dt>Task</dt><dd><code>book(start, end)</code> on half-open intervals: accept if it overlaps nothing accepted, else reject.</dd>
+      <dt>Insight</dt><dd><code>TreeMap</code> keyed by start. Only two neighbours matter: the floor entry must end by <code>start</code>; the ceiling entry must start at or after <code>end</code>.</dd>
+      <dt>Cost</dt><dd>O(log n) per booking, O(n) space. An O(n) list scan is a fine first step, but expect "do better".</dd></dl>
+    <div class="cells"><span class="cell win">10–20</span><span class="cell hl">20–30 ✓</span><span class="cell win">30–40</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class MyCalendar {
     private final TreeMap&lt;Integer, Integer&gt; bookings = new TreeMap&lt;&gt;();   // start -&gt; end
@@ -298,15 +418,17 @@ class MyCalendar {
         bookings.put(start, end);
         return true;
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(log n) per booking, O(n) space. The O(n) list scan is fine to mention as a first step but expect "do better".</p>
-  <p><b>Edge cases.</b> Booking <code>[20,30)</code> right after <code>[10,20)</code> succeeds. Uber-style follow-up: make it thread-safe for a real booking service. The simple answer is a <code>synchronized book</code>; the senior answer is that in production the check-and-insert belongs in the database (an exclusion constraint on a range type in Postgres, or a row lock on the resource) so two app instances cannot double-book.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases and the thread-safety follow-up</summary><p>Booking <code>[20,30)</code> right after <code>[10,20)</code> succeeds. Uber-style follow-up: make it thread-safe for a real booking service. The simple answer is a <code>synchronized book</code>; the senior answer is that in production the check-and-insert belongs in the database (an exclusion constraint on a range type in Postgres, or a row lock on the resource) so two app instances cannot double-book.</p></details>
+  </div>
 
-  <h3>4.6 Find Median from Data Stream <span class="chip hot">Amazon ×2</span> <span class="chip">Uber</span> <span class="chip">Walmart</span> <span class="chip">Intuit</span></h3>
-  <p><a href="https://leetcode.com/problems/find-median-from-data-stream/" target="_blank" rel="noopener">LeetCode 295: find-median-from-data-stream</a> · Hard</p>
-  <p><b>Problem.</b> Support <code>addNum(num)</code> and <code>findMedian()</code> over all numbers seen so far.</p>
-  <p><b>Key insight.</b> The two-heap split from section 02. The add routine always passes the number through <code>low</code> into <code>high</code>, then rebalances, which keeps every value in <code>low</code> &lt;= every value in <code>high</code> without comparing roots by hand.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.6 Find Median from Data Stream <span class="chip hot">Amazon ×2</span> <span class="chip">Uber</span> <span class="chip">Walmart</span> <span class="chip">Intuit</span> <a href="https://leetcode.com/problems/find-median-from-data-stream/" target="_blank" rel="noopener">LeetCode 295: find-median-from-data-stream ↗</a></h3>
+    <dl><dt>Level</dt><dd>Hard</dd>
+      <dt>Task</dt><dd>Support <code>addNum(num)</code> and <code>findMedian()</code> over all numbers seen so far.</dd>
+      <dt>Insight</dt><dd>The two-heap stepper above. Always pass the number through <code>low</code> into <code>high</code>, then rebalance: low stays ≤ high with no manual root comparison.</dd>
+      <dt>Cost</dt><dd><code>addNum</code> O(log n), <code>findMedian</code> O(1), O(n) space.</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class MedianFinder {
     private final PriorityQueue&lt;Integer&gt; low = new PriorityQueue&lt;&gt;(Collections.reverseOrder()); // max-heap
@@ -329,16 +451,20 @@ class MedianFinder {
         }
         return (low.peek() + (long) high.peek()) / 2.0;
     }
-}</code></pre>
-  <p><b>Complexity.</b> <code>addNum</code> O(log n), <code>findMedian</code> O(1), O(n) space.</p>
-  <p><b>Edge cases.</b> Two copies of <code>Integer.MAX_VALUE</code>: summing as <code>int</code> overflows, hence the <code>(long)</code> cast. Duplicates are fine in <code>PriorityQueue</code> (unlike a <code>TreeSet</code>).</p>
-  <p><b>Follow-ups asked.</b> All numbers in [0, 100]: use a 101-slot count array and walk it, O(100) per query. 99% in [0, 100]: count array plus two overflow counters (below 0, above 100); the median almost always lands in the array. Sliding-window median: two heaps with lazy deletion (a map of "to be removed" counts) or two <code>TreeMap</code> multisets.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases</summary><p>Two <code>Integer.MAX_VALUE</code>s overflow an <code>int</code> sum, hence <code>(long)</code>. Duplicates are fine in <code>PriorityQueue</code> (unlike <code>TreeSet</code>).</p></details>
+    <details class="deep"><summary>Go deeper: follow-ups asked</summary><p>All numbers in [0, 100]: use a 101-slot count array and walk it, O(100) per query. 99% in [0, 100]: count array plus two overflow counters (below 0, above 100); the median almost always lands in the array. Sliding-window median: two heaps with lazy deletion (a map of "to be removed" counts) or two <code>TreeMap</code> multisets.</p></details>
+  </div>
 
-  <h3>4.7 Maximum Profit in Job Scheduling <span class="chip hot">Google ×2</span> <span class="chip">Salesforce</span></h3>
-  <p><a href="https://leetcode.com/problems/maximum-profit-in-job-scheduling/" target="_blank" rel="noopener">LeetCode 1235: maximum-profit-in-job-scheduling</a> · Hard</p>
-  <p><b>Problem.</b> Each job has a start, end and profit. Pick jobs with no overlap (a job may start exactly when another ends) to maximise total profit.</p>
-  <p><b>Key insight.</b> Weighted interval scheduling: sort by end, DP over prefixes, binary search for how many jobs end by the current start.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.7 Maximum Profit in Job Scheduling <span class="chip hot">Google ×2</span> <span class="chip">Salesforce</span> <a href="https://leetcode.com/problems/maximum-profit-in-job-scheduling/" target="_blank" rel="noopener">LeetCode 1235: maximum-profit-in-job-scheduling ↗</a></h3>
+    <dl><dt>Level</dt><dd>Hard</dd>
+      <dt>Task</dt><dd>Jobs have start, end, profit. Pick non-overlapping jobs (may start exactly when another ends) to maximise profit.</dd>
+      <dt>Insight</dt><dd>Weighted interval scheduling: sort by end, DP over prefixes, binary search for how many jobs end by the current start.</dd>
+      <dt>Cost</dt><dd>O(n log n) time, O(n) space.</dd></dl>
+    <p>Starts <code>[1,2,3,3]</code>, ends <code>[3,4,5,6]</code>, profits <code>[50,10,40,70]</code>. The last job (3–6, 70) has k = 1, so 50 + 70 = 120.</p>
+    <div class="cells idx"><span class="cell" data-i="dp0">0</span><span class="cell win" data-i="dp1">50</span><span class="cell" data-i="dp2">50</span><span class="cell" data-i="dp3">90</span><span class="cell hl" data-i="dp4">120</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public int jobScheduling(int[] startTime, int[] endTime, int[] profit) {
@@ -370,16 +496,17 @@ class Solution {
         }
         return lo;
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(n log n) time, O(n) space.</p>
-  <p><b>Trace</b> on starts <code>[1,2,3,3]</code>, ends <code>[3,4,5,6]</code>, profits <code>[50,10,40,70]</code>: dp = 0, 50, 50, 90, 120. The last job (3–6, 70) has k = 1 (only the 1–3 job ends by 3), so 50 + 70 = 120.</p>
-  <p><b>Edge cases.</b> Use upper bound (<code>end &lt;= start</code>) so a job ending exactly at the start counts; several jobs with the same end; worst-case total 5·10<sup>4</sup> × 10<sup>4</sup> = 5·10<sup>8</sup> fits in <code>int</code>, but say you checked.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases</summary><p>Upper bound (<code>end &lt;= start</code>) so a job ending exactly at the start counts; equal ends; worst case 5·10<sup>4</sup> × 10<sup>4</sup> = 5·10<sup>8</sup> fits in <code>int</code>, but say you checked.</p></details>
+  </div>
 
-  <h3>4.8 Top K Frequent Elements</h3>
-  <p><a href="https://leetcode.com/problems/top-k-frequent-elements/" target="_blank" rel="noopener">LeetCode 347: top-k-frequent-elements</a> · Medium</p>
-  <p><b>Problem.</b> Return the K values that appear most often in the array; any order is accepted and the answer is unique.</p>
-  <p><b>Key insight.</b> Count with a <code>HashMap</code>, then keep a min-heap of K entries ordered by count.</p>
-  <pre><code>import java.util.*;
+  <div class="prob">
+    <h3>5.8 Top K Frequent Elements <a href="https://leetcode.com/problems/top-k-frequent-elements/" target="_blank" rel="noopener">LeetCode 347: top-k-frequent-elements ↗</a></h3>
+    <dl><dt>Level</dt><dd>Medium</dd>
+      <dt>Task</dt><dd>Return the K most frequent values; any order, answer unique.</dd>
+      <dt>Insight</dt><dd>Count with a <code>HashMap</code>, then keep a min-heap of K entries ordered by count.</dd>
+      <dt>Cost</dt><dd>O(n + u log K) time, u = distinct values; O(u) space.</dd></dl>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.*;
 
 class Solution {
     public int[] topKFrequent(int[] nums, int k) {
@@ -402,33 +529,56 @@ class Solution {
         }
         return out;
     }
-}</code></pre>
-  <p><b>Complexity.</b> O(n + u log K) time where u is the number of distinct values, O(u) space.</p>
-  <p><b>Follow-up: better than n log K.</b> Bucket sort: an array of lists indexed by frequency (0..n), walked from the top until K values are collected, is O(n). Quickselect on the distinct values is O(u) average. For a stream that never ends (trending hashtags), see the Count-Min Sketch discussion in <a href="hld-top-k-trending.html">Top-K Trending</a>.</p>
-  <p><b>Edge cases.</b> K equals the number of distinct values; all elements identical.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Go deeper: edge cases</summary><p>K equals the number of distinct values; all elements identical.</p></details>
+    <details class="deep"><summary>Go deeper: better than n log K</summary><p>Bucket sort: an array of lists indexed by frequency (0..n), walked from the top until K values are collected, is O(n). Quickselect on the distinct values is O(u) average. For a stream that never ends (trending hashtags), see the Count-Min Sketch discussion in <a href="hld-top-k-trending.html">Top-K Trending</a>.</p></details>
+  </div>
 
-  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
-  <div class="callout warn"><b>Mistakes that cost the round</b><ul>
+  <h2 id="mistakes"><span class="n">06</span>Mistakes and follow-ups interviewers ask</h2>
+  <div class="callout warn"><b>Common mistakes</b><ul>
     <li>Not asking whether endpoints are inclusive, then fixing <code>&lt;</code> versus <code>&lt;=</code> by trial and error.</li>
     <li>Sorting by start for weighted scheduling. The DP needs ends sorted so "jobs that finish by t" is a prefix.</li>
     <li>Using a max-heap for top-K largest and polling K times. It works but costs O(n log n) and O(n) memory; the interviewer wants the size-K min-heap.</li>
     <li>Comparator by subtraction (<code>a[0] - b[0]</code>) and overflow.</li>
     <li>For the median, forgetting that <code>PriorityQueue</code> is a min-heap by default; the low half needs <code>Collections.reverseOrder()</code>.</li>
   </ul></div>
+  <h3>Interview questions</h3>
   <details class="qa"><summary>Why is greedy-by-earliest-end correct for unweighted scheduling but not here?</summary><p>With equal weights, finishing earliest leaves the most room for the rest, and an exchange argument proves it optimal. With weights, one long valuable job can beat two short cheap ones, so you must compare "take" and "skip" for each job, which is the DP.</p></details>
   <details class="qa"><summary>Merge intervals arrive as a stream. How do you keep them merged?</summary><p>Keep a <code>TreeMap&lt;start, end&gt;</code> of disjoint intervals. On insert, find the floor entry, merge forward while the next start is &lt;= the new end, and remove the absorbed entries. Amortised O(log n) per insert (LeetCode 352, Data Stream as Disjoint Intervals).</p></details>
   <details class="qa"><summary>Can you find the minimum rooms without a heap?</summary><p>Yes: sort starts and ends separately and sweep two pointers, or emit +1/−1 events and track the running maximum. Both are O(n log n); the event version extends naturally to "which time had the peak".</p></details>
   <details class="qa"><summary>Median of a huge stream that does not fit in memory?</summary><p>Exact median needs all the data. In practice you approximate: bucketed histograms if the range is known, or quantile sketches such as t-digest (used by Elasticsearch percentiles and many metrics systems). Mention the error bound you accept.</p></details>
   <details class="qa"><summary>Top-K across many servers?</summary><p>Each node computes a local top-K with counts; a coordinator merges them. That is exact only if you send full counts; with local top-K lists you can miss an item that is moderately frequent everywhere. Production systems use Count-Min Sketch plus a heap and accept small error.</p></details>
 
-  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
-  <details class="qa"><summary>1. For top-K largest, why a min-heap and not a max-heap?</summary><p>The min-heap's root is the smallest of the current K candidates, the one to evict when something bigger arrives. Size stays K, so each operation is O(log K).</p></details>
-  <details class="qa"><summary>2. What is <code>diff</code> after adding 3 to positions [2, 5) in an array of size 8, and what are the prefix sums?</summary><p><code>diff[2] = +3</code>, <code>diff[5] = -3</code>. Prefix sums: 0, 0, 3, 3, 3, 0, 0, 0.</p></details>
-  <details class="qa"><summary>3. In MedianFinder, which heap holds the extra element when the count is odd, and what is the median then?</summary><p><code>low</code> (the max-heap) holds one extra; the median is <code>low.peek()</code>.</p></details>
-  <details class="qa"><summary>4. In weighted job scheduling, why binary search with upper bound (<code>&lt;=</code>)?</summary><p>A job that ends exactly at the current start is compatible, so you want the count of jobs with <code>end &lt;= start</code>, which is the first index with <code>end &gt; start</code>.</p></details>
-  <details class="qa"><summary>5. Meeting Rooms III: why must end times be <code>long</code>?</summary><p>Delayed meetings start at the previous end, so ends accumulate: up to 10<sup>5</sup> meetings of length up to 5·10<sup>5</sup> can exceed <code>Integer.MAX_VALUE</code>.</p></details>
+  <h2 id="selfcheck"><span class="n">07</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">For top-K largest, why use a min-heap and not a max-heap?</p>
+    <div class="opts"><button class="opt" type="button">A min-heap sorts faster</button><button class="opt" type="button">Java has no max-heap</button><button class="opt" type="button">Its root is the weakest of the K kept, the one to evict; size stays K</button></div>
+    <p class="why">The min-heap's root is the smallest of the current K candidates, the one to evict when something bigger arrives. Size stays K, so each operation is O(log K).</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Add 3 to positions [2, 5) in an array of size 8 with a difference array. What are the prefix sums?</p>
+    <div class="opts"><button class="opt" type="button">0, 0, 3, 3, 3, 3, 0, 0</button><button class="opt" type="button">0, 0, 3, 3, 3, 0, 0, 0</button><button class="opt" type="button">0, 3, 3, 3, 0, 0, 0, 0</button></div>
+    <p class="why"><code>diff[2] = +3</code>, <code>diff[5] = -3</code>. Prefix sums: 0, 0, 3, 3, 3, 0, 0, 0. The end is half-open.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">In MedianFinder, the count is odd. Where is the median?</p>
+    <div class="opts"><button class="opt" type="button"><code>low.peek()</code>: the max-heap holds the extra element</button><button class="opt" type="button"><code>high.peek()</code>: the min-heap holds the extra element</button><button class="opt" type="button">The average of both roots</button></div>
+    <p class="why"><code>low</code> (the max-heap) holds one extra; the median is <code>low.peek()</code>.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Weighted job scheduling: why binary search with an upper bound (<code>end &lt;= start</code>)?</p>
+    <div class="opts"><button class="opt" type="button">It is faster than lower bound</button><button class="opt" type="button">A job ending exactly at the current start is compatible and must be counted</button><button class="opt" type="button">Jobs are sorted by start</button></div>
+    <p class="why">You want the count of jobs with <code>end &lt;= start</code>, which is the first index with <code>end &gt; start</code>.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Meeting Rooms III: why must end times be <code>long</code>?</p>
+    <div class="opts"><button class="opt" type="button">PriorityQueue needs long keys</button><button class="opt" type="button">Room numbers can exceed int</button><button class="opt" type="button">Delayed meetings start at previous ends, so ends accumulate past Integer.MAX_VALUE</button></div>
+    <p class="why">Up to 10<sup>5</sup> meetings of length up to 5·10<sup>5</sup> can push ends beyond <code>Integer.MAX_VALUE</code>.</p></div>
 
-  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <h2 id="cheat"><span class="n">08</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Ask first: closed <code>[a,b]</code> or half-open <code>[a,b)</code>? Decides <code>&lt;</code> vs <code>&lt;=</code>.</li>
+    <li>Merge / insert / remove-fewest → sort, sweep once.</li>
+    <li>Rooms / platforms / concurrency → sort by start + min-heap of ends; answer = peak size.</li>
+    <li>Median of stream → max-heap low + min-heap high, low has the extra.</li>
+    <li>Small coordinates, capacity → difference array + prefix sum, O(n + C).</li>
+    <li>Weighted non-overlapping jobs → sort by end, <code>dp[i] = max(dp[i-1], dp[k] + p)</code>, upper-bound search.</li>
+    <li>Top K → min-heap capped at K; O(n) with bucket sort.</li>
+    <li>Online "book if free" → <code>TreeMap</code> floor + ceiling.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">09</span>Sources / go deeper</h2>
   <ul class="sources">
     <li>Company tags come from the 2025–26 interview reports collected for this playbook: car pooling (Amazon, twice, with the O(N) difference-array follow-up), my calendar I (Uber), find median from data stream (Amazon ×2, Uber, Walmart, Intuit), maximum profit in job scheduling (Google ×2, Salesforce).</li>
     <li><a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html" target="_blank" rel="noopener">Java 21 PriorityQueue Javadoc</a> (O(log n) offer/poll, O(1) peek, linear <code>remove(Object)</code>)</li>
@@ -438,5 +588,6 @@ class Solution {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-monotonic-stack.html">Monotonic stack</a> · <a href="dsa-binary-search-on-answer.html">Binary search on answer</a> · <a href="hld-top-k-trending.html">Top-K trending (HLD)</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

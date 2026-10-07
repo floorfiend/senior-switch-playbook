@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html" aria-current="page">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../dsa.html">Lesson · DSA</a></div>
   <h1>Sliding Window and Two Pointers</h1>
-  <p class="lede">Turn O(n²) "check every subarray" brute force into a single O(n) pass. Learn the fixed window, the variable window (grow right, shrink left while invalid), the monotonic deque for window max/min, the "exactly K = atMost(K) − atMost(K−1)" trick, and two pointers from both ends.</p>
+  <p class="lede">Turn an O(n²) "check every subarray" brute force into one O(n) pass, and explain why it is O(n).</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 2 sessions of 2–3 h</span>
     <span class="fact"><b>Worked problems:</b> 7</span>
@@ -20,36 +20,92 @@
   </div>
   <div class="chips"><span class="chip hot">Uber</span><span class="chip hot">Flipkart</span><span class="chip hot">Amazon</span><span class="chip hot">Razorpay</span><span class="chip">PhonePe</span><span class="chip">LinkedIn</span><span class="chip">Goldman Sachs</span><span class="chip">Groww</span><span class="chip">Paytm</span><span class="chip">Salesforce</span><span class="chip">Teradata</span><span class="chip">Booking.com</span><span class="chip">Twilio</span><span class="chip">Oracle</span><span class="chip">eBay</span><span class="chip">ServiceNow</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Keep a window [left, right] over a contiguous piece; never re-scan it.</li>
+    <li>Move right to grow; move left to shrink while the window breaks the rule.</li>
+    <li>Both pointers only move forward, so the whole run is O(n).</li>
+    <li>Window max/min: a monotonic deque. "Exactly K": atMost(K) − atMost(K−1).</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A Mumbai local passing a row of shops. Through the window you see a few shops at once; a new one appears on the right as an old one leaves on the left. You never rewind the train.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#when">When to use this pattern</a></li>
-    <li><a href="#model">The mental model</a></li>
+    <li><a href="#model">Watch the variable window</a></li>
+    <li><a href="#deque">Window max with a deque</a></li>
+    <li><a href="#tricks">Exactly K and two ends</a></li>
     <li><a href="#templates">Java templates</a></li>
     <li><a href="#problems">Worked problems</a></li>
-    <li><a href="#mistakes">Mistakes and follow-ups</a></li>
-    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#interview">Interview questions</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
   <h2 id="when"><span class="n">01</span>When to use this pattern</h2>
-  <p>Reach for a window when the problem is about a <b>contiguous</b> piece of an array or string, and you can update the answer cheaply when one element enters on the right or leaves on the left.</p>
-  <div class="grid">
-    <div class="card"><h4>Fixed window</h4><p>"every subarray of size k", "average of each window", "maximum in each window of size k". The window length never changes; you add one and drop one each step.</p></div>
-    <div class="card"><h4>Variable window</h4><p>"longest substring such that…", "shortest subarray with sum ≥ S", "at most K distinct", "flip at most K zeros". Validity is monotonic: shrinking a valid window keeps it valid (for longest) or growing keeps it valid (for shortest).</p></div>
-    <div class="card"><h4>Monotonic deque</h4><p>"max/min of every window", "longest subarray where max − min ≤ limit". You need the window extreme in O(1) while elements leave from the left.</p></div>
-    <div class="card"><h4>Two pointers from both ends</h4><p>Sorted array pair sums, "container", "trapping water", palindromes. Each step you can prove one end can be discarded.</p></div>
+  <div class="keys">
+    <div class="key"><h4>Fixed window</h4><p>"Every subarray of size k". Add one, drop one per step.</p>
+      <div class="viz cells"><span class="cell dim">4</span><span class="cell win">2</span><span class="cell win">7</span><span class="cell hl">1</span><span class="cell">5</span></div></div>
+    <div class="key"><h4>Variable window</h4><p>"Longest substring such that…", "shortest subarray with sum ≥ S", "at most K distinct".</p></div>
+    <div class="key"><h4>Monotonic deque</h4><p>"Max/min of every window". The window extreme in O(1).</p></div>
+    <div class="key"><h4>Two pointers from both ends</h4><p>Pair sums, container, rain water. Each step discards one end.</p>
+      <div class="viz cells"><span class="cell hl">1</span><span class="cell dim">8</span><span class="cell dim">6</span><span class="cell hl">7</span></div></div>
   </div>
-  <div class="callout info"><b>The test that decides it</b><p>Ask: "if the window [l, r] is invalid, is [l, r+1] also invalid?" If yes, a variable window works because you never need to move <code>left</code> backwards. Negative numbers in a sum problem usually break this (sum can drop as you grow), which is why "subarray sum equals K" with negatives needs prefix sums + a HashMap, not a window.</p></div>
+  <div class="callout info"><b>The test that decides it</b><p>"If [l, r] is invalid, is [l, r+1] invalid too?" If yes, a window works: <code>left</code> never moves back. Negative sums break this.</p></div>
+  <details class="deep"><summary>Go deeper: what "monotonic validity" means</summary><p>Reach for a window when the problem is about a <b>contiguous</b> piece of an array or string, and you can update the answer cheaply when one element enters on the right or leaves on the left.</p><p>Validity is monotonic: shrinking a valid window keeps it valid (for longest) or growing keeps it valid (for shortest). For the deque: you need the window extreme in O(1) while elements leave from the left. For two pointers from both ends: each step you can prove one end can be discarded.</p><p>Negative numbers in a sum problem usually break the test (sum can drop as you grow), which is why "subarray sum equals K" with negatives needs prefix sums + a HashMap, not a window.</p></details>
 
-  <h2 id="model"><span class="n">02</span>The mental model, from scratch</h2>
-  <p>Brute force tries every pair (left, right): O(n²) windows, often O(n³) with the inner check. The window idea: keep two indices, both only ever move forward, so together they make at most 2n moves. You keep a small piece of <b>state</b> (a count, a sum, a frequency map, a deque) that describes the current window and update it in O(1) as elements enter and leave.</p>
-  <p>The variable-window loop always has the same three beats:</p>
-  <ol>
-    <li><b>Grow:</b> move <code>right</code> one step and add <code>a[right]</code> to the state.</li>
-    <li><b>Shrink while invalid:</b> while the state breaks the rule, remove <code>a[left]</code> and move <code>left</code> forward.</li>
-    <li><b>Record:</b> the window is now the longest valid one ending at <code>right</code>; update the answer.</li>
+  <h2 id="model"><span class="n">02</span>Watch the variable window</h2>
+  <p>Longest run of 1s if you may flip at most <b>k = 1</b> zero. State = number of zeros in the window.</p>
+  <div class="stepper"><b class="title">Max Consecutive Ones III · [1,1,0,0,1,1,1,0,1], k = 1</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">1</span><span class="cell hl" data-i="1">1</span><span class="cell" data-i="2">0</span><span class="cell" data-i="3">0</span><span class="cell" data-i="4">1</span><span class="cell" data-i="5">1</span><span class="cell" data-i="6">1</span><span class="cell" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=0</span><span class="on">right=1</span><span>zeros=0</span><span>best=2</span></div>
+      <figcaption>Grow right over two 1s. No zeros yet, window length 2.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">1</span><span class="cell win" data-i="1">1</span><span class="cell hl" data-i="2">0</span><span class="cell" data-i="3">0</span><span class="cell" data-i="4">1</span><span class="cell" data-i="5">1</span><span class="cell" data-i="6">1</span><span class="cell" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=0</span><span class="on">right=2</span><span>zeros=1</span><span>best=3</span></div>
+      <figcaption>Add the first 0. One zero is allowed, so [0..2] is valid: best = 3.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">1</span><span class="cell win" data-i="1">1</span><span class="cell win" data-i="2">0</span><span class="cell bad" data-i="3">0</span><span class="cell" data-i="4">1</span><span class="cell" data-i="5">1</span><span class="cell" data-i="6">1</span><span class="cell" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=0</span><span class="on">right=3</span><span>zeros=2</span><span>best=3</span></div>
+      <figcaption>Add the second 0: zeros = 2 &gt; k. The window is <b>invalid</b>, so shrink before recording.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">1</span><span class="cell dim" data-i="2">0</span><span class="cell hl" data-i="3">0</span><span class="cell" data-i="4">1</span><span class="cell" data-i="5">1</span><span class="cell" data-i="6">1</span><span class="cell" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span class="on">left=3</span><span>right=3</span><span>zeros=1</span><span>best=3</span></div>
+      <figcaption>Drop 1, 1, then 0 from the left (a <code>while</code>, not an <code>if</code>). Valid again.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">1</span><span class="cell dim" data-i="2">0</span><span class="cell win" data-i="3">0</span><span class="cell win" data-i="4">1</span><span class="cell win" data-i="5">1</span><span class="cell hl" data-i="6">1</span><span class="cell" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=3</span><span class="on">right=6</span><span>zeros=1</span><span>best=4</span></div>
+      <figcaption>Grow over three 1s. Window [3..6] has length 4: best = 4.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">1</span><span class="cell dim" data-i="2">0</span><span class="cell win" data-i="3">0</span><span class="cell win" data-i="4">1</span><span class="cell win" data-i="5">1</span><span class="cell win" data-i="6">1</span><span class="cell bad" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=3</span><span class="on">right=7</span><span>zeros=2</span><span>best=4</span></div>
+      <figcaption>Another 0 arrives: zeros = 2, invalid again.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">1</span><span class="cell dim" data-i="2">0</span><span class="cell dim" data-i="3">0</span><span class="cell win" data-i="4">1</span><span class="cell win" data-i="5">1</span><span class="cell win" data-i="6">1</span><span class="cell hl" data-i="7">0</span><span class="cell" data-i="8">1</span></div>
+      <div class="ptrs"><span class="on">left=4</span><span>right=7</span><span>zeros=1</span><span>best=4</span></div>
+      <figcaption>Drop the 0 at index 3. This time one removal is enough.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">1</span><span class="cell dim" data-i="2">0</span><span class="cell dim" data-i="3">0</span><span class="cell ok" data-i="4">1</span><span class="cell ok" data-i="5">1</span><span class="cell ok" data-i="6">1</span><span class="cell ok" data-i="7">0</span><span class="cell ok" data-i="8">1</span></div>
+      <div class="ptrs"><span>left=4</span><span class="on">right=8</span><span>zeros=1</span><span>best=5</span></div>
+      <figcaption>Answer 5. <code>left</code> moved 4 times and <code>right</code> 9 times: at most 2n moves in total, so O(n).</figcaption>
+    </figure>
+  </div></div>
+  <ol class="walk">
+    <li><span class="who">Grow</span><span>Move <code>right</code> one step; add <code>a[right]</code> to the state.</span></li>
+    <li><span class="who">Shrink</span><span>While the state breaks the rule, remove <code>a[left]</code> and move <code>left</code>.</span></li>
+    <li><span class="who">Record</span><span>The window is the longest valid one ending at <code>right</code>; update the answer.</span></li>
   </ol>
-  <h3>Trace: longest run of 1s with at most k = 1 zero flipped</h3>
-  <p>Input <code>[1,1,0,0,1,1,1,0,1]</code>. State = number of zeros in the window.</p>
+  <details class="deep"><summary>Go deeper: the full trace as a table</summary>
+  <p>Brute force tries every pair (left, right): O(n²) windows, often O(n³) with the inner check. The window idea: keep two indices, both only ever move forward, so together they make at most 2n moves. You keep a small piece of <b>state</b> (a count, a sum, a frequency map, a deque) that describes the current window and update it in O(1) as elements enter and leave.</p>
   <div class="tbl"><table>
     <tr><th>right</th><th>a[right]</th><th>zeros after grow</th><th>shrink steps</th><th>left</th><th>window</th><th>best</th></tr>
     <tr><td class="num">0</td><td>1</td><td>0</td><td>–</td><td>0</td><td>[1]</td><td>1</td></tr>
@@ -63,8 +119,55 @@
     <tr><td class="num">8</td><td>1</td><td>1</td><td>–</td><td>4</td><td>[1,1,1,0,1]</td><td>5</td></tr>
   </table></div>
   <p><code>left</code> moved 4 times in total, <code>right</code> 9 times. That is the amortised argument for O(n): the inner <code>while</code> looks nested, but across the whole run it executes at most n times.</p>
+  </details>
 
-  <h3>Monotonic deque: why window max is O(n)</h3>
+  <h2 id="deque"><span class="n">03</span>Window max with a deque</h2>
+  <p>A <dfn title="A double-ended queue whose values stay sorted (here: decreasing) from front to back">monotonic deque</dfn> holds candidate maxima, largest at the front.</p>
+  <div class="stepper"><b class="title">Sliding Window Maximum · [1,3,−1,−3,5,3,6,7], k = 3</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell hl" data-i="1">3</span><span class="cell" data-i="2">−1</span><span class="cell" data-i="3">−3</span><span class="cell" data-i="4">5</span><span class="cell" data-i="5">3</span><span class="cell" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span></div>
+      <div class="cells"><span class="cell ok">3</span></div>
+      <figcaption>3 arrives. 1 is older and smaller, so it can never be a max again: pop it from the back.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">1</span><span class="cell win" data-i="1">3</span><span class="cell hl" data-i="2">−1</span><span class="cell" data-i="3">−3</span><span class="cell" data-i="4">5</span><span class="cell" data-i="5">3</span><span class="cell" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 3</span></div>
+      <div class="cells"><span class="cell ok">3</span><span class="cell">−1</span></div>
+      <figcaption>−1 is smaller, so it waits behind 3. First full window: max = front = 3.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell win" data-i="1">3</span><span class="cell win" data-i="2">−1</span><span class="cell hl" data-i="3">−3</span><span class="cell" data-i="4">5</span><span class="cell" data-i="5">3</span><span class="cell" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 3</span></div>
+      <div class="cells"><span class="cell ok">3</span><span class="cell">−1</span><span class="cell">−3</span></div>
+      <figcaption>−3 joins the back. The front 3 is still inside the window: max = 3.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">3</span><span class="cell win" data-i="2">−1</span><span class="cell win" data-i="3">−3</span><span class="cell hl" data-i="4">5</span><span class="cell" data-i="5">3</span><span class="cell" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 5</span></div>
+      <div class="cells"><span class="cell ok">5</span></div>
+      <figcaption>Index 1 (value 3) left the window: pop the front. Then 5 pops −3 and −1 from the back.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">3</span><span class="cell dim" data-i="2">−1</span><span class="cell win" data-i="3">−3</span><span class="cell win" data-i="4">5</span><span class="cell hl" data-i="5">3</span><span class="cell" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 5</span></div>
+      <div class="cells"><span class="cell ok">5</span><span class="cell">3</span></div>
+      <figcaption>3 is smaller than 5, so it waits behind it. max = 5.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">3</span><span class="cell dim" data-i="2">−1</span><span class="cell dim" data-i="3">−3</span><span class="cell win" data-i="4">5</span><span class="cell win" data-i="5">3</span><span class="cell hl" data-i="6">6</span><span class="cell" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 6</span></div>
+      <div class="cells"><span class="cell ok">6</span></div>
+      <figcaption>6 pops 3 and 5: both are older and smaller. max = 6.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">1</span><span class="cell dim" data-i="1">3</span><span class="cell dim" data-i="2">−1</span><span class="cell dim" data-i="3">−3</span><span class="cell dim" data-i="4">5</span><span class="cell win" data-i="5">3</span><span class="cell win" data-i="6">6</span><span class="cell hl" data-i="7">7</span></div>
+      <div class="ptrs"><span>deque (front → back)</span><span class="on">output: 7</span></div>
+      <div class="cells"><span class="cell ok">7</span></div>
+      <figcaption>7 pops 6. Output: [3, 3, 5, 5, 6, 7]. Each index was pushed once and popped at most once: O(n).</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: why the deque beats a heap</summary>
   <p>A heap gives window max in O(n log k) but deleting the leaving element is awkward. The deque trick: keep indices whose values are <b>strictly decreasing</b> from front to back. When a new value x arrives, any older value ≤ x can never be a window max again (x is newer and at least as large, so it outlives them). Pop them from the back. The front is always the max; pop it from the front when its index leaves the window. Every index is pushed once and popped at most once.</p>
   <div class="tbl"><table>
     <tr><th>i</th><th>nums[i]</th><th>action</th><th>deque (values)</th><th>output (k = 3)</th></tr>
@@ -77,23 +180,37 @@
     <tr><td class="num">6</td><td>6</td><td>pop 3, 5; push</td><td>[6]</td><td>6</td></tr>
     <tr><td class="num">7</td><td>7</td><td>pop 6; push</td><td>[7]</td><td>7</td></tr>
   </table></div>
+  </details>
 
-  <h3>Exactly K = atMost(K) − atMost(K − 1)</h3>
-  <p>"Exactly K distinct" is not monotonic: a window with too few distinct values may become valid by growing, one with too many by shrinking, so a single window cannot decide which way to move. "At most K" <i>is</i> monotonic. For a fixed <code>right</code>, every start in <code>[left, right]</code> gives a valid subarray, so the count of at-most-K subarrays ending at <code>right</code> is <code>right − left + 1</code>. Subarrays with exactly K = (those with ≤ K) minus (those with ≤ K − 1).</p>
-
-  <h3>Two pointers from both ends</h3>
-  <p>Start <code>i = 0</code>, <code>j = n − 1</code>. At each step compare the ends and prove that one of them cannot be part of a better answer, then discard it. The proof is the whole interview answer; the code is three lines.</p>
+  <h2 id="tricks"><span class="n">04</span>Exactly K and two ends</h2>
+  <div class="stats"><div class="stat"><b>12</b><span>atMost(2) on [1,2,1,2,3]</span></div><div class="stat"><b>− 5</b><span>atMost(1)</span></div><div class="stat"><b>= 7</b><span>subarrays with exactly 2 distinct</span></div></div>
+  <ul>
+    <li><b>Exactly K</b> can't drive one window; <b>at most K</b> can.</li>
+    <li>Per <code>right</code>, add <code>right − left + 1</code> valid starts.</li>
+    <li>Exactly K = atMost(K) − atMost(K − 1).</li>
+  </ul>
   <div class="flow">
-    <span class="node">i = 0</span><span class="arrow">→</span>
+    <span class="node">i = 0, j = n − 1</span><span class="arrow">→</span>
     <span class="node hl">compare a[i], a[j]<small>prove one end is useless</small></span><span class="arrow">→</span>
     <span class="node">move that end inward</span><span class="arrow">→</span>
     <span class="node">stop when i meets j</span>
   </div>
-  <p class="flow-caption">Figure: each comparison permanently removes one index, so the loop runs n − 1 times.</p>
+  <p class="flow-caption">Two pointers from both ends: each comparison removes one index for good. The proof is the interview answer.</p>
+  <details class="deep"><summary>Go deeper: why exactly-K is not monotonic</summary><p>"Exactly K distinct" is not monotonic: a window with too few distinct values may become valid by growing, one with too many by shrinking, so a single window cannot decide which way to move. "At most K" <i>is</i> monotonic. For a fixed <code>right</code>, every start in <code>[left, right]</code> gives a valid subarray, so the count of at-most-K subarrays ending at <code>right</code> is <code>right − left + 1</code>. Subarrays with exactly K = (those with ≤ K) minus (those with ≤ K − 1).</p><p>Two pointers from both ends: start <code>i = 0</code>, <code>j = n − 1</code>. At each step compare the ends and prove that one of them cannot be part of a better answer, then discard it. The proof is the whole interview answer; the code is three lines.</p></details>
 
-  <h2 id="templates"><span class="n">03</span>Java templates</h2>
-  <p>Fixed and variable windows. Both run in O(n) time; space is O(1) for the fixed sum and O(alphabet) for the frequency map.</p>
-  <pre><code>import java.util.HashMap;
+  <h2 id="templates"><span class="n">05</span>Java templates</h2>
+  <pre><code>int left = 0, best = 0;
+for (int right = 0; right &lt; n; right++) {
+    add(a[right]);                       // 1. grow
+    while (invalid()) remove(a[left++]); // 2. shrink while invalid
+    best = Math.max(best, right - left + 1); // 3. record
+}</code></pre>
+  <div class="vs">
+    <div class="pick"><h4>Longest valid window <span class="tag">most common</span></h4><ul><li class="pro">Shrink while <b>invalid</b></li><li class="pro">Record after the loop</li></ul><p class="when">Max Consecutive Ones, Longest Substring.</p></div>
+    <div><h4>Shortest valid window</h4><ul><li class="pro">Shrink while <b>valid</b></li><li class="pro">Record inside the loop</li></ul><p class="when">Minimum Window Substring.</p></div>
+    <div><h4>Count windows</h4><ul><li class="pro">Add <code>right − left + 1</code> per step</li><li class="pro">atMost differences for "exactly"</li></ul><p class="when">LeetCode 992.</p></div>
+  </div>
+  <details class="code"><summary>Show Java solution: fixed and variable window templates</summary><pre><code>import java.util.HashMap;
 import java.util.Map;
 
 class SlidingTemplates {
@@ -129,9 +246,9 @@ class SlidingTemplates {
         }
         return best;
     }
-}</code></pre>
-  <p>The monotonic deque template is the <a href="#p-swm">Sliding Window Maximum</a> solution below, the at-most-K counting template is this (LeetCode 992, Subarrays with K Different Integers), and the two-ends template is <a href="#p-cmw">Container With Most Water</a>.</p>
-  <pre><code>import java.util.HashMap;
+}</code></pre></details>
+  <p>Both run in O(n) time; space is O(1) for the fixed sum and O(alphabet) for the frequency map. The monotonic deque template is <a href="#p-swm">Sliding Window Maximum</a>, the two-ends template is <a href="#p-cmw">Container With Most Water</a>.</p>
+  <details class="code"><summary>Show Java solution: at-most-K counting (LeetCode 992, Subarrays with K Different Integers)</summary><pre><code>import java.util.HashMap;
 import java.util.Map;
 
 class Solution {
@@ -155,20 +272,17 @@ class Solution {
         }
         return total;
     }
-}</code></pre>
-  <p>Complexity: O(n) time (two passes, each amortised O(n)), O(K) map space.</p>
-  <div class="callout tip"><b>Which variant am I in?</b><ul>
-    <li>Longest valid window: shrink while <b>invalid</b>, record after the loop.</li>
-    <li>Shortest valid window: shrink while <b>valid</b>, record inside the loop (Minimum Window Substring).</li>
-    <li>Count windows: add <code>right − left + 1</code> per step, use atMost differences for "exactly".</li>
-  </ul></div>
+}</code></pre><p>Complexity: O(n) time (two passes, each amortised O(n)), O(K) map space.</p></details>
 
-  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+  <h2 id="problems"><span class="n">06</span>Worked problems</h2>
 
-  <h3 id="p-lsw">1. Longest Substring Without Repeating Characters</h3>
-  <p><a href="https://leetcode.com/problems/longest-substring-without-repeating-characters/" target="_blank" rel="noopener">LeetCode 3</a> · Medium. Given a string, return the length of the longest substring in which no character appears twice.</p>
-  <p><b>Key insight:</b> variable window with "no duplicates" as the rule. Instead of shrinking one step at a time, remember where each character was last seen and jump <code>left</code> straight past the previous copy. Use <code>max</code> so <code>left</code> never moves backwards (the "abba" case: when the second 'a' arrives, its last copy is already outside the window).</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-lsw">
+    <h3>1. Longest Substring Without Repeating Characters <a href="https://leetcode.com/problems/longest-substring-without-repeating-characters/" target="_blank" rel="noopener">LeetCode 3 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Length of the longest substring with no repeated character.</dd>
+        <dt>Insight</dt><dd>Remember where each char was last seen; jump <code>left</code> past the old copy. Use <code>max</code> so <code>left</code> never moves back ("abba").</dd>
+        <dt>Cost</dt><dd>O(n) time, O(1) space (128-entry array; HashMap for full Unicode)</dd></dl>
+    <div class="cells"><span class="cell dim">a</span><span class="cell win">b</span><span class="cell win">c</span><span class="cell hl">a</span><span class="cell">b</span><span class="cell">c</span><span class="cell">b</span><span class="cell">b</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int lengthOfLongestSubstring(String s) {
         int[] nextStart = new int[128]; // for each char: (last index seen) + 1
         int best = 0;
@@ -180,14 +294,17 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time, O(1) space (128-entry array; use a <code>HashMap&lt;Character, Integer&gt;</code> if the input is full Unicode).</p>
-  <p><b>Edge cases:</b> empty string → 0; all same character → 1; spaces and digits are characters too; "abba" (stale last-seen index).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>Empty string → 0; all same character → 1; spaces and digits are characters too; "abba" (stale last-seen index).</p></details>
+  </div>
 
-  <h3 id="p-mco">2. Max Consecutive Ones III</h3>
-  <p><a href="https://leetcode.com/problems/max-consecutive-ones-iii/" target="_blank" rel="noopener">LeetCode 1004</a> · Medium · asked at Groww, Paytm, LinkedIn (with a circular follow-up). Given a binary array and k, return the longest run of 1s you can get by flipping at most k zeros.</p>
-  <p><b>Key insight:</b> rephrase as "longest window containing at most k zeros". You never flip anything; you just count zeros (the trace in section 02 is this problem). <b>Circular follow-up:</b> the array wraps around. Walk indices <code>0 … 2n − 1</code> using <code>i % n</code>, which unrolls every wrap-around window, and add a second shrink condition: the window may not exceed n elements, or you would count an element twice.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-mco">
+    <h3>2. Max Consecutive Ones III <a href="https://leetcode.com/problems/max-consecutive-ones-iii/" target="_blank" rel="noopener">LeetCode 1004 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Longest run of 1s if you may flip at most k zeros. Groww, Paytm, LinkedIn.</dd>
+        <dt>Insight</dt><dd>Longest window with at most k zeros. Circular follow-up: walk <code>0 … 2n − 1</code> with <code>i % n</code>, cap length at n.</dd>
+        <dt>Cost</dt><dd>O(n) time, O(1) space for both versions (circular does 2n steps)</dd></dl>
+    <div class="cells"><span class="cell dim">1</span><span class="cell dim">1</span><span class="cell dim">0</span><span class="cell dim">0</span><span class="cell ok">1</span><span class="cell ok">1</span><span class="cell ok">1</span><span class="cell bad">0</span><span class="cell ok">1</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int longestOnes(int[] nums, int k) {
         int left = 0, zeros = 0, best = 0;
         for (int right = 0; right &lt; nums.length; right++) {
@@ -221,14 +338,17 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time, O(1) space for both versions (the circular one does 2n steps).</p>
-  <p><b>Edge cases:</b> k = 0 (plain longest run of 1s); k ≥ number of zeros (answer n); all zeros with k = 0 → 0; circular with all 1s must return n, not 2n, which is why the length cap exists.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>You never flip anything; you just count zeros. k = 0 (plain longest run of 1s); k ≥ number of zeros (answer n); all zeros with k = 0 → 0; circular with all 1s must return n, not 2n, which is why the length cap exists (otherwise you would count an element twice).</p></details>
+  </div>
 
-  <h3 id="p-mws">3. Minimum Window Substring</h3>
-  <p><a href="https://leetcode.com/problems/minimum-window-substring/" target="_blank" rel="noopener">LeetCode 76</a> · Hard · LinkedIn, Goldman Sachs, Salesforce, Teradata. Given strings s and t, return the shortest substring of s that contains every character of t with multiplicity (t = "AAB" needs two A's), or "" if none.</p>
-  <p><b>Key insight:</b> this is the "shortest" variant: grow until the window is valid, then shrink while it stays valid, recording each valid window. Track one integer, <code>missing</code>, instead of comparing two maps every step. <code>need[c]</code> goes negative for surplus characters; a character only counts toward <code>missing</code> while <code>need[c] &gt; 0</code>.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-mws">
+    <h3>3. Minimum Window Substring <a href="https://leetcode.com/problems/minimum-window-substring/" target="_blank" rel="noopener">LeetCode 76 · Hard ↗</a></h3>
+    <dl><dt>Task</dt><dd>Shortest substring of s containing every char of t with multiplicity ("AAB" needs two A's), else "". LinkedIn, Goldman Sachs, Salesforce, Teradata.</dd>
+        <dt>Insight</dt><dd>Shortest variant: shrink while valid, recording each window. Track one int <code>missing</code> instead of comparing maps.</dd>
+        <dt>Cost</dt><dd>O(|s| + |t|) time, O(1) space (fixed 128 array)</dd></dl>
+    <div class="cells"><span class="cell">A</span><span class="cell">D</span><span class="cell">O</span><span class="cell">B</span><span class="cell">E</span><span class="cell">C</span><span class="cell">O</span><span class="cell">D</span><span class="cell">E</span><span class="cell ok">B</span><span class="cell ok">A</span><span class="cell ok">N</span><span class="cell ok">C</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public String minWindow(String s, String t) {
         int[] need = new int[128];                 // how many more of each char the window needs
         for (char c : t.toCharArray()) {
@@ -252,14 +372,17 @@ class Solution {
         }
         return bestLen == Integer.MAX_VALUE ? "" : s.substring(bestStart, bestStart + bestLen);
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(|s| + |t|) time, O(1) space (fixed 128 array).</p>
-  <p><b>Edge cases:</b> |t| &gt; |s| → ""; duplicates in t ("aa" in "a" → ""); s == t; case sensitivity (A ≠ a). Store <code>bestStart</code>/<code>bestLen</code> and call <code>substring</code> once at the end; building substrings in the loop makes it O(n²).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>A character only counts toward <code>missing</code> while <code>need[c] &gt; 0</code>. |t| &gt; |s| → ""; duplicates in t ("aa" in "a" → ""); s == t; case sensitivity (A ≠ a). Store <code>bestStart</code>/<code>bestLen</code> and call <code>substring</code> once at the end; building substrings in the loop makes it O(n²).</p></details>
+  </div>
 
-  <h3 id="p-swm">4. Sliding Window Maximum</h3>
-  <p><a href="https://leetcode.com/problems/sliding-window-maximum/" target="_blank" rel="noopener">LeetCode 239</a> · Hard · Uber, PhonePe, Booking.com, Amazon, Twilio, Flipkart. Return the maximum of every window of size k as the window slides from left to right.</p>
-  <p><b>Key insight:</b> monotonic decreasing deque of <b>indices</b> (indices let you detect expiry; values cannot, because of duplicates). See the trace in section 02.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-swm">
+    <h3>4. Sliding Window Maximum <a href="https://leetcode.com/problems/sliding-window-maximum/" target="_blank" rel="noopener">LeetCode 239 · Hard ↗</a></h3>
+    <dl><dt>Task</dt><dd>Max of every window of size k. Uber, PhonePe, Booking.com, Amazon, Twilio, Flipkart.</dd>
+        <dt>Insight</dt><dd>Decreasing deque of <b>indices</b>, as in the stepper above.</dd>
+        <dt>Cost</dt><dd>O(n) time (each index pushed and popped at most once), O(k) space</dd></dl>
+    <div class="cells"><span class="cell dim">1</span><span class="cell dim">3</span><span class="cell win">−1</span><span class="cell win">−3</span><span class="cell hl">5</span><span class="cell">3</span><span class="cell">6</span><span class="cell">7</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 
 class Solution {
@@ -280,14 +403,17 @@ class Solution {
         }
         return out;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time (each index pushed and popped at most once), O(k) deque space.</p>
-  <p><b>Edge cases:</b> k = 1 (output = input); k = n (one value); strictly decreasing input (deque grows to k, expiry pops do the work); duplicates (popping with <code>&lt;=</code> keeps the newest copy, which is fine). Interviewers often ask for the O(n log n) <code>TreeMap</code>/heap version first, then push for O(n).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>k = 1 (output = input); k = n (one value); strictly decreasing input (deque grows to k, expiry pops do the work); duplicates (popping with <code>&lt;=</code> keeps the newest copy, which is fine). Interviewers often ask for the O(n log n) <code>TreeMap</code>/heap version first, then push for O(n).</p></details>
+  </div>
 
-  <h3 id="p-lcs">5. Longest Continuous Subarray With Absolute Diff ≤ Limit</h3>
-  <p><a href="https://leetcode.com/problems/longest-continuous-subarray-with-absolute-diff-less-than-or-equal-to-limit/" target="_blank" rel="noopener">LeetCode 1438</a> · Medium · Uber (twice), Oracle. Return the length of the longest subarray in which every pair of elements differs by at most <code>limit</code>.</p>
-  <p><b>Key insight:</b> "every pair differs by ≤ limit" is the same as "window max − window min ≤ limit". That is a variable window whose validity check needs the max and the min, so keep two monotonic deques: one non-increasing (front = max), one non-decreasing (front = min). Here the deques hold values and pop with strict comparisons, so duplicates stay in; when the leaving value equals a front, pop that front.</p>
-  <pre><code>import java.util.ArrayDeque;
+  <div class="prob" id="p-lcs">
+    <h3>5. Longest Continuous Subarray With Absolute Diff ≤ Limit <a href="https://leetcode.com/problems/longest-continuous-subarray-with-absolute-diff-less-than-or-equal-to-limit/" target="_blank" rel="noopener">LeetCode 1438 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Longest subarray where every pair differs by at most <code>limit</code>. Uber (twice), Oracle.</dd>
+        <dt>Insight</dt><dd>Same as window max − window min ≤ limit. Keep two deques: non-increasing (front = max) and non-decreasing (front = min).</dd>
+        <dt>Cost</dt><dd>O(n) time, O(n) space worst case</dd></dl>
+    <div class="cells"><span class="cell">8</span><span class="cell ok">2</span><span class="cell ok">4</span><span class="cell">7</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.ArrayDeque;
 import java.util.Deque;
 
 class Solution {
@@ -318,14 +444,17 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time, O(n) space worst case. The <code>TreeMap&lt;Integer, Integer&gt;</code> multiset version is O(n log n) and is an acceptable first answer; say so, then optimise.</p>
-  <p><b>Edge cases:</b> limit = 0 (longest run of equal values); all equal; <code>maxQ.peekFirst() - minQ.peekFirst()</code> cannot overflow because values are ≤ 10^9 and positive, but mention it if values can be negative and near <code>Integer.MIN_VALUE</code>.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Details and edge cases</summary><p>Here the deques hold values and pop with strict comparisons, so duplicates stay in; when the leaving value equals a front, pop that front. The <code>TreeMap&lt;Integer, Integer&gt;</code> multiset version is O(n log n) and is an acceptable first answer; say so, then optimise.</p><p>limit = 0 (longest run of equal values); all equal; <code>maxQ.peekFirst() - minQ.peekFirst()</code> cannot overflow because values are ≤ 10^9 and positive, but mention it if values can be negative and near <code>Integer.MIN_VALUE</code>.</p></details>
+  </div>
 
-  <h3 id="p-cmw">6. Container With Most Water</h3>
-  <p><a href="https://leetcode.com/problems/container-with-most-water/" target="_blank" rel="noopener">LeetCode 11</a> · Medium. Vertical lines at each index; choose two that, with the x-axis, hold the most water. Area = width × the shorter line.</p>
-  <p><b>Key insight:</b> start with the widest container. Moving the taller end inward can only shrink the width while the height stays capped by the shorter end, so it can never help. The shorter end is therefore useless for every remaining container: discard it.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-cmw">
+    <h3>6. Container With Most Water <a href="https://leetcode.com/problems/container-with-most-water/" target="_blank" rel="noopener">LeetCode 11 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Pick two vertical lines holding the most water. Area = width × shorter line.</dd>
+        <dt>Insight</dt><dd>Start widest. The shorter end caps every narrower container, so discard it.</dd>
+        <dt>Cost</dt><dd>O(n) time, O(1) space</dd></dl>
+    <div class="cells"><span class="cell">1</span><span class="cell hl">8</span><span class="cell win">6</span><span class="cell win">2</span><span class="cell win">5</span><span class="cell win">4</span><span class="cell win">8</span><span class="cell win">3</span><span class="cell hl">7</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int maxArea(int[] height) {
         int i = 0, j = height.length - 1, best = 0;
         while (i &lt; j) {
@@ -338,14 +467,20 @@ class Solution {
         }
         return best;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time, O(1) space.</p>
-  <p><b>Edge cases:</b> two lines; equal heights (moving either is fine); width × height fits in int for the constraints (10^5 × 10^4), use <code>long</code> if they grow.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>Two lines; equal heights (moving either is fine); width × height fits in int for the constraints (10^5 × 10^4), use <code>long</code> if they grow. Example above: lines 8 and 7, width 7, area 49.</p></details>
+  </div>
 
-  <h3 id="p-trw">7. Trapping Rain Water</h3>
-  <p><a href="https://leetcode.com/problems/trapping-rain-water/" target="_blank" rel="noopener">LeetCode 42</a> · Hard · Flipkart, Amazon, eBay, ServiceNow; the most common problem in Razorpay's online assessment. Given bar heights, compute how much rain is trapped between them.</p>
-  <p><b>Key insight:</b> water above bar i = <code>min(maxLeft(i), maxRight(i)) − height[i]</code>. The prefix/suffix-max arrays solution is O(n) space. Two pointers remove the arrays: if <code>height[i] &lt; height[j]</code>, there is a wall at least <code>height[i]</code> tall on the right, so the water at i depends only on <code>leftMax</code>, which you already know. Settle i and move it; otherwise settle j symmetrically.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-trw">
+    <h3>7. Trapping Rain Water <a href="https://leetcode.com/problems/trapping-rain-water/" target="_blank" rel="noopener">LeetCode 42 · Hard ↗</a></h3>
+    <dl><dt>Task</dt><dd>Water trapped between bars. Flipkart, Amazon, eBay, ServiceNow; the most common problem in Razorpay's online assessment.</dd>
+        <dt>Insight</dt><dd>Water at i = min(maxLeft, maxRight) − height[i]. If <code>height[i] &lt; height[j]</code>, <code>leftMax</code> alone decides i.</dd>
+        <dt>Cost</dt><dd>O(n) time, O(1) space</dd></dl>
+    <div class="ptrs"><span>height</span></div>
+    <div class="cells"><span class="cell">0</span><span class="cell">1</span><span class="cell">0</span><span class="cell">2</span><span class="cell">1</span><span class="cell">0</span><span class="cell">1</span><span class="cell">3</span><span class="cell">2</span><span class="cell">1</span><span class="cell">2</span><span class="cell">1</span></div>
+    <div class="ptrs"><span>water (total 6)</span></div>
+    <div class="cells"><span class="cell dim">0</span><span class="cell dim">0</span><span class="cell ok">1</span><span class="cell dim">0</span><span class="cell ok">1</span><span class="cell ok">2</span><span class="cell ok">1</span><span class="cell dim">0</span><span class="cell dim">0</span><span class="cell ok">1</span><span class="cell dim">0</span><span class="cell dim">0</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int trap(int[] height) {
         int i = 0, j = height.length - 1, leftMax = 0, rightMax = 0, water = 0;
         while (i &lt; j) {
@@ -362,34 +497,60 @@ class Solution {
         }
         return water;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n) time, O(1) space.</p>
-  <p><b>Edge cases:</b> fewer than 3 bars → 0; strictly increasing or decreasing → 0; plateaus. Know the three solutions (prefix arrays, two pointers, monotonic stack that fills water layer by layer) and when each is natural; the stack version generalises to "water between bars as they arrive".</p>
+}</code></pre></details>
+    <details class="deep"><summary>Three solutions and edge cases</summary><p>The prefix/suffix-max arrays solution is O(n) space. Two pointers remove the arrays: if <code>height[i] &lt; height[j]</code>, there is a wall at least <code>height[i]</code> tall on the right, so the water at i depends only on <code>leftMax</code>, which you already know. Settle i and move it; otherwise settle j symmetrically.</p><p>Fewer than 3 bars → 0; strictly increasing or decreasing → 0; plateaus. Know the three solutions (prefix arrays, two pointers, monotonic stack that fills water layer by layer) and when each is natural; the stack version generalises to "water between bars as they arrive".</p></details>
+  </div>
 
-  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
+  <h2 id="mistakes"><span class="n">07</span>Common mistakes</h2>
   <div class="callout warn"><b>Mistakes that cost candidates the round</b><ul>
-    <li>Using <code>if</code> instead of <code>while</code> to shrink: one removal is not always enough to restore validity.</li>
-    <li>Applying a window to sums with negative numbers. Validity is no longer monotonic; use prefix sums + HashMap.</li>
-    <li>Storing values instead of indices in the max deque, then failing to detect expiry with duplicates.</li>
-    <li>Moving <code>left</code> backwards (the "abba" bug in problem 1).</li>
-    <li>Calling <code>substring</code> or copying a map inside the loop, silently making it O(n²).</li>
-    <li>Claiming O(n²) because of the nested <code>while</code>. Explain the amortised bound: each pointer moves at most n times.</li>
+    <li>Shrinking with <code>if</code> instead of <code>while</code>: one removal may not restore validity.</li>
+    <li>A window over sums with negatives. Use prefix sums + HashMap.</li>
+    <li>Values instead of indices in the max deque: expiry breaks on duplicates.</li>
+    <li>Moving <code>left</code> backwards (the "abba" bug).</li>
+    <li><code>substring</code> or map copies inside the loop: silently O(n²).</li>
+    <li>Calling it O(n²) because of the nested <code>while</code>. Each pointer moves at most n times.</li>
   </ul></div>
+
+  <h2 id="interview"><span class="n">08</span>Interview questions</h2>
   <details class="qa"><summary>The input is a stream; you cannot store it. Which of these still work?</summary><p>Fixed windows need only the last k elements (ring buffer) and work. Window max needs only the deque, at most k entries. Longest-without-repeats needs the last-seen map plus the current window, so O(alphabet + window). Two pointers from both ends do not work on a stream because they need the right end.</p></details>
   <details class="qa"><summary>Max Consecutive Ones: what if k is huge and the array is a stream of billions of bits?</summary><p>Keep only a queue of the positions of the last k + 1 zeros. The current window starts just after the oldest of those zeros. O(k) memory regardless of stream length.</p></details>
   <details class="qa"><summary>Count subarrays with exactly K odd numbers / exactly K distinct values.</summary><p>Write <code>atMost(K)</code> with the count-per-right trick and return <code>atMost(K) − atMost(K − 1)</code>. For "exactly K odd numbers" with non-negative weights, prefix counts + HashMap is an equally good O(n) answer.</p></details>
   <details class="qa"><summary>Sliding window median?</summary><p>Two heaps (max-heap for the lower half, min-heap for the upper) with lazy deletion, or two <code>TreeMap</code> multisets. O(n log k). The deque trick does not work because the median is not an extreme.</p></details>
   <details class="qa"><summary>Trapping Rain Water in 2D (a height map grid)?</summary><p>LeetCode 407. Push all border cells into a min-heap; repeatedly pop the lowest wall, and for each unvisited neighbour add <code>max(0, wall − height)</code> water and push it with height <code>max(wall, height)</code>. O(mn log(mn)). The 1D two-pointer proof generalises to "the lowest boundary decides".</p></details>
   <details class="qa"><summary>Minimum Window Substring: t is huge and s is a stream of characters. How do you avoid the 128-array assumption?</summary><p>Use <code>HashMap&lt;Character, Integer&gt;</code> (or <code>int</code> code points) for <code>need</code>; the algorithm is unchanged. Memory is O(distinct characters in t).</p></details>
-
-  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
   <details class="qa"><summary>Why is a variable window O(n) when it contains a nested while loop?</summary><p>Both pointers only move forward and each moves at most n times, so the total number of loop iterations across the whole run is at most 2n.</p></details>
   <details class="qa"><summary>Why can't you solve "subarray sum equals K" with a window when numbers can be negative?</summary><p>Adding an element can decrease the sum and removing one can increase it, so you cannot tell which pointer to move. Use prefix sums: count earlier prefixes equal to <code>prefix − K</code> in a HashMap.</p></details>
   <details class="qa"><summary>In Sliding Window Maximum, why pop smaller values from the back?</summary><p>The new element is larger and will stay in the window longer than any older element, so the older, smaller ones can never be the maximum of any future window.</p></details>
   <details class="qa"><summary>In Trapping Rain Water, why is it safe to settle the left bar when height[i] &lt; height[j]?</summary><p>A wall at least height[i] exists on the right (at j), so the right side is never the bottleneck for i; the water at i is <code>leftMax − height[i]</code>, which is already known.</p></details>
   <details class="qa"><summary>How many subarrays of [1,2,1,2,3] have exactly 2 distinct values?</summary><p>atMost(2) = 12, atMost(1) = 5, so 7: [1,2], [2,1], [1,2], [2,3], [1,2,1], [2,1,2], [1,2,1,2].</p></details>
 
-  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <h2 id="quiz"><span class="n">09</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Why is the variable window O(n) even with a while loop inside the for loop?</p>
+    <div class="opts"><button class="opt" type="button">The while loop runs at most once per step</button><button class="opt" type="button">left only moves forward, so all shrinks together take at most n steps</button><button class="opt" type="button">The input must be sorted</button></div>
+    <p class="why">Amortised: right moves n times and left moves at most n times over the whole run, so total work is at most 2n.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">"Count subarrays with sum exactly K" and the array has negative numbers. What do you use?</p>
+    <div class="opts"><button class="opt" type="button">Variable sliding window</button><button class="opt" type="button">Two pointers from both ends</button><button class="opt" type="button">Prefix sums + HashMap of prefix counts</button></div>
+    <p class="why">With negatives, growing can lower the sum, so you can't tell which pointer to move. Count earlier prefixes equal to prefix − K.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">In Sliding Window Maximum, why does the deque store indices instead of values?</p>
+    <div class="opts"><button class="opt" type="button">To know when the front has left the window</button><button class="opt" type="button">Indices use less memory than values</button><button class="opt" type="button">So the deque stays sorted</button></div>
+    <p class="why">Expiry is a position check (<code>front ≤ i − k</code>). With duplicate values you can't tell which copy is leaving.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">In Minimum Window Substring, where do you record the answer?</p>
+    <div class="opts"><button class="opt" type="button">After the shrink loop, like the longest-window template</button><button class="opt" type="button">Inside the shrink loop, while the window is still valid</button><button class="opt" type="button">Only once, at the very end</button></div>
+    <p class="why">It's the "shortest" variant: every valid window is a candidate, so record each one before shrinking it further.</p></div>
+
+  <h2 id="cheat"><span class="n">10</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>"Longest/shortest contiguous … such that" → sliding window.</li>
+    <li>Test: if [l, r] is invalid, is [l, r+1] invalid too? Yes → window works.</li>
+    <li>Longest: shrink while invalid, record after. Shortest: shrink while valid, record inside.</li>
+    <li>Count: add right − left + 1; exactly K = atMost(K) − atMost(K−1).</li>
+    <li>Window max/min → monotonic deque of indices, O(n).</li>
+    <li>Negatives in a sum → prefix sums + HashMap, not a window.</li>
+    <li>Both ends (container, rain water) → prove one end is useless, discard it.</li>
+    <li>Always say: each pointer moves at most n times, so O(n).</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">11</span>Sources / go deeper</h2>
   <ul class="sources">
     <li>Company tags: the 2025–26 interview reports collected in <a href="../index.html">the playbook</a>.</li>
     <li><a href="https://cp-algorithms.com/data_structures/stack_queue_modification.html" target="_blank" rel="noopener">cp-algorithms: minimum stack / minimum queue</a> (the monotonic deque, with proofs)</li>
@@ -399,5 +560,6 @@ class Solution {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-monotonic-stack.html">Monotonic stack</a> · <a href="dsa-binary-search-on-answer.html">Binary search on the answer</a> · <a href="dsa-heaps-intervals.html">Heaps and intervals</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>Model Context Protocol (MCP)</h1>
-  <p class="lede">MCP is the standard plug between AI applications and the systems they need to read from or act on. You will learn the host/client/server model, tools vs resources vs prompts, the two transports, then build a contracts MCP server in Python and in Spring AI, wire it into Claude Code and Claude Desktop, and lock it down.</p>
+  <p class="lede">Explain how an AI app talks to your systems through MCP, build a contracts MCP server in Python and Spring AI, and secure it.</p>
   <div class="facts">
     <span class="fact"><b>Time:</b> 3–4 hours with the hands-on</span>
     <span class="fact"><b>Spec:</b> protocol version 2026-07-28</span>
@@ -20,85 +20,148 @@
   </div>
   <div class="chips"><span class="chip hot">Mastercard</span><span class="chip">AI platform teams</span><span class="chip">Agent / tooling roles</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>MCP: one standard plug between AI apps and systems.</li>
+    <li>A host opens one client per server; servers expose tools, resources, prompts.</li>
+    <li>Messages are JSON-RPC 2.0 over stdio (local) or Streamable HTTP (remote).</li>
+    <li>Remote servers are OAuth 2.1 resource servers.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>UPI: any payments app (PhonePe, GPay, Paytm) can move money at any bank because both sides speak one standard. MCP does the same for AI apps (hosts) and systems (servers): N apps × M systems becomes N + M.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
-    <li><a href="#outcomes">What you'll be able to do</a></li>
-    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#ideas">Key ideas</a></li>
+    <li><a href="#arch">Host, client, server</a></li>
+    <li><a href="#call">Follow one tool call</a></li>
+    <li><a href="#primitives">Tools vs resources vs prompts</a></li>
+    <li><a href="#transports">Transports: stdio vs Streamable HTTP</a></li>
     <li><a href="#hands-on">Hands-on: a contracts MCP server</a></li>
-    <li><a href="#interviews">How this shows up in interviews</a></li>
+    <li><a href="#security">Authorization and least privilege</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#interviews">Interview questions</a></li>
     <li><a href="#capstone">Capstone checkpoint</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
-  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
-  <ul>
-    <li>Explain host, client and server, and why a host opens one client per server.</li>
-    <li>Say when something should be a <b>tool</b>, a <b>resource</b> or a <b>prompt</b>, and who controls each.</li>
-    <li>Pick stdio or Streamable HTTP for a given deployment and explain the security consequences.</li>
-    <li>Build an MCP server with two tools (<code>search_contracts</code>, <code>get_clause</code>) in Python, test it in-process, and know the Spring AI equivalent.</li>
-    <li>Connect it to Claude Code and Claude Desktop.</li>
-    <li>Describe MCP authorization (OAuth 2.1 resource server, audience-bound tokens) and least-privilege design for a multi-tenant SaaS.</li>
-  </ul>
-
-  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
-
-  <h3>The problem MCP solves</h3>
-  <p>Before MCP, every AI application wrote its own adapter for every system: one integration for Jira in the IDE assistant, another for Jira in the chat app, another in the support bot. That is N applications × M systems. MCP turns it into N + M: each system ships one MCP server, each AI application implements one MCP client, and they interoperate.</p>
-  <p>The Java analogy that sticks: <b>MCP is to AI applications what JDBC is to databases.</b> JDBC fixed the interface (<code>Connection</code>, <code>Statement</code>, <code>ResultSet</code>) and let each vendor ship a driver. MCP fixes the interface (list tools, call tool, read resource, get prompt) and lets each system ship a server. Another fair analogy is LSP (Language Server Protocol), which MCP was explicitly modelled on: one Java language server works in VS Code, IntelliJ-like editors and Neovim.</p>
-  <p>MCP does not decide how the application uses the LLM or manages context. It only standardises how context and actions are exchanged.</p>
-
-  <h3>Participants: host, client, server</h3>
-  <div class="flow">
-    <span class="node hl">MCP host<small>Claude Code, Claude Desktop, your Spring app</small></span><span class="arrow">→</span>
-    <span class="node">MCP client 1<small>one per server</small></span><span class="arrow">→</span>
-    <span class="node store">Contracts server<small>stdio, local</small></span>
+  <h2 id="ideas"><span class="n">01</span>Key ideas</h2>
+  <div class="keys">
+    <div class="key"><h4>N + M, not N × M</h4><p>Each system ships one server; each AI app one client. Like JDBC drivers.</p></div>
+    <div class="key"><h4>Host · client · server</h4><p>The host (AI app) makes one client per server, 1:1.</p></div>
+    <div class="key"><h4>Who controls it</h4><p><b>Tool</b>: the model calls it. <b>Resource</b>: the app attaches it. <b>Prompt</b>: the user picks it.</p></div>
+    <div class="key"><h4>Two transports</h4><p><b>stdio</b>: host spawns a local subprocess. <b>Streamable HTTP</b>: POST to <code>/mcp</code> on a shared server.</p></div>
+    <div class="key"><h4>Not a new tool loop</h4><p>Function calling still runs the loop; MCP supplies the tools.</p></div>
   </div>
-  <div class="flow">
-    <span class="node hl">same host</span><span class="arrow">→</span>
-    <span class="node">MCP client 2</span><span class="arrow">→</span>
-    <span class="node store">Jira server<small>Streamable HTTP, remote</small></span>
+  <details class="deep"><summary>Go deeper: the problem MCP solves, and MCP vs plain tool calling</summary>
+    <p>Before MCP, every AI application wrote its own adapter for every system: one integration for Jira in the IDE assistant, another for Jira in the chat app, another in the support bot. That is N applications × M systems. MCP turns it into N + M: each system ships one MCP server, each AI application implements one MCP client, and they interoperate.</p>
+    <p>The Java analogy that sticks: <b>MCP is to AI applications what JDBC is to databases.</b> JDBC fixed the interface (<code>Connection</code>, <code>Statement</code>, <code>ResultSet</code>) and let each vendor ship a driver. MCP fixes the interface (list tools, call tool, read resource, get prompt) and lets each system ship a server. Another fair analogy is LSP (Language Server Protocol), which MCP was explicitly modelled on: one Java language server works in VS Code, IntelliJ-like editors and Neovim.</p>
+    <p>MCP does not decide how the application uses the LLM or manages context. It only standardises how context and actions are exchanged.</p>
+    <p>If you have done the tool-use lesson, you already know the loop: you send tool definitions to the model, it returns a <code>tool_use</code> block, you run the function, you send back a <code>tool_result</code>. MCP does not replace that loop. It standardises <b>where the tool definitions and implementations come from</b>. The host calls <code>tools/list</code> on each server, merges the results into the tool list it sends to Claude, and when Claude picks a tool, routes the <code>tools/call</code> to the right client. In Spring AI terms, an MCP client turns a remote server's tools into <code>ToolCallback</code>s that look identical to your local <code>@Tool</code> methods.</p>
+  </details>
+
+  <h2 id="arch"><span class="n">02</span>Host, client, server</h2>
+  <div class="arch">
+    <div class="tier"><small>Host (the AI app the user talks to)</small><span class="node hl">MCP host<small>Claude Code, Claude Desktop, your Spring app</small></span></div>
+    <div class="down">↓ <small>one client per server</small></div>
+    <div class="tier"><small>Clients (inside the host)</small><span class="node">MCP client 1</span><span class="node">MCP client 2</span></div>
+    <div class="down">↓ <small>JSON-RPC 2.0</small></div>
+    <div class="tier"><small>Servers</small><span class="node store">Contracts server<small>stdio, local</small></span><span class="node store">Jira server<small>Streamable HTTP, remote</small></span></div>
   </div>
-  <p class="flow-caption">Figure: a host creates one client per server. Each client holds a dedicated connection to exactly one server.</p>
+    <p>1:1 means isolation: servers never see each other, so policy lives in the host.</p>
+  <details class="deep"><summary>Go deeper: participants table, data layer vs transport layer</summary>
   <div class="tbl"><table>
     <tr><th>Participant</th><th>What it is</th><th>Java analogy</th></tr>
     <tr><td>Host</td><td>The AI application the user talks to. Owns the LLM conversation, decides which tool results go into context, asks the user for consent.</td><td>Your Spring Boot app that owns the <code>DataSource</code> pool</td></tr>
     <tr><td>Client</td><td>A protocol component inside the host. One client per server, 1:1, keeps that connection and its discovered capabilities.</td><td>One JDBC <code>Connection</code> to one database</td></tr>
     <tr><td>Server</td><td>A program exposing tools, resources and prompts. Local (stdio subprocess) or remote (HTTP service).</td><td>The database plus its driver</td></tr>
   </table></div>
-  <p>The 1:1 rule matters in interviews: isolation. Server A never sees server B's traffic, and the host is the only place where results from several servers meet. That is also why the host is where you enforce consent and policy.</p>
+    <p>The <b>data layer</b> is JSON-RPC 2.0: requests with an <code>id</code>, responses, and notifications (no <code>id</code>, no reply). It defines discovery, the primitives and utilities like progress. The <b>transport layer</b> moves those messages and handles framing and authorization. The same JSON-RPC message works over either transport.</p>
+    <p>The 1:1 rule matters in interviews: isolation. Server A never sees server B's traffic, and the host is the only place where results from several servers meet. That is also why the host is where you enforce consent and policy.</p>
+  </details>
 
-  <h3>Two layers: data and transport</h3>
-  <p>The <b>data layer</b> is JSON-RPC 2.0: requests with an <code>id</code>, responses, and notifications (no <code>id</code>, no reply). It defines discovery, the primitives and utilities like progress. The <b>transport layer</b> moves those messages and handles framing and authorization. The same JSON-RPC message works over either transport.</p>
-
-  <h3>Server primitives: tools vs resources vs prompts</h3>
-  <p>This is the most-asked MCP question. The difference is <b>who decides when it is used</b>.</p>
-  <div class="tbl"><table>
-    <tr><th>Primitive</th><th>Controlled by</th><th>What it is</th><th>Methods</th><th>Contracts example</th></tr>
-    <tr><td><b>Tool</b></td><td>Model</td><td>An executable function with a JSON Schema for its input. The LLM decides to call it, the host may ask the user to approve.</td><td><code>tools/list</code>, <code>tools/call</code></td><td><code>search_contracts</code>, <code>get_clause</code></td></tr>
-    <tr><td><b>Resource</b></td><td>Application</td><td>Read-only data addressed by a URI (fixed or templated). The host decides whether and how to put it in context, often by letting the user attach it.</td><td><code>resources/list</code>, <code>resources/read</code>, templates</td><td><code>contracts://MSA-ACME-2025/summary</code></td></tr>
-    <tr><td><b>Prompt</b></td><td>User</td><td>A reusable, parameterised message template, typically surfaced as a slash command.</td><td><code>prompts/list</code>, <code>prompts/get</code></td><td><code>review_clause(contract_id, clause)</code></td></tr>
-  </table></div>
-  <p>Rules of thumb: if it <b>does</b> something or needs arguments the model will choose, it is a tool. If it <b>is</b> something with a stable address that a user might attach (a file, a schema, a contract index), it is a resource. If it is a workflow the user kicks off, it is a prompt. A tool can be read-only (a search) — "tool" does not mean "write".</p>
-  <div class="callout info"><b>Client-side primitives</b><p>Servers can also use features the client offers. <b>Elicitation</b> lets a server ask the user for input or confirmation (<code>elicitation/create</code>). <b>Sampling</b> (server asks the host's LLM for a completion) and server-to-client <b>logging</b> are deprecated as of 2026-07-28: new servers call an LLM provider directly and log to stderr or OpenTelemetry.</p></div>
-
-  <h3>Lifecycle: the old handshake and the 2026-07-28 model</h3>
-  <p>Interviewers trained on 2024–25 material will ask about the <b>initialize handshake</b>, so know both versions.</p>
-  <div class="grid">
-    <div class="card"><h4>Earlier revisions (2024-11-05 … 2025)</h4><ul>
-      <li>Connection-scoped session.</li>
-      <li>Client sends <code>initialize</code> with its protocol version and capabilities; server replies with its version and capabilities; client sends <code>notifications/initialized</code>.</li>
-      <li>Over Streamable HTTP, a session id header tied later requests to that session.</li>
-      <li>Servers could send requests to the client (sampling, roots).</li>
-    </ul></div>
-    <div class="card"><h4>Current spec (2026-07-28)</h4><ul>
-      <li><b>Stateless</b>: every request carries <code>io.modelcontextprotocol/protocolVersion</code>, <code>clientCapabilities</code> and usually <code>clientInfo</code> in <code>params._meta</code>.</li>
-      <li>Servers must implement <code>server/discover</code>, returning <code>supportedVersions</code> and <code>capabilities</code>; calling it is optional and the result is cacheable (<code>ttlMs</code>).</li>
-      <li>Version mismatch: server rejects with <code>UnsupportedProtocolVersionError</code> listing what it supports; client retries.</li>
-      <li>Change notifications are opt-in via a <code>subscriptions/listen</code> stream (e.g. <code>notifications/tools/list_changed</code>).</li>
-      <li>Servers never initiate JSON-RPC requests; elicitation uses a multi round-trip request pattern.</li>
-    </ul></div>
-  </div>
-  <p>Why the change matters to a backend engineer: stateless requests mean a remote MCP server scales like any stateless REST service. Put it behind a load balancer, no sticky sessions, any pod can serve any request.</p>
-  <p>A <code>tools/call</code> request looks like this on the wire:</p>
+  <h2 id="call"><span class="n">03</span>Follow one tool call</h2>
+  <div class="stepper"><b class="title">"What is the liability cap in the Acme MSA?"</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">User → Host</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node dim">Client 1</span><span class="node dim">Claude (LLM)</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Contracts server</span></div>
+      </div>
+      <figcaption>The user asks the host. No server contacted yet.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Host</span></div>
+        <div class="down">↓ <small>server/discover</small></div>
+        <div class="tier"><span class="node hl">Client 1</span><span class="node dim">Claude (LLM)</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Contracts server</span></div>
+      </div>
+      <figcaption>Discovery: client 1 learns versions and capabilities (older specs: <code>initialize</code>).</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Host</span></div>
+        <div class="down">↓ <small>tools/list</small></div>
+        <div class="tier"><span class="node hl">Client 1</span><span class="node dim">Claude (LLM)</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Contracts server<small>search_contracts, get_clause</small></span></div>
+      </div>
+      <figcaption><code>tools/list</code> returns two tools, each with a JSON Schema.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Host</span></div>
+        <div class="down">↓ <small>tools</small></div>
+        <div class="tier"><span class="node dim">Client 1</span><span class="node hl">Claude (LLM)<small>tool_use: search_contracts</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Contracts server</span></div>
+      </div>
+      <figcaption>Claude gets the merged tool list and picks <code>search_contracts("liability cap")</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Host</span></div>
+        <div class="down">↓ <small>tools/call</small></div>
+        <div class="tier"><span class="node hl">Client 1</span><span class="node dim">Claude (LLM)</span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Contracts server</span></div>
+      </div>
+      <figcaption>The host routes the call to the owning client. The server runs it for this tenant only.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Host<small>tool_result → Claude</small></span></div>
+        <div class="down">↑ <small>content + structuredContent</small></div>
+        <div class="tier"><span class="node">Client 1</span><span class="node dim">Claude (LLM)</span></div>
+        <div class="down">↑</div>
+        <div class="tier"><span class="node store">Contracts server<small>MSA-ACME-2025 clause 7.2, p.12</small></span></div>
+      </div>
+      <figcaption>The result flows back; the host decides what Claude sees.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">Host</span></div>
+        <div class="down">↕ <small>tools/call get_clause</small></div>
+        <div class="tier"><span class="node hl">Client 1</span><span class="node hl">Claude (LLM)</span></div>
+        <div class="down">↕</div>
+        <div class="tier"><span class="node store hl">Contracts server<small>full text of 7.2</small></span></div>
+      </div>
+      <figcaption>Claude chains <code>get_clause("MSA-ACME-2025", "7.2")</code> for the full text.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Host → User<small>"fees paid in the preceding 12 months (7.2, p.12)"</small></span></div>
+        <div class="down">↑</div>
+        <div class="tier"><span class="node dim">Client 1</span><span class="node">Claude (LLM)</span></div>
+        <div class="down"> </div>
+        <div class="tier"><span class="node store dim">Contracts server</span></div>
+      </div>
+      <figcaption>Answer with a page citation. Two tool calls, zero adapter code.</figcaption>
+    </figure>
+  </div></div>
+  <p>Frame 7 on the wire:</p>
   <pre><code>{
   "jsonrpc": "2.0", "id": 3, "method": "tools/call",
   "params": {
@@ -111,9 +174,63 @@
     }
   }
 }</code></pre>
-  <p>The result has a <code>content</code> array (text, images, embedded resources), optional <code>structuredContent</code> matching the tool's output schema, and <code>isError</code>. A tool failure is a <b>successful JSON-RPC response with <code>isError: true</code></b>, so the model can read the error and try again. JSON-RPC errors are reserved for protocol problems such as an unknown tool.</p>
+  <p>Tool failure = normal result with <code>isError: true</code>. Protocol failure = JSON-RPC error.</p>
+  <h3>Lifecycle: know both versions</h3>
+  <div class="vs">
+    <div><h4>Earlier revisions (2024–25)</h4><ul><li><code>initialize</code> → reply → <code>notifications/initialized</code></li><li>Connection-scoped session</li></ul></div>
+    <div class="pick"><h4>2026-07-28 <span class="tag">current</span></h4><ul><li>Stateless: version + capabilities in every <code>_meta</code></li><li><code>server/discover</code>, cacheable</li><li>Any pod can serve any request</li></ul></div>
+  </div>
+  <details class="deep"><summary>Go deeper: both lifecycles in full, why stateless matters, the result shape</summary>
+  <div class="vs">
+    <div><h4>Earlier revisions (2024-11-05 … 2025)</h4><ul>
+      <li>Connection-scoped session.</li>
+      <li>Client sends <code>initialize</code> with its protocol version and capabilities; server replies with its version and capabilities; client sends <code>notifications/initialized</code>.</li>
+      <li>Over Streamable HTTP, a session id header tied later requests to that session.</li>
+      <li>Servers could send requests to the client (sampling, roots).</li>
+    </ul></div>
+    <div class="pick"><h4>Current spec (2026-07-28) <span class="tag">current</span></h4><ul>
+      <li><b>Stateless</b>: every request carries <code>io.modelcontextprotocol/protocolVersion</code>, <code>clientCapabilities</code> and usually <code>clientInfo</code> in <code>params._meta</code>.</li>
+      <li>Servers must implement <code>server/discover</code>, returning <code>supportedVersions</code> and <code>capabilities</code>; calling it is optional and the result is cacheable (<code>ttlMs</code>).</li>
+      <li>Version mismatch: server rejects with <code>UnsupportedProtocolVersionError</code> listing what it supports; client retries.</li>
+      <li>Change notifications are opt-in via a <code>subscriptions/listen</code> stream (e.g. <code>notifications/tools/list_changed</code>).</li>
+      <li>Servers never initiate JSON-RPC requests; elicitation uses a multi round-trip request pattern.</li>
+    </ul></div>
+  </div>
+    <p>Interviewers trained on 2024–25 material will ask about the <b>initialize handshake</b>, so know both versions.</p>
+    <p>Why the change matters to a backend engineer: stateless requests mean a remote MCP server scales like any stateless REST service. Put it behind a load balancer, no sticky sessions, any pod can serve any request.</p>
+    <p>The result has a <code>content</code> array (text, images, embedded resources), optional <code>structuredContent</code> matching the tool's output schema, and <code>isError</code>. A tool failure is a <b>successful JSON-RPC response with <code>isError: true</code></b>, so the model can read the error and try again. JSON-RPC errors are reserved for protocol problems such as an unknown tool.</p>
+  </details>
 
-  <h3>Transports: stdio vs Streamable HTTP</h3>
+  <h2 id="primitives"><span class="n">04</span>Tools vs resources vs prompts</h2>
+  <div class="tbl"><table>
+    <tr><th>Primitive</th><th>Who decides</th><th>Methods</th><th>Contracts example</th></tr>
+    <tr><td><b>Tool</b></td><td>Model</td><td><code>tools/call</code></td><td><code>search_contracts</code></td></tr>
+    <tr><td><b>Resource</b></td><td>Application</td><td><code>resources/read</code></td><td><code>contracts://MSA-ACME-2025/summary</code></td></tr>
+    <tr><td><b>Prompt</b></td><td>User</td><td><code>prompts/get</code></td><td><code>review_clause</code></td></tr>
+  </table></div>
+  <ul>
+    <li>It <b>does</b> something, with model-chosen arguments → tool. A read-only search is still a tool.</li>
+    <li>It <b>is</b> something with a stable address a user might attach → resource.</li>
+    <li>It is a workflow the user kicks off → prompt.</li>
+  </ul>
+    <details class="deep"><summary>Go deeper: full primitives table, rules of thumb, client-side primitives</summary>
+  <div class="tbl"><table>
+    <tr><th>Primitive</th><th>Controlled by</th><th>What it is</th><th>Methods</th><th>Contracts example</th></tr>
+    <tr><td><b>Tool</b></td><td>Model</td><td>An executable function with a JSON Schema for its input. The LLM decides to call it, the host may ask the user to approve.</td><td><code>tools/list</code>, <code>tools/call</code></td><td><code>search_contracts</code>, <code>get_clause</code></td></tr>
+    <tr><td><b>Resource</b></td><td>Application</td><td>Read-only data addressed by a URI (fixed or templated). The host decides whether and how to put it in context, often by letting the user attach it.</td><td><code>resources/list</code>, <code>resources/read</code>, templates</td><td><code>contracts://MSA-ACME-2025/summary</code></td></tr>
+    <tr><td><b>Prompt</b></td><td>User</td><td>A reusable, parameterised message template, typically surfaced as a slash command.</td><td><code>prompts/list</code>, <code>prompts/get</code></td><td><code>review_clause(contract_id, clause)</code></td></tr>
+  </table></div>
+  <div class="callout info"><b>Client-side primitives</b><p>Servers can also use features the client offers. <b>Elicitation</b> lets a server ask the user for input or confirmation (<code>elicitation/create</code>). <b>Sampling</b> (server asks the host's LLM for a completion) and server-to-client <b>logging</b> are deprecated as of 2026-07-28: new servers call an LLM provider directly and log to stderr or OpenTelemetry.</p></div>
+    <p>This is the most-asked MCP question. The difference is <b>who decides when it is used</b>.</p>
+    <p>Rules of thumb: if it <b>does</b> something or needs arguments the model will choose, it is a tool. If it <b>is</b> something with a stable address that a user might attach (a file, a schema, a contract index), it is a resource. If it is a workflow the user kicks off, it is a prompt. A tool can be read-only (a search) — "tool" does not mean "write".</p>
+  </details>
+
+  <h2 id="transports"><span class="n">05</span>Transports: stdio vs Streamable HTTP</h2>
+  <div class="vs">
+    <div><h4>stdio</h4><ul><li class="pro">No network exposure; creds from env vars</li><li class="con">One user, one machine</li><li class="con">Any stdout write corrupts the protocol</li></ul><p class="when">Use for local developer tools on a laptop.</p></div>
+    <div class="pick"><h4>Streamable HTTP <span class="tag">for anything deployed</span></h4><ul><li class="pro">Many clients, load-balanced like REST</li><li class="pro">OAuth 2.1 bearer tokens</li><li class="con">Needs auth and <code>Origin</code> checks</li></ul><p class="when">Use for shared company servers and multi-tenant SaaS.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full transport comparison</summary>
   <div class="tbl"><table>
     <tr><th></th><th>stdio</th><th>Streamable HTTP</th></tr>
     <tr><td>How</td><td>Host launches the server as a subprocess; newline-delimited JSON-RPC on stdin/stdout</td><td>Each message is an HTTP POST to one endpoint (commonly <code>/mcp</code>); reply is a JSON body or a request-scoped SSE stream</td></tr>
@@ -124,12 +241,17 @@
     <tr><td>Use for</td><td>Developer tools on a laptop, one user, local files</td><td>Shared company servers, multi-tenant SaaS, anything deployed</td></tr>
   </table></div>
   <p>The older "HTTP+SSE" transport (two endpoints, a long-lived GET stream) was replaced by Streamable HTTP. Spring AI still offers an SSE mode for compatibility; prefer Streamable or Stateless for new work.</p>
+  </details>
 
-  <h3>MCP vs plain tool calling</h3>
-  <p>If you have done the tool-use lesson, you already know the loop: you send tool definitions to the model, it returns a <code>tool_use</code> block, you run the function, you send back a <code>tool_result</code>. MCP does not replace that loop. It standardises <b>where the tool definitions and implementations come from</b>. The host calls <code>tools/list</code> on each server, merges the results into the tool list it sends to Claude, and when Claude picks a tool, routes the <code>tools/call</code> to the right client. In Spring AI terms, an MCP client turns a remote server's tools into <code>ToolCallback</code>s that look identical to your local <code>@Tool</code> methods.</p>
-
-  <h2 id="hands-on"><span class="n">03</span>Step-by-step hands-on: a contracts MCP server</h2>
-  <p>You will build a read-only server with two tools, one resource template and one prompt, over a tiny in-memory clause store. In the capstone you swap the dictionary for pgvector search.</p>
+  <h2 id="hands-on"><span class="n">06</span>Hands-on: a contracts MCP server</h2>
+  <ol class="walk">
+    <li><span class="who">Set up</span><span>uv project with the Python MCP SDK</span></li>
+    <li><span class="who">Server</span><span>Two tools, one resource template, one prompt over an in-memory clause store</span></li>
+    <li><span class="who">Test</span><span>In-process client: no subprocess, no port</span></li>
+    <li><span class="who">HTTP</span><span>Run the same server over Streamable HTTP</span></li>
+    <li><span class="who">Connect</span><span>Claude Code, then Claude Desktop</span></li>
+    <li><span class="who">Java</span><span>Same server in Spring AI</span></li>
+  </ol>
 
   <h3>Step 1: set up the project (Python, uv)</h3>
   <pre><code>curl -LsSf https://astral.sh/uv/install.sh | sh     # once
@@ -138,8 +260,9 @@ uv add "mcp[cli]"          # Python MCP SDK 2.x; needs Python 3.10+
 touch contracts_server.py test_contracts_server.py</code></pre>
 
   <h3>Step 2: the server</h3>
-  <p>The SDK's <code>MCPServer</code> builds each tool's JSON Schema from type hints and its description from the docstring. Return types matter: a <code>TypedDict</code> return gets an output schema and <code>structuredContent</code>; a list is wrapped as <code>{"result": [...]}</code>.</p>
-  <pre><code>"""Contracts MCP server: two read-only tools over a tiny in-memory clause store."""
+  <p>Type hints become the JSON Schema; docstrings become descriptions.</p>
+  <details class="deep"><summary>Go deeper: how MCPServer builds schemas</summary><p>The SDK's <code>MCPServer</code> builds each tool's JSON Schema from type hints and its description from the docstring. Return types matter: a <code>TypedDict</code> return gets an output schema and <code>structuredContent</code>; a list is wrapped as <code>{"result": [...]}</code>.</p></details>
+  <details class="code"><summary>Show Python server (contracts_server.py)</summary><pre><code>"""Contracts MCP server: two read-only tools over a tiny in-memory clause store."""
 import logging
 import os
 from typing import TypedDict
@@ -224,8 +347,14 @@ def review_clause(contract_id: str, clause: str) -&gt; str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")</code></pre>
-  <p>Design choices worth defending in an interview:</p>
+    mcp.run(transport="stdio")</code></pre></details>
+  <div class="keys">
+    <div class="key"><h4>Verb + domain names</h4><p><code>search_contracts</code>, not <code>search</code>. The model sees every server's tools at once.</p></div>
+    <div class="key"><h4>Bounded inputs</h4><p><code>limit</code> is clamped to 1–20. Treat model arguments like a public API caller's.</p></div>
+    <div class="key"><h4>Errors the model can use</h4><p><code>ToolError</code> returns <code>isError: true</code> with "No clause 99 in MSA-ACME-2025", not a stack trace.</p></div>
+    <div class="key"><h4>Tenant from environment</h4><p>Never a tool argument. The model must not choose whose data it reads.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: design choices worth defending in an interview</summary>
   <ul>
     <li><b>Tool names are verbs with a domain</b> (<code>search_contracts</code>, not <code>search</code>). The model sees tools from every connected server at once; ambiguous names cause wrong calls.</li>
     <li><b>Descriptions say what comes back and how to chain</b>: <code>get_clause</code> tells the model the id comes from <code>search_contracts</code>. This is the agent-computer interface; treat it like API docs.</li>
@@ -235,10 +364,12 @@ if __name__ == "__main__":
     <li><b>Logging goes to stderr</b> via <code>logging</code>; a stray <code>print()</code> breaks a stdio server.</li>
     <li><b>The tenant comes from the environment</b>, not from a tool argument. The model must never be able to choose whose data it reads.</li>
   </ul>
+  </details>
 
   <h3>Step 3: test it in-process</h3>
-  <p>The SDK's <code>Client</code> accepts the server object directly and connects in memory: no subprocess, no port. It accepts a URL (Streamable HTTP) or stdio parameters as well, so the same test can later run against a deployed server.</p>
-  <pre><code>"""In-memory test: no subprocess, no network. Run: uv run python test_contracts_server.py"""
+  <p>In-memory <code>Client</code>: no subprocess, no port.</p>
+  <details class="deep"><summary>Go deeper: the in-process Client</summary><p>The SDK's <code>Client</code> accepts the server object directly and connects in memory: no subprocess, no port. It accepts a URL (Streamable HTTP) or stdio parameters as well, so the same test can later run against a deployed server.</p></details>
+  <details class="code"><summary>Show Python test (test_contracts_server.py)</summary><pre><code>"""In-memory test: no subprocess, no network. Run: uv run python test_contracts_server.py"""
 import asyncio
 
 from mcp import Client
@@ -260,7 +391,7 @@ async def main() -&gt; None:
         print(res.contents[0].text)
 
 
-asyncio.run(main())</code></pre>
+asyncio.run(main())</code></pre></details>
   <pre><code>$ uv run python test_contracts_server.py 2&gt;/dev/null
 ['search_contracts', 'get_clause']
 {'result': [{'contract_id': 'MSA-ACME-2025', 'clause': '7.2', 'title': 'Limitation of liability', 'page': 12}]}
@@ -268,17 +399,20 @@ asyncio.run(main())</code></pre>
 isError: True
 7.2 Limitation of liability (p.12)
 11.1 Termination for convenience (p.18)</code></pre>
-  <p>Without <code>2&gt;/dev/null</code> you also see the stderr logs, including <code>Tool 'get_clause' failed: ... No clause 99 in MSA-ACME-2025</code>. That is expected: the failure is logged server-side and returned to the client as an error result, not raised as a protocol error.</p>
-  <p>For interactive poking, the MCP Inspector lists tools and lets you call them from a browser:</p>
+  <p><code>isError: True</code> is expected. For a browser UI, use the MCP Inspector:</p>
   <pre><code>uv run mcp dev contracts_server.py</code></pre>
+  <details class="deep"><summary>Go deeper: what the stderr logs show</summary>
+    <p>Without <code>2&gt;/dev/null</code> you also see the stderr logs, including <code>Tool 'get_clause' failed: ... No clause 99 in MSA-ACME-2025</code>. That is expected: the failure is logged server-side and returned to the client as an error result, not raised as a protocol error.</p>
+  </details>
 
   <h3>Step 4: run it over Streamable HTTP</h3>
   <pre><code>uv run mcp run contracts_server.py --transport streamable-http
 # serves http://localhost:8000/mcp ; in Python: Client("http://localhost:8000/mcp")</code></pre>
-  <p>Bind to localhost while developing. A local HTTP server listening on all interfaces, without auth and without <code>Origin</code> checks, is reachable by any web page through DNS rebinding.</p>
+  <p>Bind to localhost in development: DNS rebinding lets any web page reach an open local server.</p>
+  <details class="deep"><summary>Go deeper: DNS rebinding</summary><p>Bind to localhost while developing. A local HTTP server listening on all interfaces, without auth and without <code>Origin</code> checks, is reachable by any web page through DNS rebinding.</p></details>
 
   <h3>Step 5: connect to Claude Code</h3>
-  <pre><code># local stdio server; everything after -- is the command Claude Code launches
+  <details class="code"><summary>Show claude mcp add commands</summary><pre><code># local stdio server; everything after -- is the command Claude Code launches
 claude mcp add --env CONTRACTS_TENANT=acme contracts -- uv --directory /ABS/PATH/contracts-mcp run contracts_server.py
 
 # remote Streamable HTTP server with a bearer token
@@ -289,8 +423,9 @@ claude mcp add --transport http contracts-remote https://mcp.example.com/mcp \
 claude mcp add --scope project --transport http contracts-remote https://mcp.example.com/mcp
 
 claude mcp list        # check what's configured
-# inside a session: /mcp shows status and runs OAuth login for remote servers</code></pre>
-  <p>Scopes: <code>local</code> (default, this project, private to you), <code>project</code> (<code>.mcp.json</code>, committed), <code>user</code> (all your projects). A committed <code>.mcp.json</code> should never contain secrets; use variable expansion:</p>
+# inside a session: /mcp shows status and runs OAuth login for remote servers</code></pre></details>
+  <p>Team-shared <code>.mcp.json</code>: no secrets, use variable expansion.</p>
+  <details class="deep"><summary>Go deeper: config scopes</summary><p>Scopes: <code>local</code> (default, this project, private to you), <code>project</code> (<code>.mcp.json</code>, committed), <code>user</code> (all your projects). A committed <code>.mcp.json</code> should never contain secrets; use variable expansion.</p></details>
   <pre><code>{
   "mcpServers": {
     "contracts-remote": {
@@ -300,10 +435,10 @@ claude mcp list        # check what's configured
     }
   }
 }</code></pre>
-  <p>Then ask Claude Code: <i>"What is the liability cap in the Acme MSA? Cite the page."</i> It should call <code>search_contracts</code>, then <code>get_clause</code>, and answer "fees paid in the preceding 12 months (clause 7.2, p.12)".</p>
+  <p>Ask the stepper's question; expect two tool calls and "clause 7.2, p.12".</p>
 
   <h3>Step 6: connect to Claude Desktop</h3>
-  <p>Edit <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (Windows: <code>%AppData%\Claude\claude_desktop_config.json</code>) and restart the app:</p>
+  <p>Edit <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (Windows: <code>%AppData%\Claude\claude_desktop_config.json</code>), restart:</p>
   <pre><code>{
   "mcpServers": {
     "contracts": {
@@ -313,10 +448,11 @@ claude mcp list        # check what's configured
     }
   }
 }</code></pre>
-  <p>Use absolute paths, and the full path to <code>uv</code> (<code>which uv</code>) if the app cannot find it. The <code>review_clause</code> prompt appears as a user-selectable prompt; the resource can be attached by the user.</p>
+  <p>Use absolute paths, including for <code>uv</code> (<code>which uv</code>).</p>
+  <details class="deep"><summary>Go deeper: what appears in Claude Desktop</summary><p>Use absolute paths, and the full path to <code>uv</code> (<code>which uv</code>) if the app cannot find it. The <code>review_clause</code> prompt appears as a user-selectable prompt; the resource can be attached by the user.</p></details>
 
   <h3>Step 7: the same server in Spring AI (Java)</h3>
-  <p>For your day job stack. Spring AI 2.0.x runs on Spring Boot 4.0/4.1. Use the WebMVC server starter for Streamable HTTP:</p>
+  <p>Spring AI 2.0.x on Spring Boot 4.0/4.1, WebMVC starter:</p>
   <pre><code>// build.gradle.kts
 dependencies {
     implementation(platform("org.springframework.ai:spring-ai-bom:2.0.1"))
@@ -327,7 +463,7 @@ spring.ai.mcp.server.name=contracts
 spring.ai.mcp.server.type=SYNC
 spring.ai.mcp.server.protocol=STREAMABLE
 spring.ai.mcp.server.annotation-scanner.enabled=true</code></pre>
-  <pre><code>package com.example.contracts.mcp;
+  <details class="code"><summary>Show Java solution (ContractTools.java)</summary><pre><code>package com.example.contracts.mcp;
 
 import java.util.List;
 
@@ -367,8 +503,9 @@ public class ContractTools {
         return clauses.find(TenantContext.current(), contractId, clause)
                 .orElseThrow(() -&gt; new IllegalArgumentException("No clause " + clause + " in " + contractId));
     }
-}</code></pre>
-  <p>Notes:</p>
+}</code></pre></details>
+  <p><code>POST /mcp</code> is <b>unauthenticated by default</b>. No tenant parameter: it comes from the JWT.</p>
+  <details class="deep"><summary>Go deeper: Spring AI notes (stdio mode, SYNC vs ASYNC)</summary>
   <ul>
     <li>The auto-configuration scans beans for <code>@McpTool</code>, <code>@McpResource</code> and <code>@McpPrompt</code> and registers them; Java records become the output schema. Alternatively expose existing Spring AI <code>@Tool</code> methods with a <code>MethodToolCallbackProvider</code> bean.</li>
     <li>The endpoint is <code>POST /mcp</code> and is <b>unauthenticated by default</b>. Put Spring Security (OAuth2 resource server) in front before it leaves localhost.</li>
@@ -377,17 +514,24 @@ public class ContractTools {
     <li>For a stdio Spring server use <code>spring-ai-starter-mcp-server</code> with <code>spring.ai.mcp.server.stdio=true</code>, and silence the console: <code>spring.main.banner-mode=off</code> (or <code>spring.banner.location=off</code>), <code>logging.level.root=OFF</code> or a file appender, <code>spring.output.ansi.enabled=off</code>. A Spring banner on stdout is the classic "server failed to start" bug.</li>
     <li><code>SYNC</code> servers register only synchronous methods; <code>ASYNC</code> only <code>Mono</code>/<code>Flux</code> ones. Mixing them silently drops tools.</li>
   </ul>
+  </details>
 
-  <h3>Step 8: authorization and least privilege</h3>
-  <p>MCP authorization is optional in the spec but mandatory in any real deployment. For HTTP transports the model is plain OAuth 2.1:</p>
-  <div class="flow">
-    <span class="node">MCP client</span><span class="arrow">→<small>no token</small></span>
-    <span class="node hl">MCP server<small>resource server</small></span><span class="arrow">→<small>401 + resource_metadata</small></span>
-    <span class="node">Client reads /.well-known/oauth-protected-resource</span><span class="arrow">→</span>
-    <span class="node store">Authorization server<small>PKCE + resource param</small></span><span class="arrow">→</span>
-    <span class="node">Bearer token on every request</span>
+  <h2 id="security"><span class="n">07</span>Authorization and least privilege</h2>
+  <ol class="walk">
+    <li><span class="who">Client</span><span>Calls <code>/mcp</code> with no token</span></li>
+    <li><span class="who">MCP server</span><span>401 + <code>WWW-Authenticate: Bearer resource_metadata="…"</code></span></li>
+    <li><span class="who">Client</span><span>Reads <code>/.well-known/oauth-protected-resource</code></span></li>
+    <li><span class="who">Auth server</span><span>Code flow with PKCE and <code>resource=https://mcp.example.com</code></span></li>
+    <li><span class="who">Client</span><span>Bearer token on every request; server checks the audience</span></li>
+  </ol>
+  <div class="keys">
+    <div class="key"><h4>Resource server</h4><p>The MCP server validates tokens; your IdP issues them.</p></div>
+    <div class="key"><h4>Audience-bound tokens</h4><p>RFC 8707 <code>resource</code> param. Reject tokens minted for anyone else.</p></div>
+    <div class="key"><h4>No token passthrough</h4><p>Never forward the client's token downstream.</p></div>
+    <div class="key"><h4>Least privilege</h4><p>Read-only first, tenant from token, confirm writes, audit calls.</p></div>
   </div>
-  <p class="flow-caption">Figure: discovery through Protected Resource Metadata, then a standard authorization code flow with PKCE.</p>
+  <details class="deep"><summary>Go deeper: the full authorization rules</summary>
+  <p>MCP authorization is optional in the spec but mandatory in any real deployment. For HTTP transports the model is plain OAuth 2.1. Discovery happens through Protected Resource Metadata, then a standard authorization code flow with PKCE.</p>
   <ul>
     <li><b>The MCP server is an OAuth 2.1 resource server.</b> It validates tokens; an authorization server (your Keycloak/Auth0/company IdP) issues them.</li>
     <li><b>RFC 9728 Protected Resource Metadata</b>: the server must publish which authorization server to use. A 401 carries <code>WWW-Authenticate: Bearer resource_metadata="…", scope="contracts:read"</code>.</li>
@@ -405,8 +549,33 @@ public class ContractTools {
     <li><b>Audit</b> every <code>tools/call</code>: user, tenant, tool, arguments hash, latency, result size. You will need it for DPDP breach investigations.</li>
     <li>Vet third-party servers like dependencies: pin versions, read what tools they expose, and watch for tool descriptions that change after install.</li>
   </ul>
+  </details>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li><code>print()</code> in a stdio server, or a Spring banner on stdout — the host reports a parse error or a dead server.</li>
+    <li>Relative paths in Claude Desktop config.</li>
+    <li>Tool names like <code>search</code> that collide with other servers' tools.</li>
+    <li>Exposing a write tool with no confirmation, or <code>tenant_id</code> as an argument.</li>
+    <li>Leaving the Spring <code>/mcp</code> endpoint unauthenticated on a shared network.</li>
+  </ul></div>
 
-  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <h2 id="quiz"><span class="n">08</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">A user attaches a contract's clause index to the chat. Which primitive is that?</p>
+    <div class="opts"><button class="opt" type="button">Tool</button><button class="opt" type="button">Prompt</button><button class="opt" type="button">Resource</button></div>
+    <p class="why">Attached data with a stable URI is a resource; the model does not choose it.</p></div>
+  <div class="quiz" data-answer="1"><p class="q"><code>get_clause</code> is called for clause 99, which does not exist. What should the server return?</p>
+    <div class="opts"><button class="opt" type="button">A JSON-RPC error</button><button class="opt" type="button">A normal result with <code>isError: true</code> and a clear message</button><button class="opt" type="button">An empty result</button></div>
+    <p class="why">The model can read the error and recover. JSON-RPC errors are for protocol problems.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Your stdio MCP server "fails to start" in Claude Desktop. Most likely cause?</p>
+    <div class="opts"><button class="opt" type="button">Something writes to stdout (a <code>print()</code> or Spring banner)</button><button class="opt" type="button">Missing OAuth token</button><button class="opt" type="button">No load balancer</button></div>
+    <p class="why">On stdio, stdout is the protocol stream. Log to stderr.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why is <code>tenant_id</code> not a tool argument in a multi-tenant MCP server?</p>
+    <div class="opts"><button class="opt" type="button">JSON Schema cannot express it</button><button class="opt" type="button">It makes the tool slower</button><button class="opt" type="button">Injected text in a document could make the model ask for another tenant's data</button></div>
+    <p class="why">Model-chosen arguments can be prompt-injected. Tenant comes from the token.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why does the 2026-07-28 stateless spec make remote servers easier to scale?</p>
+    <div class="opts"><button class="opt" type="button">It removes the need for auth</button><button class="opt" type="button">Every request carries version and capabilities, so any pod can serve it without sticky sessions</button><button class="opt" type="button">It switches to gRPC</button></div>
+    <p class="why">No session state, so it is a plain stateless HTTP service.</p></div>
+
+  <h2 id="interviews"><span class="n">09</span>Interview questions</h2>
   <p>Mastercard asked a candidate to explain MCP host/client/server and the difference between tools and resources. Expect the same in any AI-platform or agent role, followed by "how would you secure it".</p>
   <details class="qa"><summary>What is MCP, in one breath?</summary><p>An open protocol, JSON-RPC 2.0 underneath, that standardises how AI applications get context and actions from external systems. A system exposes tools, resources and prompts once through an MCP server, and any MCP-capable host (Claude Code, Claude Desktop, IDEs, your own app) can use them. It turns N×M integrations into N+M, the way LSP did for editors.</p></details>
   <details class="qa"><summary>Explain host, client and server.</summary><p>The host is the AI application: it owns the LLM conversation, user consent and policy. Inside it, a client is created per server and keeps a dedicated 1:1 connection. The server exposes capabilities. Results from multiple servers only meet in the host, which is why the host enforces approval and decides what enters the model's context.</p></details>
@@ -421,8 +590,9 @@ public class ContractTools {
   <details class="qa"><summary>How would you scale a remote MCP server?</summary><p>With the current stateless protocol, like any stateless HTTP service: horizontal pods behind a load balancer, no sticky sessions, cache <code>server/discover</code> and <code>tools/list</code> (responses carry <code>ttlMs</code>), timeouts and bulkheads on downstream calls, per-tenant rate limits, and the Tasks extension for long-running work so requests don't hold connections open.</p></details>
   <details class="qa"><summary>When would you not use MCP?</summary><p>When the tools live inside one application and are only used by that application. Plain Spring AI <code>@Tool</code> methods are simpler, faster and easier to test. MCP pays off when the same capability is reused by several hosts (IDE assistant, chat app, internal agents) or owned by a different team.</p></details>
 
-  <h2 id="capstone"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <h2 id="capstone"><span class="n">10</span>Capstone checkpoint</h2>
   <p>Goal: expose the capstone's retrieval as an MCP server so Claude Code can answer contract questions with citations.</p>
+  <details class="deep"><summary>Show the five capstone steps</summary>
   <ol>
     <li>Build the Python server above and make the in-process test pass. Add one assertion per behaviour: search hit, clause page, <code>isError</code> on a missing clause.</li>
     <li>Replace the dictionary with your capstone's pgvector store: <code>search_contracts</code> embeds the query and returns the top-k chunks with <code>document</code> and <code>page</code>; <code>get_clause</code> returns the full chunk text.</li>
@@ -430,16 +600,21 @@ public class ContractTools {
     <li>Register it in Claude Code with <code>claude mcp add</code> and ask three questions from your golden set. Record which tools were called and whether citations were correct.</li>
     <li>Stretch: port it to Spring AI with <code>spring-ai-starter-mcp-server-webmvc</code>, put Spring Security's OAuth2 resource server in front of <code>/mcp</code>, and read the tenant from the JWT. Prove a token for tenant A cannot read tenant B even if the model asks for it.</li>
   </ol>
+  </details>
   <div class="callout tip"><b>Done when</b><p>Claude Code answers "What is the termination notice period in the Acme MSA?" with the right clause and page, the test file passes, and your README has one paragraph on why the tenant is not a tool argument.</p></div>
-  <div class="callout warn"><b>Common mistakes</b><ul>
-    <li><code>print()</code> in a stdio server, or a Spring banner on stdout — the host reports a parse error or a dead server.</li>
-    <li>Relative paths in Claude Desktop config.</li>
-    <li>Tool names like <code>search</code> that collide with other servers' tools.</li>
-    <li>Exposing a write tool with no confirmation, or <code>tenant_id</code> as an argument.</li>
-    <li>Leaving the Spring <code>/mcp</code> endpoint unauthenticated on a shared network.</li>
+
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>MCP = JDBC for AI apps: N × M integrations → N + M.</li>
+    <li>Host owns LLM + consent; one client per server, 1:1; server exposes capabilities.</li>
+    <li>Tool = model calls · Resource = app attaches (URI) · Prompt = user picks.</li>
+    <li>JSON-RPC 2.0. Tool failure = result with <code>isError: true</code>; protocol failure = JSON-RPC error.</li>
+    <li>2026-07-28: stateless, <code>_meta</code> on every request, <code>server/discover</code>. Older: <code>initialize</code> handshake.</li>
+    <li>stdio: local, env creds, never write stdout. Streamable HTTP: <code>POST /mcp</code>, OAuth 2.1.</li>
+    <li>Auth: RFC 9728 metadata, RFC 8707 audience, no token passthrough, 401 vs 403 step-up.</li>
+    <li>Tenant from token, read-only first, confirm writes, audit every <code>tools/call</code>.</li>
   </ul></div>
 
-  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <h2 id="sources"><span class="n">11</span>Sources / go deeper</h2>
   <ul class="sources">
     <li><a href="https://modelcontextprotocol.io/docs/learn/architecture" target="_blank" rel="noopener">MCP architecture overview (participants, layers, primitives, discovery)</a></li>
     <li><a href="https://modelcontextprotocol.io/specification/latest/basic/transports" target="_blank" rel="noopener">MCP specification: transports</a></li>
@@ -454,5 +629,6 @@ public class ContractTools {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="learn-agents.html">Agents</a> · <a href="learn-spring-ai-tools.html">Spring AI tools</a> · <a href="learn-production-ai.html">Production AI</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

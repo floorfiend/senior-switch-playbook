@@ -12,28 +12,48 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>Notification Service (LLD)</h1>
-  <p class="lede">Build the in-process core of a communication service: typed requests per channel (Email, SMS, Soundbox, Push), many providers per channel, many accounts per provider segregated by purpose, random selection among active providers with failover, plus rate limiting and delivery tracking. Seniors win on the provider/account model and on what happens when a provider fails halfway.</p>
+  <p class="lede">Build and defend a notification service with typed requests, provider accounts per purpose, random selection with failover, and idempotent sends.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 90 min machine coding or 60 min LLD discussion</span>
     <span class="fact"><b>Seen:</b> PhonePe (offer), Adobe Express, Jupiter, Microsoft, Salesforce</span>
   </div>
   <div class="chips"><span class="chip hot">PhonePe</span><span class="chip hot">Adobe</span><span class="chip">Jupiter Money</span><span class="chip">Microsoft</span><span class="chip">Salesforce</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>One record type per channel; mandatory fields checked in its constructor.</li>
+    <li>Provider = vendor code; account = credentials + purpose + health.</li>
+    <li>Pick a random active account for (channel, purpose); fail over on retryable errors.</li>
+    <li><code>putIfAbsent</code> on request id stops duplicate sends.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A courier desk with several courier companies. Each company has separate counters for urgent and bulk parcels. The clerk picks any open urgent counter at random; if it is jammed, the parcel goes to the next open one, and the receipt number stops the same parcel being booked twice.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
     <li><a href="#clarify">Clarifying questions</a></li>
     <li><a href="#reqs">Requirements</a></li>
     <li><a href="#design">Class design</a></li>
+    <li><a href="#watch">Watch it work</a></li>
     <li><a href="#code">Core code</a></li>
     <li><a href="#concurrency">Concurrency and edge cases</a></li>
     <li><a href="#extensions">Extensions</a></li>
     <li><a href="#tests">Tests to write</a></li>
     <li><a href="#mistakes">Mistakes and review questions</a></li>
     <li><a href="#plan">90-minute plan</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <div class="grid">
+    <div class="card"><h4>Model</h4><p>Channel, Provider, Account, Purpose as separate concepts. Getting "provider supports many channels" and "account belongs to a purpose" right is half the PhonePe problem.</p></div>
+    <div class="card"><h4>Validation in types</h4><p>Mandatory fields enforced where each request type is constructed, not in a 40-line <code>if</code> chain in the service.</p></div>
+    <div class="card"><h4>Open/closed</h4><p>New channel or provider = new class plus registration. No edits to the dispatcher.</p></div>
+    <div class="card"><h4>Failure handling</h4><p>Failover to another account, temporarily disabling a failing one, idempotency, and knowing when not to retry.</p></div>
+  </div>
+  <p>The PhonePe statement (Mar 2025, selected) is the one to rehearse: Email/SMS/Soundbox, many providers, many accounts per provider, random active provider.</p>
+  <details class="deep"><summary>Go deeper: the PhonePe statement and other reports</summary>
   <p>The PhonePe machine-coding statement (Mar 2025, candidate selected) is the most concrete version and the one to rehearse:</p>
   <ol>
     <li>Handle multiple communication request types (Email, SMS, Soundbox).</li>
@@ -43,14 +63,16 @@
     <li>Randomly select one active provider from the eligible providers for each request.</li>
   </ol>
   <p>Adobe Express (2026, staff-level interviewer) ran the design-pattern version: channels Email/SMS/Push, user preferences, rate limiting per channel. The candidate used Strategy for channels, Observer for event-driven dispatch, Decorator to add retry around any channel, and a token bucket per (user, channel). The interviewer's push: "What if we need to support a new channel like WhatsApp in three months?" Jupiter Money's SDE-2 LLD covered requirements, DB schema, class diagram and enhancements. Microsoft and Salesforce variants ask for a notification library or an OS-level notification system.</p>
-  <div class="grid">
-    <div class="card"><h4>Model</h4><p>Channel, Provider, Account, Purpose as separate concepts. Getting "provider supports many channels" and "account belongs to a purpose" right is half the PhonePe problem.</p></div>
-    <div class="card"><h4>Validation in types</h4><p>Mandatory fields enforced where each request type is constructed, not in a 40-line <code>if</code> chain in the service.</p></div>
-    <div class="card"><h4>Open/closed</h4><p>New channel or provider = new class plus registration. No edits to the dispatcher.</p></div>
-    <div class="card"><h4>Failure handling</h4><p>Failover to another account, temporarily disabling a failing one, idempotency, and knowing when not to retry.</p></div>
-  </div>
+  </details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
+  <div class="keys">
+    <div class="key"><h4>Sync or queued?</h4><p>Synchronous core plus an async wrapper.</p></div>
+    <div class="key"><h4>Segregated by what?</h4><p>Assume purpose: OTP, transactional, promotional.</p></div>
+    <div class="key"><h4>Fail over?</h4><p>Yes, but a timeout may already have sent it. Ask which is worse: duplicate or miss.</p></div>
+    <div class="key"><h4>Raw text or template?</h4><p>In India, SMS must match a DLT-registered template.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: all eight questions and why each matters</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
     <tr><td>Synchronous send (return delivered/failed) or accept-and-queue?</td><td>Machine coding: synchronous core plus an async wrapper. Changes the return type and where retries live.</td></tr>
@@ -62,6 +84,7 @@
     <tr><td>Per-user preferences, quiet hours, rate limits?</td><td>Belongs in a pre-send pipeline, not inside providers.</td></tr>
     <tr><td>Do we need delivery receipts (provider callbacks)?</td><td>Adds states beyond SENT: DELIVERED, FAILED_AT_OPERATOR.</td></tr>
   </table></div>
+  </details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
@@ -88,6 +111,35 @@
   </div>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
+  <div class="uml">
+    <div class="cls hl"><b>NotificationService <small>pipeline</small></b><ul><li>- registry: ProviderRegistry</li><li>- selector: ProviderSelector</li><li>- rateLimiter: RateLimiter</li><li>- records: Map&lt;String, DeliveryRecord&gt;</li><li>- listeners, clock</li></ul><ul><li>+ send(req): DeliveryRecord</li><li>+ sendAsync(req)</li></ul></div>
+    <div class="cls"><b>NotificationRequest <small>«sealed»</small></b><ul><li>+ requestId(), purpose()</li><li>+ channel(), recipient()</li></ul><ul><li>EmailRequest · SmsRequest · SoundboxRequest</li></ul></div>
+    <div class="cls"><b>Provider <small>«interface»</small></b><ul><li>+ name(), channels()</li><li>+ send(account, req): SendResult</li></ul></div>
+    <div class="cls"><b>ProviderAccount</b><ul><li>- id, provider, channel, purpose</li><li>- enabled: volatile</li><li>- consecutiveFailures: AtomicInteger</li><li>- coolOffUntil: Instant</li></ul><ul><li>+ isAvailable(now)</li><li>+ recordSuccess / recordFailure</li></ul></div>
+    <div class="cls"><b>ProviderRegistry</b><ul><li>- accounts: Map&lt;(channel, purpose), List&gt;</li></ul><ul><li>+ register(account)</li><li>+ eligible(channel, purpose, now)</li></ul></div>
+    <div class="cls"><b>ProviderSelector <small>«interface»</small></b><ul><li>+ attemptOrder(eligible)</li></ul><ul><li>RandomSelector · WeightedSelector</li></ul></div>
+    <div class="cls"><b>DeliveryRecord</b><ul><li>- status: PENDING/SENT/FAILED/RATE_LIMITED</li><li>- attempts: List&lt;Attempt&gt;</li></ul></div>
+    <div class="cls"><b>TokenBucketRateLimiter</b><ul><li>- buckets: Map&lt;String, Bucket&gt;</li></ul><ul><li>+ tryAcquire(key)</li></ul></div>
+  </div>
+  <div class="flow">
+    <span class="node">Client</span><span class="arrow">→</span>
+    <span class="node hl">NotificationService<small>pipeline</small></span><span class="arrow">→</span>
+    <span class="node">ProviderRegistry<small>(channel, purpose) → accounts</small></span><span class="arrow">→</span>
+    <span class="node">ProviderSelector<small>random, active only</small></span><span class="arrow">→</span>
+    <span class="node">Provider<small>adapter per vendor</small></span><span class="arrow">→</span>
+    <span class="node store">DeliveryRecord<small>+ listeners</small></span>
+  </div>
+  <p class="flow-caption">Figure: the service asks the registry who may send, the selector decides the order to try them, providers are thin adapters, and every outcome is recorded and published.</p>
+  <h3>Patterns and why</h3>
+  <div class="keys">
+    <div class="key"><h4>Strategy</h4><p><code>Provider</code> per vendor and <code>ProviderSelector</code> per selection rule. Both are named in the PhonePe statement as things that vary.</p></div>
+    <div class="key"><h4>Adapter</h4><p>Each <code>Provider</code> translates our request into a vendor API; vendor quirks stay out of the core.</p></div>
+    <div class="key"><h4>Decorator</h4><p><code>RetryingProvider</code>, <code>TimeoutProvider</code>, <code>RateLimitedProvider</code> wrap any provider (Adobe's answer for retry).</p></div>
+    <div class="key"><h4>Observer</h4><p><code>DeliveryListener</code>s for audit, metrics and client callbacks.</p></div>
+    <div class="key"><h4>Sealed interface + records</h4><p>The compiler knows every request type, so a <code>switch</code> over them is exhaustive; validation lives with the data.</p></div>
+    <div class="key"><h4>Factory only if needed</h4><p>A <code>Map&lt;Channel, Function&lt;Map, NotificationRequest&gt;&gt;</code> to build requests from a generic API payload.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: responsibility table for every class</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
     <tr><td><code>Channel</code>, <code>Purpose</code>, <code>Priority</code> (enums)</td><td>Vocabulary</td><td>EMAIL/SMS/SOUNDBOX/PUSH; OTP/TRANSACTIONAL/PROMOTIONAL</td></tr>
@@ -102,27 +154,65 @@
     <tr><td><code>DeliveryListener</code></td><td>Observer: audit, metrics, webhooks</td><td><code>onDelivered</code>, <code>onFailed</code></td></tr>
     <tr><td><code>TokenBucket</code></td><td>Rate limit per (recipient, channel)</td><td><code>tryConsume(now)</code></td></tr>
   </table></div>
-  <div class="flow">
-    <span class="node">Client</span><span class="arrow">→</span>
-    <span class="node hl">NotificationService<small>pipeline</small></span><span class="arrow">→</span>
-    <span class="node">ProviderRegistry<small>(channel, purpose) → accounts</small></span><span class="arrow">→</span>
-    <span class="node">ProviderSelector<small>random, active only</small></span><span class="arrow">→</span>
-    <span class="node">Provider<small>adapter per vendor</small></span><span class="arrow">→</span>
-    <span class="node store">DeliveryRecord<small>+ listeners</small></span>
-  </div>
-  <p class="flow-caption">Figure: the service asks the registry who may send, the selector decides the order to try them, providers are thin adapters, and every outcome is recorded and published.</p>
-  <h3>Patterns and why</h3>
-  <ul>
-    <li><b>Strategy</b>: <code>Provider</code> per vendor and <code>ProviderSelector</code> per selection rule. Both are named in the PhonePe statement as things that vary.</li>
-    <li><b>Adapter</b>: each <code>Provider</code> translates our request into a vendor API; vendor quirks stay out of the core.</li>
-    <li><b>Decorator</b>: <code>RetryingProvider</code>, <code>TimeoutProvider</code>, <code>RateLimitedProvider</code> wrap any provider (Adobe's answer for retry).</li>
-    <li><b>Observer</b>: <code>DeliveryListener</code>s for audit, metrics and client callbacks.</li>
-    <li><b>Sealed interface + records</b>: the compiler knows every request type, so a <code>switch</code> over them is exhaustive; validation lives with the data.</li>
-    <li>Factory only if needed: a <code>Map&lt;Channel, Function&lt;Map, NotificationRequest&gt;&gt;</code> to build requests from a generic API payload.</li>
-  </ul>
+  </details>
 
-  <h2 id="code"><span class="n">05</span>Core code</h2>
-  <pre><code>public enum Channel { EMAIL, SMS, SOUNDBOX, PUSH }
+  <h2 id="watch"><span class="n">05</span>Watch it work</h2>
+  <p>One OTP SMS, request id <code>otp-42</code>. Cells are SMS accounts. Vendor names are made-up stubs.</p>
+  <div class="stepper"><b class="title">An OTP through the pipeline with failover</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell">VendorA·OTP</span><span class="cell">VendorB·OTP</span><span class="cell">VendorB·PROMO</span><span class="cell">VendorA·OTP-2</span></div>
+      <div class="ptrs"><span class="on">new SmsRequest(otp-42, OTP, +919812345678, …)</span><span>status=—</span></div>
+      <figcaption>The record's compact constructor validates the mobile number and message. Bad input never reaches the service.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">VendorA·OTP</span><span class="cell">VendorB·OTP</span><span class="cell">VendorB·PROMO</span><span class="cell">VendorA·OTP-2</span></div>
+      <div class="ptrs"><span class="on">records.putIfAbsent(otp-42)</span><span>status=PENDING</span><span>OTP skips rate limit</span></div>
+      <figcaption>The idempotency gate stores a new record. OTPs bypass the per-channel limiter so a user can always log in.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell win">VendorA·OTP</span><span class="cell win">VendorB·OTP</span><span class="cell dim">VendorB·PROMO</span><span class="cell dim">VendorA·OTP-2</span></div>
+      <div class="ptrs"><span class="on">eligible(SMS, OTP)</span><span>OTP-2 disabled by admin</span></div>
+      <figcaption>The registry returns only active accounts for (SMS, OTP). The promotional account is a different purpose; OTP-2 is switched off.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell hl">VendorB·OTP</span><span class="cell win">VendorA·OTP</span></div>
+      <div class="ptrs"><span class="on">RandomSelector.attemptOrder</span><span>primary=VendorB</span></div>
+      <figcaption>The selector shuffles the eligible list. First is the primary, the rest are the failover order.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">VendorB·OTP</span><span class="cell hl">VendorA·OTP</span></div>
+      <div class="ptrs"><span class="on">503, retryable</span><span>attempts=1</span><span>VendorB failures=1</span></div>
+      <figcaption>VendorB returns 503. It is retryable, so the account's failure count rises and the loop moves on.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">VendorB·OTP</span><span class="cell ok">VendorA·OTP</span></div>
+      <div class="ptrs"><span class="on">status=SENT</span><span>attempts=2</span><span>listeners notified</span></div>
+      <figcaption>VendorA accepts. The record stores the provider message id and listeners (audit, metrics) are called.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">VendorB·OTP</span><span class="cell ok">VendorA·OTP</span></div>
+      <div class="ptrs"><span class="on">send(otp-42) again</span><span>returns existing record</span><span>no provider call</span></div>
+      <figcaption>The client retries the same request id. <code>putIfAbsent</code> returns the first record, so no second SMS goes out.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">VendorB·OTP</span><span class="cell ok">VendorA·OTP</span></div>
+      <div class="ptrs"><span class="on">VendorB: 3 failures in a row</span><span>coolOffUntil = now + 30 s</span></div>
+      <figcaption>After three consecutive failures VendorB cools off for 30 s. After that, the next request is the probe (<dfn title="A circuit breaker state where one trial request is allowed through to test recovery">half-open</dfn>).</figcaption>
+    </figure>
+  </div></div>
+
+  <h2 id="code"><span class="n">06</span>Core code</h2>
+  <p>The two gates at the start of <code>send</code>:</p>
+  <pre><code>    public DeliveryRecord send(NotificationRequest req) {
+        DeliveryRecord record = new DeliveryRecord(req.requestId());
+        DeliveryRecord existing = records.putIfAbsent(req.requestId(), record); // atomic idempotency gate
+        if (existing != null) {
+            return existing;
+        }
+        if (req.purpose() != Purpose.OTP &amp;&amp; !rateLimiter.tryAcquire(req.recipient() + ":" + req.channel())) {
+            return complete(req, record, Status.RATE_LIMITED);
+        }</code></pre>
+  <details class="code"><summary>Show Java: Channel, Purpose, request records</summary><pre><code>public enum Channel { EMAIL, SMS, SOUNDBOX, PUSH }
 public enum Purpose { OTP, TRANSACTIONAL, PROMOTIONAL }
 
 public sealed interface NotificationRequest permits EmailRequest, SmsRequest, SoundboxRequest {
@@ -179,9 +269,8 @@ public record SoundboxRequest(String requestId, Purpose purpose, String deviceId
     }
     public Channel channel() { return Channel.SOUNDBOX; }
     public String recipient() { return deviceId; }
-}</code></pre>
-
-  <pre><code>public record SendResult(String providerMessageId) {}
+}</code></pre></details>
+  <details class="code"><summary>Show Java: Provider, ProviderException, ProviderAccount</summary><pre><code>public record SendResult(String providerMessageId) {}
 
 public class ProviderException extends Exception {
     private final boolean retryable; // 5xx / timeout-before-send: true; bad number / auth: false
@@ -230,9 +319,8 @@ public final class ProviderAccount {
     public Provider provider() { return provider; }
     public Channel channel() { return channel; }
     public Purpose purpose() { return purpose; }
-}</code></pre>
-
-  <pre><code>public final class ProviderRegistry {
+}</code></pre></details>
+  <details class="code"><summary>Show Java: ProviderRegistry, ProviderSelector, RandomSelector</summary><pre><code>public final class ProviderRegistry {
     private record Key(Channel channel, Purpose purpose) {}
     private final Map&lt;Key, List&lt;ProviderAccount&gt;&gt; accounts = new ConcurrentHashMap&lt;&gt;();
 
@@ -264,9 +352,8 @@ public final class RandomSelector implements ProviderSelector {
         Collections.shuffle(copy, random); // uniform random primary, random failover order
         return copy;
     }
-}</code></pre>
-
-  <pre><code>public enum Status { PENDING, SENT, FAILED, RATE_LIMITED }
+}</code></pre></details>
+  <details class="code"><summary>Show Java: DeliveryRecord, NotificationService</summary><pre><code>public enum Status { PENDING, SENT, FAILED, RATE_LIMITED }
 
 public final class DeliveryRecord {
     public record Attempt(String accountId, Instant at, String error) {}
@@ -339,9 +426,8 @@ public final class NotificationService {
         }
         return record;
     }
-}</code></pre>
-
-  <pre><code>public interface RateLimiter { boolean tryAcquire(String key); }
+}</code></pre></details>
+  <details class="code"><summary>Show Java: TokenBucketRateLimiter</summary><pre><code>public interface RateLimiter { boolean tryAcquire(String key); }
 
 /** Token bucket per key; refill computed lazily from the clock, no background thread. */
 public final class TokenBucketRateLimiter implements RateLimiter {
@@ -369,9 +455,23 @@ public final class TokenBucketRateLimiter implements RateLimiter {
         }
     }
 }</code></pre>
-  <p>Async wrapper for the demo: one bounded <code>ThreadPoolExecutor</code> per <code>Purpose</code> (bulkhead), so a promotional blast cannot queue in front of OTPs. <code>sendAsync(req)</code> returns <code>CompletableFuture.supplyAsync(() -&gt; send(req), executors.get(req.purpose()))</code>; on a full queue, reject promotional traffic and keep OTP queues small with short timeouts.</p>
+  <p>Async wrapper for the demo: one bounded <code>ThreadPoolExecutor</code> per <code>Purpose</code> (bulkhead), so a promotional blast cannot queue in front of OTPs. <code>sendAsync(req)</code> returns <code>CompletableFuture.supplyAsync(() -&gt; send(req), executors.get(req.purpose()))</code>; on a full queue, reject promotional traffic and keep OTP queues small with short timeouts.</p></details>
+  <p>Async: one bounded executor per <code>Purpose</code> (a <dfn title="Separate resource pools so one workload cannot starve another">bulkhead</dfn>), so a promotional blast never queues ahead of OTPs.</p>
 
-  <h2 id="concurrency"><span class="n">06</span>Concurrency and edge cases</h2>
+  <h2 id="concurrency"><span class="n">07</span>Concurrency and edge cases</h2>
+  <p>The bug: the same request id arrives on two threads, and the code checks then inserts.</p>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>SMS sent</th></tr></thead><tbody>
+    <tr><td>t1</td><td><code>records.containsKey(otp-42)</code> → false</td><td></td><td>0</td></tr>
+    <tr><td>t2</td><td></td><td><code>records.containsKey(otp-42)</code> → false</td><td>0</td></tr>
+    <tr><td>t3</td><td>put, send</td><td>put, send</td><td class="bad">2 OTPs</td></tr>
+    <tr><td>fixed</td><td><code>putIfAbsent</code> → null, sends</td><td><code>putIfAbsent</code> → A's record, returns it</td><td class="ok">1</td></tr>
+  </tbody></table></div>
+  <ul>
+    <li><code>putIfAbsent</code> is one atomic step on <code>ConcurrentHashMap</code>.</li>
+    <li>In production: a unique key in the DB, or Redis <code>SET NX</code> with a TTL.</li>
+    <li>A timeout after the vendor accepted is "unknown": fail over for OTP, not for promotional.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: every concurrency case and edge case</summary>
   <div class="tbl"><table>
     <tr><th>Case</th><th>Risk</th><th>Handling</th></tr>
     <tr><td>Same request id sent twice concurrently</td><td>Two SMS for one OTP</td><td><code>putIfAbsent</code> is the atomic gate; the second caller gets the first record. In production, a unique key in the DB (or Redis <code>SET NX</code> with TTL).</td></tr>
@@ -384,8 +484,20 @@ public final class TokenBucketRateLimiter implements RateLimiter {
     <tr><td>Rate-limiting OTPs</td><td>User cannot log in</td><td>OTP bypasses the per-channel limiter here, but should have its own abuse limit (for example 5 per 10 minutes per number).</td></tr>
     <tr><td>Time</td><td>Cool-off and buckets untestable</td><td>All time from the injected <code>Clock</code>.</td></tr>
   </table></div>
+  </details>
 
-  <h2 id="extensions"><span class="n">07</span>Extensions interviewers add mid-round</h2>
+  <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
+  <div class="grid">
+    <div class="card"><h4>WhatsApp in three months (Adobe)</h4><p>New enum value, record, adapter. Service, registry, selector unchanged.</p></div>
+    <div class="card"><h4>URGENT to every channel</h4><p>A <code>NotificationRouter</code> above the service; request id per channel.</p></div>
+    <div class="card"><h4>Weighted / cheapest-first</h4><p>A new <code>ProviderSelector</code>. Nothing else changes.</p></div>
+    <div class="card"><h4>Retries with backoff</h4><p><code>RetryingProvider</code> decorator; only retryable errors, one or two tries.</p></div>
+    <div class="card"><h4>Templates and DLT</h4><p>Template repository; render fails fast; SMS must match a DLT template.</p></div>
+    <div class="card"><h4>Preferences, quiet hours</h4><p>Pre-send filter chain: pass, drop or reschedule.</p></div>
+    <div class="card"><h4>Delivery receipts</h4><p>Map provider message id → request id; upsert, never assume order.</p></div>
+    <div class="card"><h4>Scheduled and bulk</h4><p>Poller or delay queue; bulk on promotional accounts and executor.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full answers for each extension</summary>
   <details class="qa"><summary>"Add WhatsApp in three months" (Adobe)</summary><p>Add <code>WHATSAPP</code> to <code>Channel</code>, a <code>WhatsAppRequest</code> record, and a provider adapter; register accounts. The service, registry and selector do not change. With a sealed interface you also add it to <code>permits</code>, which is deliberate: every exhaustive <code>switch</code> (for example in a template renderer) now fails to compile until it handles WhatsApp. If third parties must add channels without touching our code, make the interface non-sealed.</p></details>
   <details class="qa"><summary>"URGENT goes to every channel the user has"</summary><p>Add a <code>NotificationRouter</code> above the service: input is a channel-agnostic <code>Notification(userId, templateId, params, priority, purpose)</code>. It loads the user's contacts and preferences, picks channels (<code>URGENT</code> → all available, ignoring marketing opt-outs; otherwise preferred channel with fallback), renders a template per channel, and calls <code>send</code> once per channel with request ids <code>baseId + ":" + channel</code> so each channel stays idempotent.</p></details>
   <details class="qa"><summary>"Weighted or cheapest-first selection"</summary><p>New <code>ProviderSelector</code>. Weighted: pick the primary by cumulative weight, then order the rest by weight. Health-aware: weight by recent success rate. No other class changes.</p></details>
@@ -394,8 +506,15 @@ public final class TokenBucketRateLimiter implements RateLimiter {
   <details class="qa"><summary>"User preferences and quiet hours"</summary><p>A pre-send filter chain (Chain of Responsibility): <code>OptOutFilter</code>, <code>QuietHoursFilter</code> (promotional only, user's time zone), <code>RateLimitFilter</code>. Each can pass, drop or reschedule.</p></details>
   <details class="qa"><summary>"Delivery receipts from providers"</summary><p>A callback endpoint maps <code>providerMessageId</code> → request id and moves status SENT → DELIVERED or UNDELIVERED. Store the mapping when <code>sent()</code> is called; callbacks can arrive before the send call returns, so upsert, never assume order.</p></details>
   <details class="qa"><summary>"Scheduled and bulk notifications"</summary><p>Scheduled: persist with <code>sendAt</code>, a poller (or delay queue) hands due items to <code>send</code>. Bulk: split into batches, use promotional accounts and the promotional executor so OTP latency is untouched. Beyond one JVM this becomes the Kafka-based HLD.</p></details>
+  </details>
 
-  <h2 id="tests"><span class="n">08</span>Tests to write</h2>
+  <h2 id="tests"><span class="n">09</span>Tests to write</h2>
+  <div class="keys">
+    <div class="key"><h4>Failover on retryable</h4><p>First provider throws retryable → second used; 2 attempts, SENT.</p></div>
+    <div class="key"><h4>No failover on bad input</h4><p>Invalid-number error → 1 attempt, FAILED.</p></div>
+    <div class="key"><h4>Duplicate id, one send</h4><p>20 threads send the same id → provider called once.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: all twelve tests</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
     <tr><td><code>emailRequestRejectsMissingSubject</code></td><td>Constructor throws with "subject is mandatory".</td></tr>
@@ -411,8 +530,9 @@ public final class TokenBucketRateLimiter implements RateLimiter {
     <tr><td><code>noEligibleProviderGivesFailed</code></td><td>Status FAILED, zero attempts, listener notified.</td></tr>
     <tr><td><code>listenerExceptionDoesNotFailSend</code></td><td>Throwing listener; status still SENT.</td></tr>
   </table></div>
+  </details>
 
-  <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected, and review questions</h2>
+  <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected, and review questions</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
       <li>One <code>Notification</code> class with nullable fields for every channel and an <code>if (type == EMAIL)</code> chain for validation and sending.</li>
@@ -423,13 +543,14 @@ public final class TokenBucketRateLimiter implements RateLimiter {
       <li>No answer to "new channel in three months" beyond "add an else-if".</li>
     </ul>
   </div>
+  <h3>Interview questions</h3>
   <details class="qa"><summary>Why separate <code>Provider</code> and <code>ProviderAccount</code>?</summary><p>A provider is code (how to talk to the vendor); an account is configuration and state (credentials, purpose, health). One provider instance serves many accounts, and health is per account because quotas and sender ids are per account.</p></details>
   <details class="qa"><summary>Why does the selector return an order instead of one account?</summary><p>Failover then needs no second call and no "exclude these" parameter, and the selection policy decides both primary and backups consistently.</p></details>
   <details class="qa"><summary>Why <code>CopyOnWriteArrayList</code> in the registry?</summary><p>Reads on every send, writes only on admin registration. Snapshot iteration is safe without locks. With frequent writes I would switch to an immutable map swapped through an <code>AtomicReference</code>.</p></details>
   <details class="qa"><summary>Where would this break at scale?</summary><p>In-memory idempotency and records (move to Postgres with a unique key, or Redis with TTL), synchronous sends (move behind Kafka topics per purpose with consumer workers), and per-JVM rate limits (Redis token bucket). The class boundaries stay the same.</p></details>
   <details class="qa"><summary>How do you guarantee an OTP is never sent twice?</summary><p>You cannot guarantee it across a vendor timeout; you choose. For OTP a duplicate is safer than a miss, so fail over and accept rare duplicates; both carry the same code, so the user experience is fine.</p></details>
 
-  <h2 id="plan"><span class="n">10</span>A 90-minute plan</h2>
+  <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
     <div class="step"><span class="t">0–8 min</span><span>Clarify: account segregation by purpose, failover, sync vs async, idempotency. Write assumptions at the top of the file.</span></div>
     <div class="step"><span class="t">8–15 min</span><span>Class table; name Strategy (provider, selector), Adapter, Decorator, Observer.</span></div>
@@ -440,7 +561,32 @@ public final class TokenBucketRateLimiter implements RateLimiter {
     <div class="step"><span class="t">75–90 min</span><span>Tests for validation, selection, failover, idempotency. Then talk through WhatsApp, URGENT fan-out and the HLD path.</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">11</span>Sources</h2>
+  <h2 id="quiz"><span class="n">12</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">The same vendor gives you one account for OTPs and one for promotions. How do you model that?</p>
+    <div class="opts"><button class="opt" type="button">Two <code>Provider</code> classes for the same vendor</button><button class="opt" type="button">One <code>Provider</code>, two <code>ProviderAccount</code>s keyed by (channel, purpose)</button><button class="opt" type="button">A purpose flag inside each request's send method</button></div>
+    <p class="why">Provider is code; account is configuration and health. The registry indexes accounts by (channel, purpose).</p></div>
+  <div class="quiz" data-answer="2"><p class="q">The provider replies "invalid mobile number". What should the service do?</p>
+    <div class="opts"><button class="opt" type="button">Fail over to the next account</button><button class="opt" type="button">Retry the same account with backoff</button><button class="opt" type="button">Stop: it is non-retryable and would fail everywhere</button></div>
+    <p class="why">Bad input fails on every vendor. Failing over just burns other accounts and their quotas.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">An OTP send times out. The vendor may or may not have sent it. What is the usual call?</p>
+    <div class="opts"><button class="opt" type="button">Fail over: a duplicate OTP beats a missing one</button><button class="opt" type="button">Never fail over on a timeout</button><button class="opt" type="button">Mark it SENT</button></div>
+    <p class="why">The outcome is unknown. For OTP a rare duplicate is harmless (same code); for promotional you would not fail over.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">How does adding WhatsApp avoid touching <code>NotificationService</code>?</p>
+    <div class="opts"><button class="opt" type="button">An <code>else if</code> for WhatsApp in <code>send</code></button><button class="opt" type="button">New enum value, request record and provider adapter; the service only sees interfaces</button><button class="opt" type="button">Subclass <code>NotificationService</code></button></div>
+    <p class="why">Open/closed: the pipeline works on <code>NotificationRequest</code> and <code>Provider</code>, so a new channel is new classes plus registration.</p></div>
+
+  <div class="cheat" id="cheat"><b>Cheat sheet</b><ul>
+    <li>Sealed <code>NotificationRequest</code> + one record per channel; validate in the constructor.</li>
+    <li>Provider (vendor adapter) ≠ account (credentials, purpose, health).</li>
+    <li>Registry: (channel, purpose) → <code>CopyOnWriteArrayList</code> of accounts.</li>
+    <li>Selector returns an attempt order: primary + failover in one call.</li>
+    <li>Pipeline: idempotency → rate limit → eligible → try in order → record → notify.</li>
+    <li><code>putIfAbsent</code> on request id; prod: DB unique key or Redis <code>SET NX</code>.</li>
+    <li>Fail over only on retryable errors; 3 failures → 30 s cool-off, then a probe.</li>
+    <li>Bulkhead executor per purpose; inject <code>Random</code> and <code>Clock</code>.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">13</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/6592633/" target="_blank" rel="noopener">PhonePe Backend SDE, Mar 2025: communication service machine coding (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/8317558/" target="_blank" rel="noopener">Adobe Express Senior Backend, 2026: notification service with Strategy, Observer, Decorator, token bucket (LeetCode)</a></li>
@@ -450,5 +596,6 @@ public final class TokenBucketRateLimiter implements RateLimiter {
 
   <div class="foot"><a href="lld-cache-library.html">← Prev: Cache library</a><a href="../index.html">Back to the playbook</a><a href="lld-parking-lot.html">Next: Parking lot →</a></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

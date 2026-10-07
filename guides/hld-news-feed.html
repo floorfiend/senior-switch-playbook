@@ -12,13 +12,22 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
   <h1>News feed (Instagram / Quora / ShareChat)</h1>
-  <p class="lede">Design the home feed: users follow accounts, accounts post, and each user sees a fresh, paginated, roughly ranked list in under 200 ms. The senior answer is about write amplification: when to fan out on write, when to pull on read, how celebrities break the naive design, and how the feed cache stays a cache rather than the source of truth.</p>
+  <p class="lede">After this page you can design a home feed that loads in under 200 ms for 500M users and survive the celebrity and "billions of users" follow-ups.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> ~8 reports, 2024–26</span>
     <span class="fact"><b>Probes:</b> fan-out, celebrity problem, cursor pagination, schema</span>
   </div>
   <div class="chips"><span class="chip hot">PhonePe</span><span class="chip hot">Flipkart</span><span class="chip">ShareChat</span><span class="chip">Freshworks</span><span class="chip">Goldman Sachs</span><span class="chip">Intuit</span></div>
+
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Push new post IDs into followers' Redis feeds (fan-out on write).</li>
+    <li>Celebrities are pulled at read time instead: hybrid fan-out.</li>
+    <li>Paginate with a <code>(createdAt, postId)</code> cursor, never an offset.</li>
+    <li>The feed cache is derived data; posts and follows are the truth.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A newspaper vendor drops the paper at each subscriber's door every morning (push). For a paper with 10 crore readers, that is impossible, so readers pick it up at the stall (pull). Your feed does both: doorstep delivery for small authors, stall pickup for celebrities.</p></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -27,36 +36,30 @@
     <li><a href="#api">API design</a></li>
     <li><a href="#data">Data model</a></li>
     <li><a href="#arch">Architecture</a></li>
+    <li><a href="#follow">Follow one post</a></li>
+    <li><a href="#tradeoffs">Design choices</a></li>
     <li><a href="#deep">Deep dives</a></li>
     <li><a href="#scale">Scaling and failure</a></li>
-    <li><a href="#tradeoffs">Trade-offs</a></li>
-    <li><a href="#followups">Follow-up questions</a></li>
     <li><a href="#mistakes">Mistakes</a></li>
     <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#followups">Interview questions</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
-  <p>The reports split into two styles. Schema-heavy: Flipkart asked for an Instagram-style feed where influencers endorse brands, users follow brands or influencers, with likes, comments, sticker reactions, and "on unfollow, remove their posts from the feed", then went deep into LLD and the database schema. Scale-heavy: PhonePe's interviewer for "Design Instagram" explicitly did not accept a message-queue fan-out because it does not scale to billions of users; Freshworks asked about sharding and the celebrity problem and what happens when the number of servers changes; Goldman Sachs went from a Twitter LLD into HLD fan-out. ShareChat asked for a paginated feed API using timestamp cursors. PhonePe's internal-Quora variant asked about DB choice, search, auth and microservice communication.</p>
-  <ul>
-    <li><b>Fan-out reasoning with numbers.</b> Push vs pull vs hybrid, justified by follower distribution and read/write ratio.</li>
-    <li><b>The celebrity problem</b> (write amplification and hot shards) and a concrete threshold-based fix.</li>
-    <li><b>A clean schema</b> with the right partition keys: posts by author, follow edges in both directions.</li>
-    <li><b>Pagination that does not break</b> when new posts arrive: cursors, not offsets.</li>
-    <li><b>Feed as derived data.</b> The cache can be rebuilt; the posts and follow graph are the truth.</li>
-    <li><b>Media path.</b> Upload direct to object storage, serve through a CDN, never through app servers.</li>
-  </ul>
+  <div class="keys">
+    <div class="key"><h4>Fan-out with numbers</h4><p>Push vs pull vs hybrid, justified by follower distribution and read/write ratio.</p></div>
+    <div class="key"><h4>Celebrity problem</h4><p>Write amplification and hot shards, fixed with a concrete follower threshold.</p></div>
+    <div class="key"><h4>Clean schema</h4><p>Right partition keys: posts by author, follow edges stored in both directions.</p></div>
+    <div class="key"><h4>Stable pagination</h4><p>Cursors, not offsets, so new posts don't shift pages.</p></div>
+    <div class="key"><h4>Feed is derived</h4><p>The cache can be rebuilt; posts and the follow graph are the truth.</p></div>
+    <div class="key"><h4>Media path</h4><p>Upload straight to object storage, serve via CDN, never through app servers.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: what each company actually asked</summary><p>The reports split into two styles. Schema-heavy: Flipkart asked for an Instagram-style feed where influencers endorse brands, users follow brands or influencers, with likes, comments, sticker reactions, and "on unfollow, remove their posts from the feed", then went deep into LLD and the database schema. Scale-heavy: PhonePe's interviewer for "Design Instagram" explicitly did not accept a message-queue fan-out because it does not scale to billions of users; Freshworks asked about sharding and the celebrity problem and what happens when the number of servers changes; Goldman Sachs went from a Twitter LLD into HLD fan-out. ShareChat asked for a paginated feed API using timestamp cursors. PhonePe's internal-Quora variant asked about DB choice, search, auth and microservice communication.</p></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
-  <h3>Questions to ask</h3>
-  <ul>
-    <li><b>Chronological or ranked?</b> Chronological is the classic interview; ranked adds a candidate-generation and scoring stage. Agree to design chronological with a ranking hook.</li>
-    <li><b>Follower distribution?</b> Median 200, but some accounts with 100M+. This single fact drives the design.</li>
-    <li><b>Freshness?</b> Is "a post shows up for followers within 5–10 seconds" acceptable? Usually yes.</li>
-    <li><b>Content types?</b> Images, video, text, product tags (Flipkart), questions and answers (Quora).</li>
-    <li><b>Unfollow, block, delete semantics?</b> Must posts disappear immediately?</li>
-    <li><b>Read pattern?</b> Infinite scroll, pull to refresh, "new posts" banner.</li>
-  </ul>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
       <li>Create posts with media; follow/unfollow users, brands, influencers.</li>
@@ -76,7 +79,31 @@
     </ul></div>
   </div>
 
+  <details class="deep"><summary>Go deeper: questions to ask first</summary>
+  <div class="tbl"><table>
+    <thead><tr><th>Ask</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td>Chronological or ranked?</td><td>Ranked adds candidate generation and scoring. Agree: chronological with a ranking hook.</td></tr>
+      <tr><td>Follower distribution?</td><td>Median 200, some 100M+. This one fact drives the design.</td></tr>
+      <tr><td>Freshness?</td><td>"Visible within 5–10 s" is usually fine.</td></tr>
+      <tr><td>Content types?</td><td>Images, video, text, product tags (Flipkart), Q&amp;A (Quora).</td></tr>
+      <tr><td>Unfollow, block, delete?</td><td>Must posts disappear immediately?</td></tr>
+      <tr><td>Read pattern?</td><td>Infinite scroll, pull to refresh, "new posts" banner.</td></tr>
+    </tbody>
+  </table></div>
+  </details>
+
   <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <div class="stats">
+    <div class="stat"><b>~150k QPS</b><span>peak feed reads (58k avg)</span></div>
+    <div class="stat"><b>~5k/s</b><span>peak new posts (1.2k avg)</span></div>
+    <div class="stat"><b>230k/s</b><span>naive fan-out writes</span></div>
+    <div class="stat"><b>100M</b><span>writes for one celebrity post</span></div>
+    <div class="stat"><b>~8.4 TB</b><span>feed cache RAM</span></div>
+    <div class="stat"><b>~180 TB/day</b><span>media into object storage</span></div>
+  </div>
+  <p>The two numbers that shape the design: 230k fan-out writes per second, and 100M writes for one celebrity post. Twitter saw the same shape: ~300k QPS timeline reads against 5k tweets/s, timelines capped at 800 entries in Redis.</p>
+  <details class="deep"><summary>Go deeper: the arithmetic</summary>
   <div class="tbl"><table>
     <thead><tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr></thead>
     <tbody>
@@ -90,10 +117,16 @@
       <tr><td>Media egress</td><td>Mostly CDN; origin should see a few percent</td><td class="num">CDN is not optional</td></tr>
     </tbody>
   </table></div>
-  <p>The two lines that matter: 230k fan-out writes per second on average, and 100M writes for a single celebrity post. Twitter reported the same shape: about 300k QPS of timeline reads against 5k tweets per second, home timelines capped at 800 entries in Redis, and only active users kept in memory.</p>
+  <p>Twitter reported about 300k QPS of timeline reads against 5k tweets per second, home timelines capped at 800 entries in Redis, and only active users kept in memory.</p></details>
 
   <h2 id="api"><span class="n">04</span>API design</h2>
-  <pre><code>POST /v1/media/upload-url        { "contentType": "image/jpeg", "size": 2048000 }
+  <ol class="walk">
+    <li><span class="who">Upload</span><span><code>POST /v1/media/upload-url</code> returns a <dfn title="A time-limited URL that lets the client PUT a file straight into S3">presigned URL</dfn>; the client uploads directly.</span></li>
+    <li><span class="who">Post</span><span><code>POST /v1/posts</code> with an <code>Idempotency-Key</code>, so a retry never creates the post twice.</span></li>
+    <li><span class="who">Feed</span><span><code>GET /v1/feed?limit=20&amp;cursor=…</code> returns items, <code>nextCursor</code>, <code>hasMore</code>.</span></li>
+    <li><span class="who">Banner</span><span><code>GET /v1/feed/new-count?since=…</code> drives "new posts".</span></li>
+  </ol>
+  <details class="code"><summary>Show full API</summary><pre><code>POST /v1/media/upload-url        { "contentType": "image/jpeg", "size": 2048000 }
 -&gt; { "mediaId": "m_..", "uploadUrl": "https://bucket.s3.../presigned" }   // client uploads directly
 
 POST /v1/posts
@@ -112,10 +145,18 @@ GET /v1/feed/new-count?since=&lt;cursorOfTopItem&gt;    // drives the "new posts
 POST   /v1/follows/{accountId}
 DELETE /v1/follows/{accountId}
 POST   /v1/posts/{postId}/reactions   { "type": "LIKE" | "STICKER_FIRE" }
-GET    /v1/users/{id}/posts?cursor=..  // profile feed</code></pre>
-  <p>The cursor is opaque so you can change its contents later (add a ranking score, a shard hint) without breaking clients. Viewer identity comes from the JWT, never a <code>userId</code> query parameter.</p>
+GET    /v1/users/{id}/posts?cursor=..  // profile feed</code></pre></details>
+  <p>The cursor is opaque, so you can later add a ranking score or shard hint without breaking clients. Viewer identity comes from the JWT, never a <code>userId</code> query parameter.</p>
 
   <h2 id="data"><span class="n">05</span>Data model</h2>
+  <div class="keys">
+    <div class="key"><h4>post</h4><p>Partition by <code>author_id</code>, cluster by Snowflake <code>post_id</code> desc: a profile feed is one partition read.</p></div>
+    <div class="key"><h4>follow + follower</h4><p>Edges stored twice: by <code>follower_id</code> ("whom do I follow") and by <code>followee_id</code> ("who follows me", used by fan-out).</p></div>
+    <div class="key"><h4>feed:{userId}</h4><p>Redis sorted set: member = post ID, score = ms timestamp. Trimmed to 500, active users only.</p></div>
+    <div class="key"><h4>recent:{authorId}</h4><p>Last ~200 post IDs per author: the pull path for celebrities.</p></div>
+  </div>
+  <div class="callout info"><b>Detail that impresses</b><p>Redis sorted-set scores are doubles, which hold integers exactly only up to 2<sup>53</sup>. A 64-bit Snowflake ID used as the score loses precision. Use the millisecond timestamp as the score and the post ID as the member, and break ties with the member in the cursor.</p></div>
+  <details class="deep"><summary>Go deeper: all tables and why these stores</summary>
   <div class="tbl"><table>
     <thead><tr><th>Table</th><th>Store</th><th>Key fields</th><th>Partition / index</th></tr></thead>
     <tbody>
@@ -131,81 +172,178 @@ GET    /v1/users/{id}/posts?cursor=..  // profile feed</code></pre>
       <tr><td>author_recent</td><td>Redis sorted set</td><td><code>recent:{authorId}</code>: last ~200 post IDs</td><td>Used for pull-on-read of celebrities</td></tr>
     </tbody>
   </table></div>
-  <p><b>Why these stores.</b> Posts, reactions and comments are append-heavy and queried by a single partition key, which suits Cassandra. Instagram itself started on sharded Postgres with time-sortable IDs that embed the shard ID, which is a perfectly good answer if you prefer relational. Accounts and endorsements are relational. The feed lives in Redis because it is a hot, bounded, rebuildable list.</p>
-  <div class="callout info"><b>Detail that impresses</b><p>Redis sorted-set scores are doubles, which hold integers exactly only up to 2<sup>53</sup>. A 64-bit Snowflake ID used as the score loses precision. Use the millisecond timestamp as the score and the post ID as the member, and break ties with the member in the cursor.</p></div>
+<p>Posts, reactions and comments are append-heavy and queried by a single partition key, which suits Cassandra. Instagram itself started on sharded Postgres with time-sortable IDs that embed the shard ID, which is a perfectly good answer if you prefer relational. Accounts and endorsements are relational. The feed lives in Redis because it is a hot, bounded, rebuildable list.</p></details>
 
   <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
-  <div class="flow">
-    <span class="node">App</span><span class="arrow">→<small>presigned PUT</small></span>
-    <span class="node store">Object storage<small>S3</small></span><span class="arrow">→</span>
-    <span class="node">Media pipeline<small>resize, transcode</small></span><span class="arrow">→</span>
-    <span class="node">CDN</span>
+  <div class="arch">
+    <div class="tier"><small>Clients</small><span class="node">App</span></div>
+    <div class="down">↓ <small>HTTPS · JWT</small></div>
+    <div class="tier"><span class="node">API gateway<small>auth · rate limit</small></span><span class="node store">S3 + CDN<small>media, presigned PUT</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node hl">Post service<small>write + outbox</small></span><span class="node hl">Feed service<small>merge · filter · hydrate</small></span><span class="node">Graph service<small>follow edges</small></span></div>
+    <div class="down">↓ <small>outbox / CDC, 1 event per post</small></div>
+    <div class="tier"><span class="node store">Kafka<small>post.created</small></span><span class="node hl">Fan-out workers<small>skip celebrities, inactive</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><small>Stores</small><span class="node store">Post store</span><span class="node store">Follower graph</span><span class="node store">Redis feed<small>feed:{user}</small></span><span class="node store">Redis recent<small>recent:{author}</small></span></div>
   </div>
-  <div class="flow">
-    <span class="node">App</span><span class="arrow">→</span>
-    <span class="node">API gateway<small>JWT</small></span><span class="arrow">→</span>
-    <span class="node hl">Post service</span><span class="arrow">→</span>
-    <span class="node store">Post store</span><span class="arrow">→<small>outbox / CDC</small></span>
-    <span class="node store">Kafka<small>post.created, 1 event per post</small></span>
+  <div class="keys">
+    <div class="key"><h4>Post service</h4><p>Validates, writes the post with an <dfn title="A row written in the same DB transaction as the post, later published to Kafka, so the event is never lost">outbox</dfn>, returns. No synchronous fan-out.</p></div>
+    <div class="key"><h4>Fan-out workers</h4><p>Celebrity (&gt;100k followers)? Only <code>recent:{author}</code>. Otherwise page followers, keep active ones, pipeline <code>ZADD</code> + trim, grouped by Redis shard.</p></div>
+    <div class="key"><h4>Feed service</h4><p>Pushed feed + celebrity pulls, merge by time, filter blocked/deleted/unfollowed, optionally rank, hydrate with multi-get.</p></div>
+    <div class="key"><h4>Counters</h4><p>Likes go through Kafka, aggregated; hot count in Redis, split across N keys for viral posts.</p></div>
   </div>
-  <div class="flow">
-    <span class="node store">Kafka</span><span class="arrow">→</span>
-    <span class="node hl">Fan-out workers<small>skip celebrities, skip inactive</small></span><span class="arrow">→<small>read followers</small></span>
-    <span class="node store">Follower graph</span><span class="arrow">→<small>pipelined ZADD</small></span>
-    <span class="node store">Redis feed cache</span>
-  </div>
-  <div class="flow">
-    <span class="node">App</span><span class="arrow">→</span>
-    <span class="node hl">Feed service</span><span class="arrow">→</span>
-    <span class="node store">Redis feed<small>pushed IDs</small></span><span class="arrow">+</span>
-    <span class="node store">Celebrity recent posts<small>pulled</small></span><span class="arrow">→</span>
-    <span class="node">Merge, filter, rank</span><span class="arrow">→</span>
-    <span class="node">Hydrate<small>post, author, counts caches</small></span>
-  </div>
-  <p class="flow-caption">Figure: media path, write path, fan-out path and read path. Kafka carries one event per post, not one per follower.</p>
-  <ul>
+  <details class="deep"><summary>Go deeper: every component</summary><ul>
     <li><b>Post service.</b> Validates, writes the post (with outbox), returns. It does not fan out synchronously.</li>
     <li><b>Fan-out workers.</b> Consume <code>post.created</code>. If the author is a celebrity (say over 100k followers), do nothing: their post goes only into <code>recent:{author}</code>. Otherwise page through the author's followers, filter to active users, and pipeline <code>ZADD</code> plus <code>ZREMRANGEBYRANK</code> into each follower's feed, grouped by Redis shard.</li>
     <li><b>Feed service.</b> Reads the user's pushed feed, fetches recent posts from the celebrities they follow (usually a small list, cached), merges by time, filters (blocked, deleted, unfollowed), optionally ranks, then hydrates post bodies, author cards and counts from caches with multi-get.</li>
     <li><b>Graph service.</b> Owns follow edges in both directions; publishes follow/unfollow events.</li>
     <li><b>Counters.</b> Likes go to Kafka and are aggregated; the hot count lives in Redis. A viral post's counter is split across N keys to avoid a hot key.</li>
     <li><b>Search (Quora variant).</b> Elasticsearch fed by CDC from the post store.</li>
-  </ul>
+    <li><b>Media path.</b> App → presigned PUT → object storage (S3) → media pipeline (resize, transcode) → CDN. Kafka carries one event per post, not one per follower.</li>
+  </ul></details>
 
-  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+  <h2 id="follow"><span class="n">07</span>Follow one post through the system</h2>
+  <div class="stepper"><b class="title">Riya (2,000 followers) posts a photo; Arjun opens his feed</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">App<small>Riya</small></span></div><div class="down">↓</div>
+        <div class="tier"><span class="node">Gateway</span><span class="node store hl">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node dim">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node dim">Fan-out</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Post store</span><span class="node store dim">Followers</span><span class="node store dim">Redis feed</span><span class="node store dim">Redis recent</span></div>
+      </div>
+      <figcaption>Riya's app gets a presigned URL and PUTs the 2 MB photo straight into S3. App servers never touch the bytes.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">App<small>Riya</small></span></div><div class="down">↓ <small>POST /v1/posts + Idempotency-Key</small></div>
+        <div class="tier"><span class="node">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node hl">Post svc</span><span class="node dim">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node dim">Fan-out</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Post store<small>post + outbox row</small></span><span class="node store dim">Followers</span><span class="node store dim">Redis feed</span><span class="node store dim">Redis recent</span></div>
+      </div>
+      <figcaption>Post service writes the post and an outbox row in one transaction, then returns 201. Riya is done in ~50 ms.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node dim">App</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node dim">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Kafka<small>1 post.created event</small></span><span class="node dim">Fan-out</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store">Post store</span><span class="node store dim">Followers</span><span class="node store dim">Redis feed</span><span class="node store dim">Redis recent</span></div>
+      </div>
+      <figcaption>CDC publishes ONE event for the post, not 2,000. Kafka load is ~5k events/s at peak.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node dim">App</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node dim">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store">Kafka</span><span class="node hl">Fan-out<small>2,000 &lt; 100k: push</small></span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Post store</span><span class="node store hl">Followers<small>page through 2,000</small></span><span class="node store dim">Redis feed</span><span class="node store dim">Redis recent</span></div>
+      </div>
+      <figcaption>Riya is under the celebrity threshold, so the worker pages her followers and drops the ~1,200 inactive ones.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node dim">App</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node dim">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node hl">Fan-out</span></div><div class="down">↓ <small>pipelined ZADD, grouped by shard</small></div>
+        <div class="tier"><span class="node store dim">Post store</span><span class="node store dim">Followers</span><span class="node store hl">Redis feed<small>800 × ZADD + trim to 500</small></span><span class="node store hl">Redis recent</span></div>
+      </div>
+      <figcaption>The post ID lands in 800 active feeds in tens of round trips. ZADD is idempotent, so a Kafka redelivery is harmless.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">App<small>Arjun</small></span></div><div class="down">↓ <small>GET /v1/feed?limit=20</small></div>
+        <div class="tier"><span class="node">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node hl">Feed svc</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node dim">Fan-out</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Post store</span><span class="node store dim">Followers</span><span class="node store hl">Redis feed<small>pushed IDs</small></span><span class="node store hl">Redis recent<small>3 celebrities</small></span></div>
+      </div>
+      <figcaption>Arjun's feed = his pushed list + recent posts of the 3 celebrities he follows, merged by timestamp.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">App<small>20 items + nextCursor</small></span></div><div class="down">↑</div>
+        <div class="tier"><span class="node">Gateway</span><span class="node store hl">S3 + CDN<small>images</small></span></div><div class="down">↑</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node hl">Feed svc<small>filter, hydrate</small></span></div><div class="down">↑</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node dim">Fan-out</span></div><div class="down">↑</div>
+        <div class="tier"><span class="node store hl">Post cache<small>multi-get bodies</small></span><span class="node store dim">Followers</span><span class="node store dim">Redis feed</span><span class="node store dim">Redis recent</span></div>
+      </div>
+      <figcaption>Drop blocked, deleted and unfollowed authors, hydrate bodies and counts, return a cursor. Images come from the CDN.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node">App<small>Arjun</small></span></div><div class="down">↓</div>
+        <div class="tier"><span class="node">Gateway</span><span class="node store dim">S3 + CDN</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node dim">Post svc</span><span class="node hl">Feed svc<small>fallback: pull</small></span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store dim">Kafka</span><span class="node dim">Fan-out</span></div><div class="down">↓</div>
+        <div class="tier"><span class="node store hl">Post store</span><span class="node store dim">Followers</span><span class="node store bad">Redis feed<small>shard down</small></span><span class="node store hl">Redis recent</span></div>
+      </div>
+      <figcaption>Failure: Arjun's feed shard dies. The feed service rebuilds by pull from <code>recent:{author}</code> and the post store, then repopulates. Slower, not broken.</figcaption>
+    </figure>
+  </div></div>
 
-  <h3>7.1 Fan-out on write, on read, or hybrid</h3>
-  <div class="tbl"><table>
-    <thead><tr><th>Model</th><th>Write cost</th><th>Read cost</th><th>Breaks when</th></tr></thead>
-    <tbody>
-      <tr><td>Push (fan-out on write)</td><td>O(followers) per post</td><td>O(1): read one list</td><td>Celebrities: 100M inserts per post, minutes of lag, wasted writes for users who never open the app</td></tr>
-      <tr><td>Pull (fan-out on read)</td><td>O(1)</td><td>O(followees): gather and merge recent posts from up to thousands of authors</td><td>Users following 2,000 accounts at 150k reads/s; latency and load on the post store</td></tr>
-      <tr><td>Hybrid</td><td>Push for normal authors to active followers</td><td>One list + a handful of celebrity pulls</td><td>Needs a threshold and a merge step, which is fine</td></tr>
-    </tbody>
-  </table></div>
-  <p>Hybrid is the expected answer, and it is what large systems converge on. Twitter's early design pushed to every follower's in-memory timeline and documented celebrities taking minutes to deliver at p99; the fix is to merge high-follower accounts in at read time.</p>
+  <h2 id="tradeoffs"><span class="n">08</span>Design choices</h2>
+  <h3>How posts reach feeds</h3>
+  <div class="vs">
+    <div><h4>Push (fan-out on write)</h4><ul><li class="pro">Read is O(1): one list</li><li class="con">O(followers) per post: 100M inserts for a celebrity, minutes of lag</li><li class="con">Wasted writes for users who never open the app</li></ul><p class="when">Most authors, active followers.</p></div>
+    <div><h4>Pull (fan-out on read)</h4><ul><li class="pro">Write is O(1), always fresh</li><li class="con">Read gathers posts from up to thousands of followees at 150k reads/s</li></ul><p class="when">Celebrities; small internal apps.</p></div>
+    <div class="pick"><h4>Hybrid <span class="tag">usual pick</span></h4><ul><li class="pro">Bounded on both sides: one list + a few celebrity pulls</li><li class="con">Merge logic, threshold tuning</li></ul><p class="when">Default at scale; what Twitter converged on.</p></div>
+  </div>
+  <h3>What the feed stores</h3>
+  <div class="vs">
+    <div class="pick"><h4>Post IDs <span class="tag">usual pick</span></h4><ul><li class="pro">Small cache; edits and deletes apply everywhere</li><li class="con">Hydration step on read</li></ul><p class="when">Always.</p></div>
+    <div><h4>Full posts</h4><ul><li class="pro">One read</li><li class="con">Huge cache; stale on edit</li></ul><p class="when">Never at this scale.</p></div>
+  </div>
+  <h3>Post store</h3>
+  <div class="vs">
+    <div><h4>Cassandra</h4><ul><li class="pro">Write throughput, multi-DC, partition-key reads</li><li class="con">No joins; model per query</li></ul><p class="when">Very large scale.</p></div>
+    <div class="pick"><h4>Sharded Postgres <span class="tag">either works</span></h4><ul><li class="pro">Familiar, transactions, constraints</li><li class="con">Resharding work</li></ul><p class="when">Up to large scale; Instagram did it.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: why hybrid wins</summary><p>Hybrid is the expected answer, and it is what large systems converge on. Twitter's early design pushed to every follower's in-memory timeline and documented celebrities taking minutes to deliver at p99; the fix is to merge high-follower accounts in at read time.</p></details>
 
-  <h3>7.2 "A message queue doesn't scale to billions": handling PhonePe's objection</h3>
-  <p>The interviewer was rejecting the picture of "for each follower, enqueue a message; consumers write it into feeds". That design puts write amplification inside the queue: one celebrity post becomes 100M messages, and the queue becomes the bottleneck and the backlog. A defensible answer:</p>
+  <h2 id="deep"><span class="n">09</span>Deep dives</h2>
+
+  <h3>9.1 "A message queue doesn't scale to billions" (PhonePe)</h3>
+  <div class="vs">
+    <div><h4>Rejected: 1 message per follower</h4><ul><li class="con">One celebrity post = 100M messages</li><li class="con">The queue becomes the bottleneck and backlog</li></ul></div>
+    <div class="pick"><h4>Defensible: 1 event per post <span class="tag">say this</span></h4><ul><li class="pro">~5k events/s at peak: trivial for Kafka</li><li class="pro">Amplification bounded by policy</li><li class="pro">Pull path makes the queue optional for correctness</li></ul></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the full answer</summary><p>The interviewer was rejecting the picture of "for each follower, enqueue a message; consumers write it into feeds". That design puts write amplification inside the queue: one celebrity post becomes 100M messages, and the queue becomes the bottleneck and the backlog. A defensible answer:</p>
   <ul>
     <li><b>The queue carries one event per post</b> (about 5k/s at peak), never one per follower. Kafka handles that trivially.</li>
     <li><b>Amplification is bounded by policy:</b> no push for celebrities (pull at read), no push for inactive users (their feed is rebuilt by pull on next login), cap the pushed list at 500.</li>
     <li><b>Writes are batched by destination shard:</b> one worker pass groups follower IDs by Redis slot and pipelines, so 10k followers cost tens of round trips, not 10k.</li>
     <li><b>Pull path is first-class:</b> the feed service can compute any user's feed from <code>recent:{author}</code> lists if the push path lags or the cache is cold. So the queue is an optimisation for latency, not a correctness dependency.</li>
     <li><b>Work scales with active readers, not total users.</b> "Billions of users" is fine because most of them are not reading right now, and we spend no write work on them.</li>
-  </ul>
+  </ul></details>
 
-  <h3>7.3 Celebrity problem and sharding (Freshworks)</h3>
-  <ul>
+  <h3>9.2 Celebrity problem and sharding (Freshworks)</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Hot spot</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td>Write: 100M feed inserts</td><td>Hybrid fan-out; celebrity flag with <dfn title="Different enter and exit thresholds so a value near the line doesn't flip back and forth">hysteresis</dfn> (enter at 100k, leave at 80k)</td></tr>
+      <tr><td>Read: 50M users hit one <code>recent:{author}</code></td><td>Copies <code>recent:{author}:{0..7}</code> + in-process Caffeine cache, 1–5 s TTL</td></tr>
+      <tr><td>Storage: huge follower partition</td><td>Bucket as <code>(followee_id, bucket)</code></td></tr>
+      <tr><td>Adding servers</td><td>Consistent hashing / Redis Cluster's 16,384 slots: ~1/N keys move. Shard by user ID, not post time</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep"><summary>Go deeper: details and sharding vs partitioning</summary><ul>
     <li><b>Write side:</b> covered by hybrid fan-out. Mark accounts as celebrities by follower count with hysteresis (enter at 100k, leave at 80k) so accounts do not flip on every follow.</li>
     <li><b>Read side hot keys:</b> 50M users fetching one celebrity's <code>recent:{author}</code> or post body. Replicate that key to several Redis replicas or copies (<code>recent:{author}:{0..7}</code>), and keep a small in-process cache (Caffeine, 1–5 s TTL) in the feed service.</li>
     <li><b>Storage hot partition:</b> the celebrity's follower list as one Cassandra partition is too wide; bucket it as <code>(followee_id, bucket)</code>.</li>
     <li><b>Changing the number of servers:</b> use consistent hashing with virtual nodes (or Redis Cluster's 16,384 hash slots) so adding a node moves about 1/N of keys rather than reshuffling everything. Shard by user ID, not by post time, or the newest shard takes all writes.</li>
     <li><b>Sharding vs partitioning</b> (they asked): partitioning splits a table into parts, possibly on one server; sharding is partitioning across machines, with routing and rebalancing concerns.</li>
-  </ul>
+  </ul></details>
 
-  <h3>7.4 Cursor pagination (ShareChat)</h3>
-  <p>Offset pagination breaks a live feed: new posts push items down, so page 2 repeats items from page 1, and large offsets are slow. Use a keyset cursor of <code>(created_at, post_id)</code>; the post ID breaks ties when two posts share a timestamp, which a timestamp-only cursor gets wrong.</p>
+  <h3>9.3 Cursor pagination (ShareChat)</h3>
+  <div class="vs">
+    <div><h4>Offset</h4><ul><li class="con">New posts push items down: page 2 repeats page 1</li><li class="con">Large offsets are slow</li></ul></div>
+    <div class="pick"><h4>Keyset cursor <span class="tag">usual pick</span></h4><ul><li class="pro">Stable under inserts, fast</li><li class="pro"><code>(created_at, post_id)</code>: ID breaks timestamp ties</li><li class="con">No jump to page N</li></ul><p class="when">All feeds.</p></div>
+  </div>
   <pre><code>-- Profile feed or pull path from the post store
 SELECT post_id, author_id, created_at FROM post
  WHERE author_id = :authorId
@@ -217,18 +355,40 @@ SELECT post_id, author_id, created_at FROM post
 ZRANGE feed:{u42} 1728290000000 -inf BYSCORE REV LIMIT 0 30
 -- inclusive bound: at the boundary timestamp, drop ids &gt;= cursorId in code,
 -- then keep 20; a 21st surviving item means hasMore</code></pre>
-  <p>Pull-to-refresh uses the top item's cursor in the other direction ("newer than"). With Snowflake IDs, <code>post_id</code> alone is time-ordered, and the cursor can be just the ID for the post-store queries.</p>
+  <p>Pull-to-refresh uses the top item's cursor in the other direction ("newer than"). With Snowflake IDs, <code>post_id</code> alone is time-ordered, so post-store queries can use just the ID.</p>
+  <details class="deep"><summary>Go deeper: why timestamp-only cursors fail</summary><p>Offset pagination breaks a live feed: new posts push items down, so page 2 repeats items from page 1, and large offsets are slow. Use a keyset cursor of <code>(created_at, post_id)</code>; the post ID breaks ties when two posts share a timestamp, which a timestamp-only cursor gets wrong.</p></details>
 
-  <h3>7.5 Unfollow, delete and the Flipkart schema follow-ups</h3>
-  <ul>
+  <h3>9.4 Unfollow, delete and the Flipkart schema</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Event</th><th>Now</th><th>Later</th></tr></thead>
+    <tbody>
+      <tr><td>Unfollow</td><td>Feed service filters that author at read time (follow set is cached)</td><td>Async job removes IDs from the sorted set</td></tr>
+      <tr><td>Delete post</td><td>Mark deleted; hydration drops it</td><td>No need to chase every feed</td></tr>
+      <tr><td>Brand vs influencer</td><td colspan="2">One <code>account</code> table with a type, one follow table; endorsements join posts to brands</td></tr>
+      <tr><td>Sticker reaction</td><td colspan="2">Reaction table with a type; counts per (post, type)</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep"><summary>Go deeper: the full Flipkart follow-ups</summary><ul>
     <li><b>Unfollow must remove their posts.</b> The pushed feed holds IDs from many authors; scanning it is fine at 500 entries. On unfollow, the feed service filters out that author immediately at read time (the follow set is cached), and an async job removes the IDs from the sorted set. Correct immediately, cleaned eventually.</li>
     <li><b>Delete a post.</b> Mark deleted in the post store; hydration drops it; fan-out workers do not need to chase every feed.</li>
     <li><b>Brands vs influencers.</b> One <code>account</code> table with a type, one follow table: everything is "follow an account". Endorsements are a join table between posts and brands, so a brand page can show influencer posts about it.</li>
     <li><b>Sticker reactions.</b> A reaction table with a type, counts aggregated per (post, type).</li>
-  </ul>
+  </ul></details>
 
-  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
-  <ul>
+  <h2 id="scale"><span class="n">10</span>Scaling, failure handling and consistency</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Situation</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>10x peak (cricket final)</td><td>Kafka absorbs it; feeds lag seconds. Lower the celebrity threshold: more pull, less push.</td></tr>
+      <tr><td>Redis shard lost</td><td>Rebuild by pull, then repopulate. Redis is never the system of record.</td></tr>
+      <tr><td>Kafka redelivery</td><td><code>ZADD</code> is idempotent by member: duplicates harmless.</td></tr>
+      <tr><td>Out-of-order fan-out</td><td>Feeds sort by post timestamp, so it's invisible.</td></tr>
+      <tr><td>Author's own post</td><td>Read-your-own-writes: merge the viewer's recent posts into the response.</td></tr>
+      <tr><td>Multi-region</td><td>Users homed in a region; posts replicate (Cassandra multi-DC); fan-out runs in the follower's region.</td></tr>
+      <tr><td>Ranking</td><td>~500 candidates → light model → heavy re-rank of top 50; cache the page for a minute.</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep"><summary>Go deeper: full notes, plus PhonePe's internal Quora</summary><ul>
     <li><b>What breaks first at 10x:</b> fan-out lag during peaks (festive season, a cricket final). Kafka absorbs the burst; feeds are a few seconds behind, which is acceptable. Lower the celebrity threshold dynamically when lag grows: more pull, less push.</li>
     <li><b>Redis loss.</b> A feed shard dies: affected users get their feed rebuilt by pull from <code>recent:{author}</code> and the post store, then repopulated. Slower, not broken. Never treat Redis as the system of record.</li>
     <li><b>Idempotent fan-out.</b> Kafka redelivery inserts the same post ID into a sorted set again: <code>ZADD</code> is idempotent by member, so duplicates are harmless.</li>
@@ -237,32 +397,7 @@ ZRANGE feed:{u42} 1728290000000 -inf BYSCORE REV LIMIT 0 30
     <li><b>Multi-region.</b> Users are homed in a region; posts replicate globally (Cassandra multi-DC); fan-out runs in each follower's home region from the replicated event.</li>
     <li><b>Ranking at scale.</b> Candidate generation (pushed feed + celebrity pulls + recommended posts) yields ~500 candidates, a lightweight model scores them, a heavier one re-ranks the top 50. Cache the ranked page per user for a minute.</li>
     <li><b>Internal Quora (PhonePe).</b> Postgres for questions, answers, votes (strong relations, moderate scale); Elasticsearch for search with CDC sync; SSO via the company identity provider (OIDC), JWT at the gateway, roles for moderators; synchronous REST/gRPC for queries, Kafka events for notifications, search indexing and reputation. A feed of "questions in topics I follow" is the same hybrid model at a much smaller scale; pull alone is fine for an internal tool.</li>
-  </ul>
-
-  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
-  <div class="tbl"><table>
-    <thead><tr><th>Option</th><th>Pros</th><th>Cons</th><th>When to choose</th></tr></thead>
-    <tbody>
-      <tr><td>Fan-out on write</td><td>Fast reads</td><td>Write amplification, wasted work for inactive users</td><td>Most authors, active followers</td></tr>
-      <tr><td>Fan-out on read</td><td>Cheap writes, always fresh</td><td>Slow, expensive reads</td><td>Celebrities; small internal apps</td></tr>
-      <tr><td>Hybrid</td><td>Bounded on both sides</td><td>Merge logic, threshold tuning</td><td>Default at scale</td></tr>
-      <tr><td>Store IDs in feed</td><td>Small cache, edits and deletes apply everywhere</td><td>Hydration step on read</td><td>Always</td></tr>
-      <tr><td>Store full posts in feed</td><td>One read</td><td>Huge cache; stale on edit</td><td>Never at this scale</td></tr>
-      <tr><td>Cassandra for posts</td><td>Write throughput, multi-DC, partition-key reads</td><td>No joins; modelling per query</td><td>Very large scale</td></tr>
-      <tr><td>Sharded Postgres for posts</td><td>Familiar, transactions, constraints</td><td>Resharding work</td><td>Up to large scale; Instagram did it</td></tr>
-      <tr><td>Keyset cursor</td><td>Stable under inserts, fast</td><td>No jump to page N</td><td>All feeds</td></tr>
-    </tbody>
-  </table></div>
-
-  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>Your MQ-based fan-out won't scale to a billion users. What now?</summary><p>One Kafka event per post, not per follower. Push only to active followers of non-celebrity authors, batched per Redis shard; pull celebrities at read time; inactive users get feeds built on demand. Work then scales with posts and active readers, and the pull path means the queue is a latency optimisation, not a correctness dependency.</p></details>
-  <details class="qa"><summary>What is the celebrity problem?</summary><p>A post by an account with 100M followers costs 100M feed writes under push, causing lag and hot partitions; and millions of reads hit the same keys. Fix with hybrid fan-out (pull celebrities), replicated hot keys, local caches, and bucketed follower partitions.</p></details>
-  <details class="qa"><summary>How do you design the paginated feed API?</summary><p><code>GET /feed?limit=20&amp;cursor=...</code> with an opaque cursor of <code>(createdAt, postId)</code>. Query "older than the cursor" ordered by time then ID. Offsets duplicate items as new posts arrive and get slower with depth. Return <code>nextCursor</code> and <code>hasMore</code>.</p></details>
-  <details class="qa"><summary>A user unfollows someone. Their posts must vanish now.</summary><p>Filter at read time against the cached follow set, so it is correct on the next request; asynchronously remove that author's IDs from the user's sorted set. Do not block the unfollow on cleaning the feed.</p></details>
-  <details class="qa"><summary>What happens when you add servers to the feed cache?</summary><p>With consistent hashing (or Redis Cluster slots), only about 1/N of keys move. Moved feeds are cold: the feed service falls back to pull and repopulates. Migrate slots gradually to avoid a cold-cache spike.</p></details>
-  <details class="qa"><summary>How do like counts work for a viral post?</summary><p>Writes go to Kafka and are aggregated in small windows; counts live in Redis split across N sub-keys and are summed on read; periodically persisted. Counts are approximate in real time, which users accept.</p></details>
-  <details class="qa"><summary>Twitter LLD to HLD: what changes?</summary><p>In LLD, a <code>TimelineService</code> merges the posts of followed users with a heap. In HLD that same merge becomes the pull path for celebrities; the rest is precomputed by fan-out workers into per-user caches, because a heap merge over 2,000 followees at 150k QPS is too expensive.</p></details>
-  <details class="qa"><summary>How do media uploads work without hurting app servers?</summary><p>Client asks for a presigned URL, uploads directly to S3, the post references the media ID. An event triggers resizing and transcoding into several renditions; the CDN serves them. App servers never touch the bytes.</p></details>
+  </ul></details>
 
   <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
@@ -286,7 +421,44 @@ ZRANGE feed:{u42} 1728290000000 -inf BYSCORE REV LIMIT 0 30
     <div class="step"><span class="t">40–45 min</span><span>Failure and rebuild, multi-region, ranking hook, trade-offs recap.</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <h2 id="quiz"><span class="n">13</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">An account with 80M followers posts. What does the fan-out worker do?</p>
+    <div class="opts"><button class="opt" type="button">Enqueue 80M messages, one per follower</button><button class="opt" type="button">ZADD into all 80M feeds in one pipeline</button><button class="opt" type="button">Only add the post to recent:{author}; followers pull it at read time</button></div>
+    <p class="why">Celebrities are above the threshold, so their posts are pulled and merged at read time. Push would cost 80M writes and minutes of lag.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why does the feed use a (createdAt, postId) cursor instead of ?page=2?</p>
+    <div class="opts"><button class="opt" type="button">Offsets are not supported by Redis</button><button class="opt" type="button">New posts shift offsets, so page 2 repeats items; the ID breaks timestamp ties</button><button class="opt" type="button">Cursors let users jump to any page</button></div>
+    <p class="why">Keyset cursors say "older than this item", which stays correct as new posts arrive. A timestamp alone can skip or repeat posts that share a millisecond.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">A Redis feed shard is lost. What happens to those users?</p>
+    <div class="opts"><button class="opt" type="button">Their feed is rebuilt by pull from recent:{author} and the post store, then repopulated</button><button class="opt" type="button">Their feeds are empty until users post again</button><button class="opt" type="button">Restore Redis from a backup before serving any reads</button></div>
+    <p class="why">The feed is derived data. Posts and the follow graph are the truth, so the pull path recomputes it: slower, not broken.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why use the timestamp, not the Snowflake post ID, as the sorted-set score?</p>
+    <div class="opts"><button class="opt" type="button">Timestamps compress better</button><button class="opt" type="button">Redis forbids 64-bit integers</button><button class="opt" type="button">Scores are doubles, exact only up to 2^53, so a 64-bit ID loses precision</button></div>
+    <p class="why">Use ms timestamp as score, post ID as member, and break ties with the member in the cursor.</p></div>
+
+  <h2 id="followups"><span class="n">14</span>Interview questions</h2>
+  <details class="qa"><summary>Your MQ-based fan-out won't scale to a billion users. What now?</summary><p>One Kafka event per post, not per follower. Push only to active followers of non-celebrity authors, batched per Redis shard; pull celebrities at read time; inactive users get feeds built on demand. Work then scales with posts and active readers, and the pull path means the queue is a latency optimisation, not a correctness dependency.</p></details>
+  <details class="qa"><summary>What is the celebrity problem?</summary><p>A post by an account with 100M followers costs 100M feed writes under push, causing lag and hot partitions; and millions of reads hit the same keys. Fix with hybrid fan-out (pull celebrities), replicated hot keys, local caches, and bucketed follower partitions.</p></details>
+  <details class="qa"><summary>How do you design the paginated feed API?</summary><p><code>GET /feed?limit=20&amp;cursor=...</code> with an opaque cursor of <code>(createdAt, postId)</code>. Query "older than the cursor" ordered by time then ID. Offsets duplicate items as new posts arrive and get slower with depth. Return <code>nextCursor</code> and <code>hasMore</code>.</p></details>
+  <details class="qa"><summary>A user unfollows someone. Their posts must vanish now.</summary><p>Filter at read time against the cached follow set, so it is correct on the next request; asynchronously remove that author's IDs from the user's sorted set. Do not block the unfollow on cleaning the feed.</p></details>
+  <details class="qa"><summary>What happens when you add servers to the feed cache?</summary><p>With consistent hashing (or Redis Cluster slots), only about 1/N of keys move. Moved feeds are cold: the feed service falls back to pull and repopulates. Migrate slots gradually to avoid a cold-cache spike.</p></details>
+  <details class="qa"><summary>How do like counts work for a viral post?</summary><p>Writes go to Kafka and are aggregated in small windows; counts live in Redis split across N sub-keys and are summed on read; periodically persisted. Counts are approximate in real time, which users accept.</p></details>
+  <details class="qa"><summary>Twitter LLD to HLD: what changes?</summary><p>In LLD, a <code>TimelineService</code> merges the posts of followed users with a heap. In HLD that same merge becomes the pull path for celebrities; the rest is precomputed by fan-out workers into per-user caches, because a heap merge over 2,000 followees at 150k QPS is too expensive.</p></details>
+  <details class="qa"><summary>How do media uploads work without hurting app servers?</summary><p>Client asks for a presigned URL, uploads directly to S3, the post references the media ID. An event triggers resizing and transcoding into several renditions; the CDN serves them. App servers never touch the bytes.</p></details>
+
+  <h2 id="cheat"><span class="n">15</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>500M DAU → ~150k feed QPS peak, ~5k posts/s, 230k/s naive fan-out writes.</li>
+    <li>Hybrid fan-out: push to active followers; celebrities (&gt;100k, hysteresis) pulled at read.</li>
+    <li>Kafka carries one event per post, never one per follower.</li>
+    <li>Feed = Redis ZSET <code>feed:{user}</code>, score = ms timestamp, member = post ID, trimmed to 500.</li>
+    <li>Store IDs, hydrate with multi-get; the cache is rebuildable, never the truth.</li>
+    <li>Keyset cursor <code>(createdAt, postId)</code>, opaque base64.</li>
+    <li>Follow edges in both directions; bucket celebrity follower partitions.</li>
+    <li>Unfollow/delete: filter at read now, clean up async.</li>
+    <li>Media: presigned PUT to S3, CDN out.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">16</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/6229138/" target="_blank" rel="noopener">Flipkart SDE-2, Nov 2024: Instagram-style feed for brands and influencers, DB schema (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/6592633/" target="_blank" rel="noopener">PhonePe Backend SDE, Mar 2025: Design Instagram, MQ fan-out rejected (LeetCode)</a></li>
@@ -299,5 +471,6 @@ ZRANGE feed:{u42} 1728290000000 -inf BYSCORE REV LIMIT 0 30
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="hld-booking-platform.html">← Booking platform</a> · <a href="hld-stock-price-alerts.html">Stock price alerts →</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

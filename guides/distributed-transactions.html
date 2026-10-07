@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html" aria-current="page">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../backend.html">Lesson · Java &amp; backend</a></div>
   <h1>Distributed transactions and resilience</h1>
-  <p class="lede">How to keep data correct when one business operation spans several services and databases: why two-phase commit is avoided, sagas with compensations, the transactional outbox, idempotency keys for payments, and the Resilience4j toolkit that keeps one slow dependency from taking everything down.</p>
+  <p class="lede">Keep data correct when one business operation spans several services, and stop one slow dependency from taking the rest down.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 5–6 hours</span>
     <span class="fact"><b>Exercise:</b> 60 min Spring Boot</span>
@@ -20,18 +20,42 @@
   </div>
   <div class="chips"><span class="chip hot">Flipkart</span><span class="chip hot">Visa</span><span class="chip">Apple</span><span class="chip">Zepto</span><span class="chip">Kotak</span><span class="chip">PhonePe</span><span class="chip">Angel One</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Writing to a DB and Kafka separately will eventually lose one.</li>
+    <li>Saga: local transactions plus compensations, not two-phase commit.</li>
+    <li>Outbox publishes events; idempotent consumers absorb duplicates.</li>
+    <li>Timeouts, jittered retries, circuit breakers and bulkheads contain failures.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Booking a Goa trip: train, hotel, cab, each with a different company. Nobody can lock all three at once. You book one at a time; if the cab fails, you cancel the hotel and the train ticket (compensations). Cancelling is a new action with its own rules, not an undo button.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#why">Why interviewers ask this</a></li>
-    <li><a href="#concepts">Core concepts</a></li>
-    <li><a href="#internals">How it works internally</a></li>
-    <li><a href="#patterns">Patterns and production gotchas</a></li>
+    <li><a href="#concepts">The dual-write problem and 2PC</a></li>
+    <li><a href="#saga">Sagas and compensations</a></li>
+    <li><a href="#outbox">Outbox and idempotent consumers</a></li>
+    <li><a href="#idem">Idempotency keys for payments</a></li>
+    <li><a href="#resilience">Resilience: timeouts, retries, breakers</a></li>
+    <li><a href="#internals">Debezium, CQRS and tracing</a></li>
+    <li><a href="#patterns">Production gotchas</a></li>
+    <li><a href="#quiz">Quick check</a></li>
     <li><a href="#qa">Interview questions</a></li>
-    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
-  <p>"We use microservices" on a resume invites the question "so how do you keep data consistent across them?" The reports:</p>
+  <div class="tbl"><table>
+    <tr><th>Company</th><th>Asked</th></tr>
+    <tr><td>Visa Staff SWE</td><td>Monolith to microservices; then how do transactions work across them? (Saga)</td></tr>
+    <tr><td>Flipkart SDE-2 HM</td><td>Circuit breaker, Saga, CQRS, event-driven design, in depth.</td></tr>
+    <tr><td>Apple</td><td>Cascading failures and circuit breakers.</td></tr>
+    <tr><td>Zepto SDE-3</td><td>Two-phase commit follow-up the candidate could not explain.</td></tr>
+    <tr><td>Kotak, PhonePe, Angel One</td><td>Idempotency keys, double payment, payment failures.</td></tr>
+  </table></div>
+  <div class="callout info"><b>The senior answer in one breath</b><p>Each service owns its data and commits locally. Cross-service consistency is eventual, achieved by a saga of local transactions with compensations, events published through a transactional outbox, idempotent consumers, and idempotency keys at the API edge. Timeouts, retries with jitter, circuit breakers and bulkheads stop failures from spreading.</p></div>
+  <details class="deep"><summary>Go deeper: the full interview reports</summary>
+    <p>"We use microservices" on a resume invites the question "so how do you keep data consistent across them?" The reports:</p>
   <ul>
     <li><b>Visa Staff SWE</b>: how would you move a monolith to microservices (the candidate answered with the strangler fig pattern, API-gateway routing, feature flags and canary deployments), then: once data is scattered across services, how do transactions work? Answer expected: Saga. Later, cross-data-centre replication for DB and Kafka.</li>
     <li><b>Flipkart SDE-2 hiring manager round</b>: microservice patterns, circuit breaker, Saga, CQRS and event-driven design. The candidate's advice: be prepared to go deep, not just name-drop.</li>
@@ -41,21 +65,36 @@
     <li><b>PhonePe SDE</b>: a deep dive on payments, double payment and idempotency.</li>
     <li><b>Angel One SDE-2</b>: database commits and transaction handling, partner bank failures, handling payment failures.</li>
   </ul>
-  <div class="callout info"><b>The senior answer in one breath</b><p>Each service owns its data and commits locally. Cross-service consistency is eventual, achieved by a saga of local transactions with compensations, events published through a transactional outbox, idempotent consumers, and idempotency keys at the API edge. Timeouts, retries with jitter, circuit breakers and bulkheads stop failures from spreading.</p></div>
+  </details>
 
-  <h2 id="concepts"><span class="n">02</span>Core concepts, built up</h2>
-
-  <h3>The problem: dual writes</h3>
+  <h2 id="concepts"><span class="n">02</span>The dual-write problem and 2PC</h2>
   <pre><code>@Transactional
 public Order placeOrder(PlaceOrder cmd) {
     Order order = orderRepo.save(Order.pending(cmd));
     kafkaTemplate.send("order-events", order.id(), new OrderCreated(order));  // not part of the DB transaction
     return order;
 }</code></pre>
-  <p>If the send succeeds and the commit then fails, other services act on an order that does not exist. If the commit succeeds and the pod dies before the send, the order exists but nobody hears about it. Moving the send after the commit only swaps which failure you get. Any time code writes to two systems that do not share a transaction, one of them can be lost. Everything on this page is a way around that.</p>
-
-  <h3>Two-phase commit, and why microservices avoid it (the Zepto question)</h3>
-  <div class="flow">
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Order service</th><th>Postgres</th><th>Kafka</th></tr></thead><tbody>
+    <tr><td>t1</td><td><code>save(order)</code></td><td>pending in tx</td><td></td></tr>
+    <tr><td>t2</td><td><code>send(OrderCreated)</code></td><td></td><td>event published</td></tr>
+    <tr><td>t3</td><td>commit fails</td><td class="bad">no order</td><td class="bad">others act on a ghost order</td></tr>
+    <tr><td>swap</td><td>send after commit, pod dies in between</td><td>order exists</td><td class="bad">nobody hears about it</td></tr>
+  </tbody></table></div>
+  <p>Two systems without a shared transaction: one write can always be lost. The rest of this page works around that.</p>
+  <h3>Two-phase commit, and why microservices avoid it (Zepto)</h3>
+  <ol class="walk">
+    <li><span class="who">Coordinator</span><span>Sends PREPARE to Order DB and Payment DB</span></li>
+    <li><span class="who">Participants</span><span>Write, take locks, make it durable, vote YES</span></li>
+    <li><span class="who">Coordinator</span><span>Logs the decision</span></li>
+    <li><span class="who">Coordinator</span><span>Sends COMMIT to all; participants release locks</span></li>
+  </ol>
+  <div class="vs">
+    <div><h4>2PC (XA)</h4><ul><li class="pro">Atomic across databases</li><li class="con">Blocks if the coordinator dies after votes</li><li class="con">Availability multiplies: 3 × 99.9% ≤ 99.7%</li><li class="con">Kafka, NoSQL and payment APIs can't join</li></ul><p class="when">Only inside one boundary that supports it.</p></div>
+    <div class="pick"><h4>Saga <span class="tag">across services</span></h4><ul><li class="pro">Each step is a local transaction</li><li class="pro">No cross-service locks</li><li class="con">Eventually consistent; needs compensations</li></ul><p class="when">Services you own, with their own databases.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: dual writes and 2PC in full</summary>
+    <p>If the send succeeds and the commit then fails, other services act on an order that does not exist. If the commit succeeds and the pod dies before the send, the order exists but nobody hears about it. Moving the send after the commit only swaps which failure you get. Any time code writes to two systems that do not share a transaction, one of them can be lost. Everything on this page is a way around that.</p>
+    <div class="flow">
     <span class="node hl">Coordinator</span><span class="arrow">→<small>1. PREPARE</small></span>
     <span class="node store">Order DB<small>writes, locks, votes YES</small></span>
     <span class="node store">Payment DB<small>writes, locks, votes YES</small></span><span class="arrow">→<small>2. log decision</small></span>
@@ -71,34 +110,72 @@ public Order placeOrder(PlaceOrder cmd) {
     <li>Three-phase commit adds a pre-commit phase to reduce blocking but still fails under network partitions. Consensus-based databases (Spanner, CockroachDB) do atomic commits internally; that is a database feature, not something you build across services.</li>
   </ul>
   <p>2PC is still fine <i>inside</i> one system boundary that supports it. Across services you own, you choose availability and autonomy and accept eventual consistency.</p>
+  </details>
 
-  <h3>Saga: a sequence of local transactions</h3>
-  <p>A saga splits the business transaction into steps, each a local ACID transaction in one service. If a step fails, previously completed steps are undone by <b>compensating transactions</b>, which are new forward actions (refund, release), not rollbacks.</p>
-  <div class="tbl"><table>
-    <tr><th>#</th><th>Service</th><th>Action</th><th>Compensation</th><th>Type</th></tr>
-    <tr><td class="num">1</td><td>Order</td><td>Create order as <code>PENDING</code></td><td>Mark order <code>CANCELLED</code></td><td>Compensatable</td></tr>
-    <tr><td class="num">2</td><td>Inventory</td><td>Reserve items (reserved += qty, with expiry)</td><td>Release reservation</td><td>Compensatable</td></tr>
-    <tr><td class="num">3</td><td>Payment</td><td>Charge customer (idempotency key = order ID)</td><td>Refund</td><td>Pivot: once it succeeds, the saga goes forward</td></tr>
-    <tr><td class="num">4</td><td>Inventory</td><td>Convert reservation to allocation</td><td>none needed</td><td>Retriable: retried until success</td></tr>
-    <tr><td class="num">5</td><td>Order</td><td>Mark order <code>CONFIRMED</code></td><td>none needed</td><td>Retriable</td></tr>
-  </table></div>
-  <p>Order the steps so the hardest-to-undo action (charging money) is the pivot, with only retriable steps after it. If payment fails: release inventory, cancel the order. If payment succeeds, nothing after it is allowed to fail permanently; it retries.</p>
-
-  <h3>Choreography versus orchestration</h3>
-  <div class="grid">
-    <div class="card"><h4>Choreography</h4><p>Each service reacts to events and emits its own: <code>OrderCreated</code> → Inventory reserves → <code>InventoryReserved</code> → Payment charges → <code>PaymentCompleted</code> → Order confirms. Failures emit <code>PaymentFailed</code>, which Inventory and Order listen to.</p><ul><li>+ No central component; loose coupling; good for 2–4 steps.</li><li>− The flow exists only implicitly across services; hard to see the state of one order; cyclic event dependencies creep in.</li></ul></div>
-    <div class="card"><h4>Orchestration</h4><p>An orchestrator (often in the Order service) holds the saga state machine and sends commands: <code>ReserveInventory</code>, <code>ChargePayment</code>, and handles replies.</p><ul><li>+ One place to read the flow, add timeouts, see stuck sagas and change step order.</li><li>− The orchestrator is a component to run and must be persistent and idempotent. Tools: Temporal, Camunda, or a state table plus Kafka.</li></ul></div>
+  <h2 id="saga"><span class="n">03</span>Sagas and compensations</h2>
+  <div class="stepper"><b class="title">Orchestrated order saga: payment fails, compensations run in reverse</b><div class="frames">
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Order saga orchestrator<small>state: STARTED</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node hl">Order<small>create PENDING</small></span><span class="node">Inventory</span><span class="node">Payment</span></div>
+      </div>
+      <figcaption>Step 1: Order creates the order as <code>PENDING</code> and the saga row, in one local transaction.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>→ ReserveInventory</small></span></div>
+        <div class="down">↓</div>
+        <div class="tier"><span class="node">Order<small>PENDING</small></span><span class="node hl">Inventory<small>reserved += 2, expires 15 min</small></span><span class="node">Payment</span></div>
+      </div>
+      <figcaption>Step 2: Inventory <b>reserves</b> stock (does not deduct), with an expiry so a crashed saga cannot lock it forever.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>→ ChargePayment</small></span></div>
+        <div class="down">↓ <small>Idempotency-Key = orderId</small></div>
+        <div class="tier"><span class="node">Order<small>PENDING</small></span><span class="node">Inventory<small>reserved</small></span><span class="node hl">Payment<small>charging…</small></span></div>
+      </div>
+      <figcaption>Step 3 is the <dfn title="The step after which the saga can only go forward">pivot</dfn>: charging money. Once it succeeds, the saga only moves forward.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>← PaymentFailed</small></span></div>
+        <div class="down">↑</div>
+        <div class="tier"><span class="node">Order<small>PENDING</small></span><span class="node">Inventory<small>reserved</small></span><span class="node bad">Payment<small>card declined</small></span></div>
+      </div>
+      <figcaption>The charge fails. Nothing to refund, but steps 1 and 2 already committed in their own databases.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>→ ReleaseInventory</small></span></div>
+        <div class="down">↓ <small>compensate step 2</small></div>
+        <div class="tier"><span class="node">Order<small>PENDING</small></span><span class="node hl">Inventory<small>reservation released</small></span><span class="node bad">Payment</span></div>
+      </div>
+      <figcaption>Compensations run in reverse order. Release is a new forward action, idempotent and retried until it succeeds.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>state: COMPENSATED</small></span></div>
+        <div class="down">↓ <small>compensate step 1</small></div>
+        <div class="tier"><span class="node hl">Order<small>CANCELLED</small></span><span class="node dim">Inventory</span><span class="node dim">Payment</span></div>
+      </div>
+      <figcaption>Finally the order is marked <code>CANCELLED</code>. Every service is consistent again.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch">
+        <div class="tier"><span class="node hl">Orchestrator<small>happy path after pivot</small></span></div>
+        <div class="down">↓ <small>retriable steps only</small></div>
+        <div class="tier"><span class="node">Payment<small>charged</small></span><span class="node hl">Inventory<small>reservation → allocation</small></span><span class="node hl">Order<small>CONFIRMED</small></span></div>
+      </div>
+      <figcaption>Had payment succeeded, steps 4–5 are retried until they succeed; nothing after the pivot may fail permanently.</figcaption>
+    </figure>
+  </div></div>
+  <div class="vs">
+    <div><h4>Choreography</h4><ul><li class="pro">No central component; loose coupling</li><li class="con">Flow is implicit; hard to see one order's state</li><li class="con">Cyclic event dependencies creep in</li></ul><p class="when">2–4 steps.</p></div>
+    <div class="pick"><h4>Orchestration <span class="tag">longer flows</span></h4><ul><li class="pro">One place for the flow, timeouts, stuck sagas</li><li class="con">Orchestrator must be persistent and idempotent</li></ul><p class="when">Temporal, Camunda, or a state table plus Kafka.</p></div>
   </div>
-  <div class="flow">
-    <span class="node hl">Order saga orchestrator<small>saga_instance table</small></span><span class="arrow">→<small>ReserveInventory</small></span>
-    <span class="node">Inventory</span><span class="arrow">→<small>Reserved</small></span>
-    <span class="node hl">Orchestrator</span><span class="arrow">→<small>ChargePayment</small></span>
-    <span class="node">Payment</span><span class="arrow">→<small>Failed</small></span>
-    <span class="node hl">Orchestrator</span><span class="arrow">→<small>ReleaseInventory</small></span>
-    <span class="node">Inventory</span>
-  </div>
-  <p class="flow-caption">Figure: orchestrated saga with a payment failure; the orchestrator runs the compensation for step 2 and then cancels the order.</p>
-  <pre><code>@Entity
+  <details class="code"><summary>Show Java: OrderSaga state machine</summary><pre><code>@Entity
 class OrderSaga {
     @Id UUID orderId;
     @Enumerated(EnumType.STRING) SagaState state;   // STARTED, INVENTORY_RESERVED, PAID, COMPENSATING, DONE, FAILED
@@ -123,14 +200,51 @@ class OrderSagaOrchestrator {
         saga.state = SagaState.COMPENSATING;
         outbox.add("inventory-commands", saga.orderId, new ReleaseInventory(saga.orderId));
     }
-}</code></pre>
-  <p>State change and outgoing command commit in one local transaction via the outbox, and every handler checks the current state so duplicate replies are harmless.</p>
+}</code></pre></details>
+  <div class="keys">
+    <div class="key"><h4>Sagas are not isolated</h4><p>Others see PENDING orders and reserved stock. Use semantic locks, commutative updates, reread before acting.</p></div>
+    <div class="key"><h4>Every saga needs a timeout</h4><p>A scheduler compensates sagas past their deadline, or lost replies leave orders PENDING forever.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the step table, choreography vs orchestration, isolation</summary>
+    <p>A saga splits the business transaction into steps, each a local ACID transaction in one service. If a step fails, previously completed steps are undone by <b>compensating transactions</b>, which are new forward actions (refund, release), not rollbacks.</p>
+  <div class="tbl"><table>
+    <tr><th>#</th><th>Service</th><th>Action</th><th>Compensation</th><th>Type</th></tr>
+    <tr><td class="num">1</td><td>Order</td><td>Create order as <code>PENDING</code></td><td>Mark order <code>CANCELLED</code></td><td>Compensatable</td></tr>
+    <tr><td class="num">2</td><td>Inventory</td><td>Reserve items (reserved += qty, with expiry)</td><td>Release reservation</td><td>Compensatable</td></tr>
+    <tr><td class="num">3</td><td>Payment</td><td>Charge customer (idempotency key = order ID)</td><td>Refund</td><td>Pivot: once it succeeds, the saga goes forward</td></tr>
+    <tr><td class="num">4</td><td>Inventory</td><td>Convert reservation to allocation</td><td>none needed</td><td>Retriable: retried until success</td></tr>
+    <tr><td class="num">5</td><td>Order</td><td>Mark order <code>CONFIRMED</code></td><td>none needed</td><td>Retriable</td></tr>
+  </table></div>
+  <p>Order the steps so the hardest-to-undo action (charging money) is the pivot, with only retriable steps after it. If payment fails: release inventory, cancel the order. If payment succeeds, nothing after it is allowed to fail permanently; it retries.</p>
+    <div class="grid">
+    <div class="card"><h4>Choreography</h4><p>Each service reacts to events and emits its own: <code>OrderCreated</code> → Inventory reserves → <code>InventoryReserved</code> → Payment charges → <code>PaymentCompleted</code> → Order confirms. Failures emit <code>PaymentFailed</code>, which Inventory and Order listen to.</p><ul><li>+ No central component; loose coupling; good for 2–4 steps.</li><li>− The flow exists only implicitly across services; hard to see the state of one order; cyclic event dependencies creep in.</li></ul></div>
+    <div class="card"><h4>Orchestration</h4><p>An orchestrator (often in the Order service) holds the saga state machine and sends commands: <code>ReserveInventory</code>, <code>ChargePayment</code>, and handles replies.</p><ul><li>+ One place to read the flow, add timeouts, see stuck sagas and change step order.</li><li>− The orchestrator is a component to run and must be persistent and idempotent. Tools: Temporal, Camunda, or a state table plus Kafka.</li></ul></div>
+  </div>
+  <div class="flow">
+    <span class="node hl">Order saga orchestrator<small>saga_instance table</small></span><span class="arrow">→<small>ReserveInventory</small></span>
+    <span class="node">Inventory</span><span class="arrow">→<small>Reserved</small></span>
+    <span class="node hl">Orchestrator</span><span class="arrow">→<small>ChargePayment</small></span>
+    <span class="node">Payment</span><span class="arrow">→<small>Failed</small></span>
+    <span class="node hl">Orchestrator</span><span class="arrow">→<small>ReleaseInventory</small></span>
+    <span class="node">Inventory</span>
+  </div>
+  <p class="flow-caption">Figure: orchestrated saga with a payment failure; the orchestrator runs the compensation for step 2 and then cancels the order.</p>
+    <p>State change and outgoing command commit in one local transaction via the outbox, and every handler checks the current state so duplicate replies are harmless.</p>
 
   <h3>Sagas are not isolated</h3>
   <p>Other requests can see intermediate state (an order that is PENDING, stock that is reserved). Countermeasures: <b>semantic locks</b> (a PENDING status other operations respect), <b>commutative updates</b> (increment/decrement instead of set), <b>reread before acting</b>, and ordering steps so the visible effects of a failed saga are harmless (reserve, do not deduct).</p>
+  </details>
 
-  <h3>Transactional outbox</h3>
-  <p>Write the event into an <code>outbox</code> table in the same local transaction as the business change. A separate relay publishes outbox rows to Kafka. Either both the order and its event are committed, or neither is.</p>
+  <h2 id="outbox"><span class="n">04</span>Outbox and idempotent consumers</h2>
+  <div class="arch">
+    <div class="tier"><small>One local transaction</small><span class="node hl">Order service</span></div>
+    <div class="down">↓ <small>INSERT order + INSERT outbox row, one COMMIT</small></div>
+    <div class="tier"><span class="node store">orders</span><span class="node store hl">outbox</span></div>
+    <div class="down">↓ <small>relay: polling publisher or Debezium CDC</small></div>
+    <div class="tier"><span class="node store">Kafka<small>outbox.event.order · key = aggregateid</small></span></div>
+    <div class="down">↓ <small>at-least-once</small></div>
+    <div class="tier"><span class="node">Inventory consumer<small>processed_message dedupe</small></span><span class="node">Notification consumer</span></div>
+  </div>
   <pre><code>CREATE TABLE outbox (
   id            UUID PRIMARY KEY,
   aggregatetype VARCHAR(255) NOT NULL,   -- routes to topic, e.g. "order" -&gt; outbox.event.order
@@ -139,7 +253,7 @@ class OrderSagaOrchestrator {
   payload       JSONB        NOT NULL,
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );</code></pre>
-  <pre><code>@Service
+  <details class="code"><summary>Show Java: OrderService writing the outbox</summary><pre><code>@Service
 @RequiredArgsConstructor
 class OrderService {
     private final OrderRepository orders;
@@ -153,12 +267,12 @@ class OrderService {
                 "OrderCreated", json.valueToTree(OrderCreated.from(order))));
         return order;                                   // one commit: order row + event row
     }
-}</code></pre>
-  <div class="grid">
-    <div class="card"><h4>Relay option 1: polling publisher</h4><p>A scheduled job selects unpublished rows <code>ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED</code>, sends them, marks them published. Simple, no extra infrastructure; adds polling latency and DB load; order across pods needs care.</p></div>
-    <div class="card"><h4>Relay option 2: CDC with Debezium</h4><p>Debezium reads the database's change log (Postgres logical replication, MySQL binlog) and publishes each inserted outbox row. No polling, low latency, and the application never talks to Kafka. Needs Kafka Connect and replication-slot monitoring.</p></div>
+}</code></pre></details>
+  <div class="vs">
+    <div><h4>Polling publisher</h4><ul><li class="pro">No extra infrastructure</li><li class="con">Polling latency and DB load</li></ul><p class="when"><code>FOR UPDATE SKIP LOCKED</code>, send, mark published.</p></div>
+    <div class="pick"><h4>Debezium CDC <span class="tag">at scale</span></h4><ul><li class="pro">Reads the WAL; low latency; app never talks to Kafka</li><li class="con">Kafka Connect and slot monitoring</li></ul></div>
   </div>
-  <pre><code>{
+  <details class="code"><summary>Show config: Debezium outbox connector</summary><pre><code>{
   "name": "orders-outbox",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
@@ -172,11 +286,8 @@ class OrderService {
     "transforms": "outbox",
     "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter"
   }
-}</code></pre>
-  <p>The <code>EventRouter</code> transform turns each outbox insert into a clean event: topic <code>outbox.event.&lt;aggregatetype&gt;</code>, key <code>aggregateid</code>, value <code>payload</code>. Because Debezium reads the insert from the WAL, you can delete the outbox row in the same transaction (or purge it daily) and the table never grows.</p>
-
-  <h3>Inbox / idempotent consumer</h3>
-  <p>Outbox relays and Kafka are at-least-once, so every consumer must tolerate duplicates. Record each processed message ID in the same transaction as the side effect:</p>
+}</code></pre></details>
+  <p>Consumers record each processed message ID in the same transaction as the side effect:</p>
   <pre><code>CREATE TABLE processed_message (
   consumer   VARCHAR(100) NOT NULL,
   message_id UUID         NOT NULL,
@@ -193,10 +304,24 @@ public void on(ConsumerRecord&lt;String, String&gt; rec) {
     if (inserted == 0) return;                 // duplicate: already applied
     inventory.reserve(parse(rec.value()));     // same transaction as the dedupe row
 }</code></pre>
-  <p>Debezium's outbox router puts the outbox row's <code>id</code> in the <code>id</code> header by default. When the side effect is naturally idempotent (an upsert, a conditional status change), you can skip the table.</p>
+  <details class="deep"><summary>Go deeper: outbox relays and the inbox pattern in full</summary>
+    <p>Write the event into an <code>outbox</code> table in the same local transaction as the business change. A separate relay publishes outbox rows to Kafka. Either both the order and its event are committed, or neither is.</p>
+    <div class="grid">
+    <div class="card"><h4>Relay option 1: polling publisher</h4><p>A scheduled job selects unpublished rows <code>ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED</code>, sends them, marks them published. Simple, no extra infrastructure; adds polling latency and DB load; order across pods needs care.</p></div>
+    <div class="card"><h4>Relay option 2: CDC with Debezium</h4><p>Debezium reads the database's change log (Postgres logical replication, MySQL binlog) and publishes each inserted outbox row. No polling, low latency, and the application never talks to Kafka. Needs Kafka Connect and replication-slot monitoring.</p></div>
+  </div>
+    <p>The <code>EventRouter</code> transform turns each outbox insert into a clean event: topic <code>outbox.event.&lt;aggregatetype&gt;</code>, key <code>aggregateid</code>, value <code>payload</code>. Because Debezium reads the insert from the WAL, you can delete the outbox row in the same transaction (or purge it daily) and the table never grows.</p>
+    <p>Outbox relays and Kafka are at-least-once, so every consumer must tolerate duplicates. Record each processed message ID in the same transaction as the side effect:</p>
+    <p>Debezium's outbox router puts the outbox row's <code>id</code> in the <code>id</code> header by default. When the side effect is naturally idempotent (an upsert, a conditional status change), you can skip the table.</p>
+  </details>
 
-  <h3>Idempotency keys for payments (Kotak, PhonePe)</h3>
-  <p>A client calls <code>POST /payments</code>, times out, and retries. Without protection, the customer is charged twice. The client generates a key once per logical operation (UUID, or the order ID) and sends it on every retry as <code>Idempotency-Key</code>.</p>
+  <h2 id="idem"><span class="n">05</span>Idempotency keys for payments</h2>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Retry 1</th><th>Retry 2 (same key)</th><th>idempotency_key</th></tr></thead><tbody>
+    <tr><td>t1</td><td>INSERT key, IN_PROGRESS</td><td></td><td class="ok">1 row</td></tr>
+    <tr><td>t2</td><td></td><td>INSERT same key</td><td class="ok">unique violation: 409, no charge</td></tr>
+    <tr><td>t3</td><td>charge PSP, store response</td><td></td><td>COMPLETED</td></tr>
+    <tr><td>t4</td><td></td><td>retry again</td><td class="ok">returns stored response</td></tr>
+  </tbody></table></div>
   <pre><code>CREATE TABLE idempotency_key (
   tenant_id     BIGINT       NOT NULL,
   key           VARCHAR(100) NOT NULL,
@@ -207,7 +332,7 @@ public void on(ConsumerRecord&lt;String, String&gt; rec) {
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, key)
 );</code></pre>
-  <pre><code>public ResponseEntity&lt;PaymentResponse&gt; pay(long tenantId, String key, PaymentRequest req) {
+  <details class="code"><summary>Show Java: the pay() endpoint</summary><pre><code>public ResponseEntity&lt;PaymentResponse&gt; pay(long tenantId, String key, PaymentRequest req) {
     String hash = sha256(canonicalJson(req));
     Optional&lt;IdemRecord&gt; existing = idem.tryInsertInProgress(tenantId, key, hash);  // INSERT ... ON CONFLICT DO NOTHING
     if (existing.isPresent()) {
@@ -219,28 +344,43 @@ public void on(ConsumerRecord&lt;String, String&gt; rec) {
     PaymentResponse res = paymentService.charge(tenantId, req, key);  // pass the key to the PSP too
     idem.complete(tenantId, key, 201, res);
     return ResponseEntity.status(HttpStatus.CREATED).body(res);
-}</code></pre>
-  <ul>
+}</code></pre></details>
+  <div class="keys">
+    <div class="key"><h4>Constraint, not check</h4><p>The unique constraint makes concurrent retries safe; "check then insert" does not.</p></div>
+    <div class="key"><h4>Forward the key</h4><p>Send it to the payment gateway too.</p></div>
+    <div class="key"><h4>Unknown outcome</h4><p>Gateway timed out? Stay <code>PENDING</code>; a reconciler asks the gateway. Never blindly retry a charge.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: idempotency keys in full</summary>
+    <p>A client calls <code>POST /payments</code>, times out, and retries. Without protection, the customer is charged twice. The client generates a key once per logical operation (UUID, or the order ID) and sends it on every retry as <code>Idempotency-Key</code>.</p>
+    <ul>
     <li>The unique constraint, not a "check then insert", is what makes two concurrent retries safe.</li>
     <li>Forward the key (or the payment ID) to the payment gateway, so its side is idempotent as well.</li>
     <li><b>Unknown outcome</b>: if the gateway call times out, you do not know whether money moved. Leave the payment <code>PENDING</code>, and let a reconciler query the gateway's status API (or wait for its webhook) before retrying or failing. Never blindly retry a charge that may have succeeded.</li>
     <li>Expire keys after a window (24 hours is common) and scope them by tenant from the JWT.</li>
   </ul>
+  </details>
 
-  <h3>CQRS</h3>
-  <p>Command Query Responsibility Segregation: separate the model that handles writes (normalised, validated, transactional) from one or more read models shaped for queries (denormalised tables, Elasticsearch, Redis), kept up to date by events. Use it when read and write shapes differ a lot (a dashboard joining six services' data, search across documents) or when they scale very differently. Cost: the read side is eventually consistent, and you run two models plus a projection pipeline that must be replayable. It is not the same as event sourcing; you can do CQRS with an ordinary database as the write side.</p>
-
-  <h3>Resilience: timeouts, retries, circuit breakers, bulkheads</h3>
+  <h2 id="resilience"><span class="n">06</span>Resilience: timeouts, retries, breakers</h2>
+  <div class="flow">
+    <span class="node">CLOSED<small>calls pass; outcomes recorded</small></span><span class="arrow">→<small>failure rate ≥ 50%</small></span>
+    <span class="node hl">OPEN<small>calls fail fast</small></span><span class="arrow">→<small>after 30 s</small></span>
+    <span class="node">HALF_OPEN<small>5 trial calls</small></span><span class="arrow">→<small>ok: CLOSED / bad: OPEN</small></span>
+  </div>
+  <p class="flow-caption">Figure: the breaker evaluates only after <code>minimum-number-of-calls</code>, using a count-based or time-based sliding window; slow calls can count as failures.</p>
   <div class="tbl"><table>
-    <tr><th>Pattern</th><th>Prevents</th><th>Key setting</th></tr>
-    <tr><td>Timeout</td><td>Threads stuck forever on a slow dependency</td><td>Slightly above the dependency's p99; the whole chain must fit the caller's budget</td></tr>
-    <tr><td>Retry with exponential back-off and jitter</td><td>Failing on transient errors</td><td>2–3 attempts, only for idempotent operations, only on retryable errors (timeouts, 503), never on 4xx</td></tr>
-    <tr><td>Circuit breaker</td><td>Hammering a failing dependency; cascading failure (Apple's question)</td><td>Failure-rate and slow-call thresholds over a sliding window; open state returns fast</td></tr>
-    <tr><td>Bulkhead</td><td>One slow dependency consuming every thread</td><td>Max concurrent calls per dependency (semaphore) or a separate pool</td></tr>
+    <tr><th>Pattern</th><th>Prevents</th><th>Setting</th></tr>
+    <tr><td>Timeout</td><td>Threads stuck on a slow dependency</td><td>Just above its p99</td></tr>
+    <tr><td>Retry + jitter</td><td>Failing on transient errors</td><td>2–3 tries, idempotent ops, never 4xx</td></tr>
+    <tr><td>Circuit breaker</td><td>Cascading failure</td><td>Failure/slow-call rate over a window</td></tr>
+    <tr><td>Bulkhead</td><td>One dependency eating all threads</td><td>Max concurrent calls</td></tr>
     <tr><td>Rate limiter</td><td>Exceeding a partner's quota</td><td>Permits per period</td></tr>
-    <tr><td>Fallback</td><td>Hard failure where a degraded answer is acceptable</td><td>Cached value, default, or "queued, we will notify you"</td></tr>
+    <tr><td>Fallback</td><td>Hard failure</td><td>Cached value or "pending"</td></tr>
   </table></div>
-  <pre><code># application.yml  (dependency: io.github.resilience4j:resilience4j-spring-boot3 + Spring AOP starter)
+  <div class="stats">
+    <div class="stat"><b>3 × 3 × 3 = 27</b><span>attempts per click if three layers each retry 3 times</span></div>
+    <div class="stat"><b>random(0, base × 2ⁿ)</b><span>full jitter spreads retry waves</span></div>
+  </div>
+  <details class="code"><summary>Show config: Resilience4j application.yml</summary><pre><code># application.yml  (dependency: io.github.resilience4j:resilience4j-spring-boot3 + Spring AOP starter)
 resilience4j:
   circuitbreaker:
     instances:
@@ -271,8 +411,8 @@ resilience4j:
   timelimiter:
     instances:
       psp:
-        timeout-duration: 3s</code></pre>
-  <pre><code>@Service
+        timeout-duration: 3s</code></pre></details>
+  <details class="code"><summary>Show Java: PspClient with breaker, retry, bulkhead</summary><pre><code>@Service
 class PspClient {
     @CircuitBreaker(name = "psp", fallbackMethod = "statusUnknown")
     @Retry(name = "psp")
@@ -286,38 +426,59 @@ class PspClient {
     private PaymentResult statusUnknown(ChargeRequest req, Throwable t) {
         return PaymentResult.pending(req.idempotencyKey());          // reconciler resolves it later
     }
-}</code></pre>
-  <p>Resilience4j applies aspects in this default order: <code>Retry( CircuitBreaker( RateLimiter( TimeLimiter( Bulkhead( call ) ) ) ) )</code>, so each retry attempt passes through the breaker and an open breaker stops retries quickly. Set the <code>RestClient</code> connect and read timeouts as well; <code>TimeLimiter</code> only applies to async (<code>CompletableFuture</code>) methods. Spring Framework 7 (Spring Boot 4) also ships core <code>@Retryable</code> and <code>@ConcurrencyLimit</code> annotations, enabled with <code>@EnableResilientMethods</code>, which cover simple retry and bulkhead needs without Resilience4j; it has no circuit breaker.</p>
+}</code></pre></details>
+  <details class="deep"><summary>Go deeper: the full table, aspect order, breaker states and jitter</summary>
+    <div class="tbl"><table>
+    <tr><th>Pattern</th><th>Prevents</th><th>Key setting</th></tr>
+    <tr><td>Timeout</td><td>Threads stuck forever on a slow dependency</td><td>Slightly above the dependency's p99; the whole chain must fit the caller's budget</td></tr>
+    <tr><td>Retry with exponential back-off and jitter</td><td>Failing on transient errors</td><td>2–3 attempts, only for idempotent operations, only on retryable errors (timeouts, 503), never on 4xx</td></tr>
+    <tr><td>Circuit breaker</td><td>Hammering a failing dependency; cascading failure (Apple's question)</td><td>Failure-rate and slow-call thresholds over a sliding window; open state returns fast</td></tr>
+    <tr><td>Bulkhead</td><td>One slow dependency consuming every thread</td><td>Max concurrent calls per dependency (semaphore) or a separate pool</td></tr>
+    <tr><td>Rate limiter</td><td>Exceeding a partner's quota</td><td>Permits per period</td></tr>
+    <tr><td>Fallback</td><td>Hard failure where a degraded answer is acceptable</td><td>Cached value, default, or "queued, we will notify you"</td></tr>
+  </table></div>
+    <p>Resilience4j applies aspects in this default order: <code>Retry( CircuitBreaker( RateLimiter( TimeLimiter( Bulkhead( call ) ) ) ) )</code>, so each retry attempt passes through the breaker and an open breaker stops retries quickly. Set the <code>RestClient</code> connect and read timeouts as well; <code>TimeLimiter</code> only applies to async (<code>CompletableFuture</code>) methods. Spring Framework 7 (Spring Boot 4) also ships core <code>@Retryable</code> and <code>@ConcurrencyLimit</code> annotations, enabled with <code>@EnableResilientMethods</code>, which cover simple retry and bulkhead needs without Resilience4j; it has no circuit breaker.</p>
+    <p>Open state protects both sides: your threads are freed instantly instead of waiting on timeouts, and the struggling dependency gets breathing room to recover. The half-open state limits the trial traffic so recovery is not met by a full flood.</p>
 
-  <h3>Distributed tracing</h3>
-  <p>A trace ID created at the edge travels with every hop (HTTP <code>traceparent</code> header per W3C Trace Context; Kafka record headers), and each service records spans. With Spring Boot, add Micrometer Tracing with the OpenTelemetry bridge and an exporter (OTLP to Jaeger, Tempo or a vendor). <code>RestClient</code> and <code>WebClient</code> built from Boot's builders propagate automatically; for Kafka set <code>spring.kafka.template.observation-enabled=true</code> and <code>spring.kafka.listener.observation-enabled=true</code>. Put <code>traceId</code> in every log line and carry <code>tenantId</code> as baggage. For sagas, a trace shows exactly which step of which order stalled.</p>
+  <h3>Why jitter matters</h3>
+  <p>If 1,000 clients fail at the same instant and all retry after 100, 200, 400 ms, they retry in synchronised waves that re-overload the server. Full jitter, <code>sleep = random(0, min(cap, base × 2<sup>attempt</sup>))</code>, spreads them out; AWS's analysis showed it completes the work with far fewer calls than plain exponential back-off.</p>
+  </details>
 
-  <h2 id="internals"><span class="n">03</span>How it works internally</h2>
-
-  <h3>How Debezium reads Postgres</h3>
-  <ol>
+  <h2 id="internals"><span class="n">07</span>Debezium, CQRS and tracing</h2>
+  <ol class="walk">
+    <li><span class="who">Postgres</span><span>Writes every change to the WAL; a logical replication slot decodes it</span></li>
+    <li><span class="who">Debezium</span><span>Streams from the slot in Kafka Connect; outbox router reshapes rows into events</span></li>
+    <li><span class="who">Debezium</span><span>Stores its LSN and confirms it, so Postgres can recycle older WAL</span></li>
+    <li><span class="who">Crash</span><span>Resumes from the last LSN; a few events repeat (at-least-once)</span></li>
+  </ol>
+  <div class="callout warn"><b>Replication slot gotcha</b><p>If Debezium stops, the slot keeps every WAL segment since its last confirmed position, and the primary's disk fills up. Alert on <code>pg_replication_slots</code> retained WAL, and set <code>max_slot_wal_keep_size</code> to cap it.</p></div>
+  <div class="keys">
+    <div class="key"><h4>CQRS</h4><p>Separate write model from read models (Elasticsearch, Redis) fed by events. Read side is eventually consistent. Not the same as event sourcing.</p></div>
+    <div class="key"><h4>Tracing</h4><p>W3C <code>traceparent</code> on HTTP and Kafka headers; Micrometer Tracing + OpenTelemetry. Shows which saga step stalled.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: Debezium internals, CQRS and tracing in full</summary>
+    <ol>
     <li>Postgres writes every change to the WAL. With <code>wal_level=logical</code>, a <b>logical replication slot</b> decodes WAL into row changes (the <code>pgoutput</code> plugin) for a <b>publication</b>.</li>
     <li>Debezium, running in Kafka Connect, streams from the slot, converts each change to an event, and the outbox router reshapes it.</li>
     <li>Debezium stores its position (LSN) in Kafka Connect offsets and confirms it to the slot, so Postgres may recycle older WAL.</li>
     <li>Delivery is at-least-once: after a crash, Debezium resumes from the last confirmed LSN and can re-emit a few events. Consumers de-duplicate on the event ID.</li>
     <li>Ordering per aggregate holds because <code>aggregateid</code> is the Kafka key, and WAL order is commit order.</li>
   </ol>
-  <div class="callout warn"><b>Replication slot gotcha</b><p>If Debezium stops, the slot keeps every WAL segment since its last confirmed position, and the primary's disk fills up. Alert on <code>pg_replication_slots</code> retained WAL, and set <code>max_slot_wal_keep_size</code> to cap it.</p></div>
+    <p>Command Query Responsibility Segregation: separate the model that handles writes (normalised, validated, transactional) from one or more read models shaped for queries (denormalised tables, Elasticsearch, Redis), kept up to date by events. Use it when read and write shapes differ a lot (a dashboard joining six services' data, search across documents) or when they scale very differently. Cost: the read side is eventually consistent, and you run two models plus a projection pipeline that must be replayable. It is not the same as event sourcing; you can do CQRS with an ordinary database as the write side.</p>
+    <p>A trace ID created at the edge travels with every hop (HTTP <code>traceparent</code> header per W3C Trace Context; Kafka record headers), and each service records spans. With Spring Boot, add Micrometer Tracing with the OpenTelemetry bridge and an exporter (OTLP to Jaeger, Tempo or a vendor). <code>RestClient</code> and <code>WebClient</code> built from Boot's builders propagate automatically; for Kafka set <code>spring.kafka.template.observation-enabled=true</code> and <code>spring.kafka.listener.observation-enabled=true</code>. Put <code>traceId</code> in every log line and carry <code>tenantId</code> as baggage. For sagas, a trace shows exactly which step of which order stalled.</p>
+  </details>
 
-  <h3>Circuit breaker state machine</h3>
-  <div class="flow">
-    <span class="node">CLOSED<small>calls pass; outcomes recorded</small></span><span class="arrow">→<small>failure rate ≥ 50%</small></span>
-    <span class="node hl">OPEN<small>calls fail fast</small></span><span class="arrow">→<small>after 30 s</small></span>
-    <span class="node">HALF_OPEN<small>5 trial calls</small></span><span class="arrow">→<small>ok: CLOSED / bad: OPEN</small></span>
-  </div>
-  <p class="flow-caption">Figure: the breaker evaluates only after <code>minimum-number-of-calls</code>, using a count-based or time-based sliding window; slow calls can count as failures.</p>
-  <p>Open state protects both sides: your threads are freed instantly instead of waiting on timeouts, and the struggling dependency gets breathing room to recover. The half-open state limits the trial traffic so recovery is not met by a full flood.</p>
-
-  <h3>Why jitter matters</h3>
-  <p>If 1,000 clients fail at the same instant and all retry after 100, 200, 400 ms, they retry in synchronised waves that re-overload the server. Full jitter, <code>sleep = random(0, min(cap, base × 2<sup>attempt</sup>))</code>, spreads them out; AWS's analysis showed it completes the work with far fewer calls than plain exponential back-off.</p>
-
-  <h2 id="patterns"><span class="n">04</span>Practical patterns and production gotchas</h2>
-  <ul>
+  <h2 id="patterns"><span class="n">08</span>Production gotchas</h2>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>Compensations that fail once and are only logged; they must retry or go to a DLQ.</li>
+    <li>Reservations without expiry; sagas without a timeout.</li>
+    <li>Retrying <code>POST /charges</code> without an idempotency key.</li>
+    <li>Retries at every layer (27 attempts per click).</li>
+    <li>One global breaker instead of one per dependency.</li>
+    <li>A write fallback that returns "success".</li>
+  </ul></div>
+  <details class="deep"><summary>Go deeper: all production rules, bulkheads, strangler fig</summary>
+    <ul>
     <li><b>Compensations must be idempotent and retried until they succeed</b>: a refund that fails once cannot simply be logged. Put failed compensations in a DLQ with alerting and a manual-resolution tool.</li>
     <li><b>Every saga needs a timeout</b>: a scheduler finds sagas past their deadline and compensates; otherwise lost replies leave orders PENDING forever.</li>
     <li><b>Reservations need expiry</b>: inventory holds expire after N minutes so a crashed saga does not lock stock permanently.</li>
@@ -329,8 +490,23 @@ class PspClient {
     <li><b>Strangler fig migration (Visa)</b>: put a gateway in front of the monolith, route one capability at a time to the new service behind a feature flag, run both with CDC keeping data in sync during the cut-over, canary by tenant, then retire the monolith code path.</li>
     <li><b>Know when not to distribute</b>: if two pieces of data must change atomically all the time, they probably belong in one service and one database.</li>
   </ul>
+  </details>
 
-  <h2 id="qa"><span class="n">05</span>Interview questions with senior answers</h2>
+  <h2 id="quiz"><span class="n">09</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Why not just call <code>kafkaTemplate.send()</code> after the DB commit?</p>
+    <div class="opts"><button class="opt" type="button">Kafka is too slow</button><button class="opt" type="button">The pod can die between commit and send, so the event is lost</button><button class="opt" type="button">It works if you use acks=all</button></div>
+    <p class="why">Two systems, no shared transaction. The outbox makes the event part of the DB commit.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">In an order saga, which step should be the pivot?</p>
+    <div class="opts"><button class="opt" type="button">Creating the order</button><button class="opt" type="button">Reserving inventory</button><button class="opt" type="button">Charging the customer</button></div>
+    <p class="why">Put the hardest-to-undo action last among compensatable steps; only retriable steps follow it.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">The payment gateway call times out. What should the service do?</p>
+    <div class="opts"><button class="opt" type="button">Mark PENDING and reconcile with the gateway's status API</button><button class="opt" type="button">Retry the charge immediately</button><button class="opt" type="button">Mark FAILED and refund</button></div>
+    <p class="why">You do not know whether money moved. A blind retry can double-charge.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why does 2PC hurt availability across microservices?</p>
+    <div class="opts"><button class="opt" type="button">It needs a message broker</button><button class="opt" type="button">Every participant must be up, and locks are held while the coordinator decides</button><button class="opt" type="button">It only works in MySQL</button></div>
+    <p class="why">Availability multiplies down, and a crashed coordinator leaves participants in doubt holding locks.</p></div>
+
+  <h2 id="qa"><span class="n">10</span>Interview questions with senior answers</h2>
   <details class="qa"><summary>Explain two-phase commit and why you would not use it across microservices.</summary><p>A coordinator asks every participant to prepare (make the change durable, hold locks, vote); if all vote yes it logs commit and tells everyone to commit, otherwise abort. It is blocking: if the coordinator dies after the votes, participants hold locks in doubt. It couples availability of all services, adds round trips while locks are held, and brokers and third-party APIs cannot participate. Across services I use a saga with an outbox instead.</p></details>
   <details class="qa"><summary>Data is now split across services. How do transactions work? (Visa)</summary><p>Each service commits locally; a saga coordinates the business transaction with compensating actions for failures. I prefer orchestration for flows of more than three steps so the state is visible and timeouts live in one place. Steps publish through a transactional outbox, and consumers are idempotent. Consistency is eventual, so the UI shows PENDING states.</p></details>
   <details class="qa"><summary>Choreography or orchestration?</summary><p>Choreography for short, stable flows where services naturally react to events (send a welcome email when a user signs up). Orchestration when the flow has many steps, branching, timeouts, or a business owner who asks "where is order 123 stuck?" A persisted state machine (or Temporal) answers that in one query.</p></details>
@@ -343,9 +519,8 @@ class PspClient {
   <details class="qa"><summary>What is CQRS and when is it worth it?</summary><p>Separate write and read models, the read side built from events. Worth it when queries need data shaped very differently from how it is written, or reads massively outnumber writes and need their own store (search, dashboards). Not worth it for plain CRUD: you take on eventual consistency and a projection pipeline to maintain.</p></details>
   <details class="qa"><summary>How do you trace one request across five services and Kafka?</summary><p>W3C trace context propagated in HTTP headers and Kafka record headers, Micrometer Tracing with the OpenTelemetry bridge in every Spring service, spans exported via OTLP, and the trace ID in every log line. The trace waterfall shows which hop added the latency or failed.</p></details>
   <details class="qa"><summary>How would you migrate a monolith to microservices without downtime? (Visa)</summary><p>Strangler fig: a gateway in front of the monolith, extract one bounded context at a time, route its traffic to the new service behind a feature flag, keep data in sync with CDC during transition, canary by tenant with rollback, then delete the old path. Start with a low-risk, loosely coupled capability, not the core transaction.</p></details>
-
-  <h2 id="exercise"><span class="n">06</span>Hands-on exercise (60 minutes)</h2>
-  <ol>
+  <details class="deep"><summary>Hands-on exercise (60 minutes)</summary>
+    <ol>
     <li>In one Spring Boot app with Postgres (three packages standing in for Order, Inventory and Payment), add an <code>outbox</code> table and write <code>OrderService.placeOrder</code> to save the order and an <code>OrderCreated</code> outbox row in one transaction.</li>
     <li>Write a <code>@Scheduled</code> polling relay that claims rows with <code>FOR UPDATE SKIP LOCKED</code>, publishes to Kafka, and deletes them. Kill the app between send and delete; restart; confirm the event is re-sent.</li>
     <li>Add an Inventory consumer with the <code>processed_message</code> dedupe table. Publish the same event twice and confirm stock is reserved once.</li>
@@ -353,8 +528,21 @@ class PspClient {
     <li>Add <code>POST /payments</code> with the idempotency-key flow. Fire the same request concurrently from 10 threads; exactly one charge must be recorded.</li>
     <li>Wrap a fake PSP client (WireMock with a 5-second delay) in Resilience4j circuit breaker + retry + bulkhead. Watch <code>/actuator/circuitbreakers</code> move from CLOSED to OPEN to HALF_OPEN.</li>
   </ol>
+  </details>
 
-  <h2 id="sources"><span class="n">07</span>Sources and go deeper</h2>
+  <h2 id="cheat"><span class="n">11</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Dual write (DB + Kafka) always loses one eventually: use an outbox.</li>
+    <li>2PC: blocking, availability multiplies, many systems can't join. Avoid across services.</li>
+    <li>Saga: local tx per step, compensations in reverse, pivot = charge, retriable after.</li>
+    <li>Choreography for 2–4 steps; orchestration for longer flows.</li>
+    <li>Outbox relay: polling + SKIP LOCKED, or Debezium CDC (watch the slot).</li>
+    <li>Consumers dedupe on event ID in the same transaction.</li>
+    <li>Idempotency-Key + unique constraint; unknown outcome → PENDING + reconcile.</li>
+    <li>Timeout, retry with jitter (one layer), breaker per dependency, bulkhead.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">12</span>Sources and go deeper</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/8286961/" target="_blank" rel="noopener">Visa Staff SWE: strangler fig, Saga, cross-DC replication (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/8455829/" target="_blank" rel="noopener">Flipkart SDE-2, selected: HM round on circuit breaker, Saga, CQRS (LeetCode)</a></li>
@@ -374,5 +562,6 @@ class PspClient {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="kafka-deep-dive.html">Kafka deep dive</a> · <a href="hld-payment-service.html">Payment service HLD</a> · <a href="db-isolation-locking-indexes.html">DB isolation &amp; locking</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

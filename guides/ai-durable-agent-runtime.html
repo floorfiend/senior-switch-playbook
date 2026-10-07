@@ -12,39 +12,64 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">AI system design</a></div>
   <h1>Durable agent runtime platform</h1>
-  <p class="lede">Design a platform that runs AI agents for other applications: agents call tools, run for minutes to hours, pause for human approval, chain into workflows with branches, loops and fan-out, execute in isolated sandboxes on a shared, limited compute pool, and never lose progress when a component crashes. A senior answer recognises this as a durable workflow engine with an LLM inside, not a chatbot.</p>
+  <p class="lede">Design a platform that runs long, tool-calling AI agents with human approvals on a shared sandbox pool, and never loses progress on a crash.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> Tekion Staff (AI) HLD, Sep 2026; agent and MCP depth at EPAM, Mastercard, Deloitte</span>
   </div>
   <div class="chips"><span class="chip hot">Tekion</span><span class="chip">EPAM</span><span class="chip">Mastercard</span><span class="chip">Deloitte</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>It's a durable workflow engine with an LLM inside, not a chatbot.</li>
+    <li>Event-sourced history: replay rebuilds state; recorded results are never re-run.</li>
+    <li>At-least-once workers plus idempotency keys give exactly-once effects.</li>
+    <li>Sandboxes are scarce: quotas, fair queuing, admission control.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A railway reservation chart. Every booking step is written in the register before the next clerk acts. If a clerk faints mid-shift, the next one reads the register and continues from the last entry, never booking the same berth twice.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
-    <li><a href="#scope">Clarify and scope</a></li>
-    <li><a href="#capacity">Capacity estimation</a></li>
-    <li><a href="#api">API design</a></li>
-    <li><a href="#data">Data model</a></li>
+    <li><a href="#scope">Clarify, scope and numbers</a></li>
+    <li><a href="#api">API and data model</a></li>
     <li><a href="#arch">Architecture</a></li>
+    <li><a href="#follow">Follow one run through a crash</a></li>
     <li><a href="#deep">Deep dives</a></li>
     <li><a href="#scale">Scaling and failure</a></li>
     <li><a href="#tradeoffs">Trade-offs</a></li>
-    <li><a href="#followups">Follow-up questions</a></li>
     <li><a href="#mistakes">Rejection reasons</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#followups">Follow-up questions</a></li>
     <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
-  <p>Tekion's prompt packs six hard requirements into one sentence: tool calls, long runs with human approval mid-run, workflows with branches, loops and fan-out, isolated sandboxes on a shared limited pool across tenants, fire-and-forget or live step-by-step watching, and no data loss on a crash. The same loop then asked for an eval pipeline. Interviewers check that you hit every one of those and that your crash story is precise.</p>
-  <div class="grid">
-    <div class="card"><h4>Durability model</h4><p>Event-sourced step history, checkpoints, at-least-once execution with idempotent side effects. "We retry" is not an answer.</p></div>
-    <div class="card"><h4>Scheduling under scarcity</h4><p>Admission control, fair share across tenants, priorities, sandbox lifecycle on a fixed pool.</p></div>
-    <div class="card"><h4>Agent semantics</h4><p>The agent loop, tools, human-in-the-loop, memory, MCP, and bounding cost and iterations.</p></div>
-    <div class="card"><h4>Product surface</h4><p>Async run API, live event stream, webhooks, approvals, eval and observability.</p></div>
+  <div class="keys">
+    <div class="key"><h4>Durability model</h4><p>Event-sourced step history, checkpoints, idempotent side effects. "We retry" is not an answer.</p></div>
+    <div class="key"><h4>Scheduling under scarcity</h4><p>Admission control, fair share, priorities, sandbox lifecycle on a fixed pool.</p></div>
+    <div class="key"><h4>Agent semantics</h4><p>Agent loop, tools, human-in-the-loop, memory, MCP, cost and iteration bounds.</p></div>
+    <div class="key"><h4>Product surface</h4><p>Async run API, live events, webhooks, approvals, evals.</p></div>
   </div>
+  <p>Tekion's prompt packs six requirements into one sentence. Restate all six; each is checked.</p>
+  <details class="deep"><summary>Go deeper: the Tekion prompt</summary>
+  <p>Tekion's prompt packs six hard requirements into one sentence: tool calls, long runs with human approval mid-run, workflows with branches, loops and fan-out, isolated sandboxes on a shared limited pool across tenants, fire-and-forget or live step-by-step watching, and no data loss on a crash. The same loop then asked for an eval pipeline. Interviewers check that you hit every one of those and that your crash story is precise.</p>
+  </details>
 
-  <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
+  <h2 id="scope"><span class="n">02</span>Clarify, scope and numbers</h2>
+  <ul>
+    <li><b>Agents:</b> declarative graph DSL for safety; code steps run in sandboxes.</li>
+    <li><b>Tools:</b> caller's HTTP endpoints, MCP servers, or sandboxed code?</li>
+    <li><b>Approvals and effects:</b> how long can a human wait? Exactly-once "send for signature"?</li>
+  </ul>
+  <div class="stats"><div class="stat"><b>2M</b><span>runs/day × 30 steps</span></div><div class="stat"><b>~2,100/s</b><span>peak steps</span></div><div class="stat"><b>~28k</b><span>open runs, mostly waiting</span></div><div class="stat"><b>~4,000</b><span>peak sandboxes ≈ 70 × 64 GB nodes</span></div><div class="stat"><b>11 TB</b><span>hot history (30 days)</span></div><div class="stat"><b>280/s</b><span>LLM calls</span></div></div>
+  <ul>
+    <li>A few thousand event appends per second: fine for sharded Postgres.</li>
+    <li>Wall time long, CPU time short: never hold threads or sandboxes while waiting.</li>
+    <li>Sandboxes are the scarce resource: that's what "limited pool" is fishing for.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: clarifying list, requirements and capacity table</summary>
   <ul>
     <li><b>Who defines agents?</b> Client applications register agent definitions (model, prompt, tools) and workflow graphs. Declarative DSL (JSON/YAML graph) or code (SDK)? Choose DSL for multi-tenant safety, allow code steps inside sandboxes.</li>
     <li><b>What do tools look like?</b> HTTP endpoints of the calling app, MCP servers, or code executed in our sandbox?</li>
@@ -58,8 +83,7 @@
     <div class="card"><h4>Non-functional</h4><ul><li>500 tenants, 2M runs/day, avg 30 steps</li><li>No lost or duplicated committed steps after any single crash</li><li>Start-to-first-step p95 &lt; 2 s when capacity is free</li><li>Fair share: no tenant above its quota of sandboxes</li><li>Strong isolation between tenants' code and data</li><li>Run history retained 30 days hot, 1 year cold</li></ul></div>
     <div class="card"><h4>Out of scope</h4><ul><li>Model training and hosting</li><li>A visual workflow builder UI</li><li>Agent marketplace and billing UI</li></ul></div>
   </div>
-
-  <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <h3>Capacity estimation</h3>
   <div class="tbl"><table>
     <tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr>
     <tr><td>Steps per day</td><td>2M runs × 30 steps</td><td class="num">60M steps</td></tr>
@@ -72,9 +96,16 @@
     <tr><td>LLM calls</td><td>~12 of the 30 steps × 2M runs</td><td class="num">24M calls/day ≈ 280/s avg</td></tr>
   </table></div>
   <p>Conclusions: the orchestrator's write path (event appends) is a few thousand writes per second, comfortable for sharded Postgres or Cassandra. Wall time is long but CPU time is short, so runs must not hold threads or sandboxes while waiting. Sandboxes are the scarce resource, so the design needs admission control and fair queuing around them; that is exactly what "limited compute pool" in the prompt is fishing for.</p>
+  </details>
 
-  <h2 id="api"><span class="n">04</span>API design</h2>
-  <pre><code>POST /v1/agents            { "name": "contract-reviewer", "model": "claude-sonnet", "tools": ["kb.search","esign.send"],
+  <h2 id="api"><span class="n">03</span>API and data model</h2>
+  <ol class="walk">
+    <li><span class="who">Register</span><span>agents (model, tools, maxSteps, cost cap, approval policy) and versioned workflow graphs</span></li>
+    <li><span class="who">Start</span><span><code>POST /v1/runs</code> with Idempotency-Key → 202 with runId and eventsUrl</span></li>
+    <li><span class="who">Watch</span><span>SSE events replay from any sequence number; or HMAC-signed webhooks</span></li>
+    <li><span class="who">Control</span><span>approve, cancel, pause, resume, retry from step</span></li>
+  </ol>
+  <details class="code"><summary>Show API sketch</summary><pre><code>POST /v1/agents            { "name": "contract-reviewer", "model": "claude-sonnet", "tools": ["kb.search","esign.send"],
                              "policy": { "maxSteps": 40, "maxCostUsd": 2.0, "approvalRequiredFor": ["esign.send"] } }
 POST /v1/workflows         { "name": "nda-flow", "version": 3, "graph": { ...nodes, edges, map/join, loop limits... } }
 
@@ -87,10 +118,14 @@ GET  /v1/runs/{id}                         # status, current steps, cost so far
 GET  /v1/runs/{id}/events?after=118        # SSE: step.started, llm.delta, tool.called, step.completed, approval.requested
 POST /v1/runs/{id}/approvals/{approvalId}  { "decision": "APPROVE", "comment": "ok to send" }
 POST /v1/runs/{id}/cancel | /pause | /resume
-POST /v1/runs/{id}/retry   { "fromStep": "s_14" }</code></pre>
+POST /v1/runs/{id}/retry   { "fromStep": "s_14" }</code></pre></details>
+  <div class="arch">
+    <div class="tier"><small>One shard per run_id, one transaction</small><span class="node store">run<small>current state</small></span><span class="node store hl">run_event<small>append-only, (run_id, seq)</small></span><span class="node store">task<small>leases</small></span></div>
+    <div class="tier"><span class="node store">approval<small>inbox + audit</small></span><span class="node store">tool_call<small>unique idempotency_key</small></span><span class="node store">S3<small>large payloads</small></span><span class="node store">Kafka / Redis<small>live events, quotas</small></span></div>
+  </div>
+  <p>The event and the next task commit in one local transaction: a step is recorded with its follow-up work, or not at all. That's what makes "no data loss" provable.</p>
+  <details class="deep"><summary>Go deeper: API notes and data model table</summary>
   <p>Fire-and-forget callers use the run id and webhooks (signed with HMAC, retried with backoff). Watchers subscribe to the events endpoint, which replays from any sequence number, so a late or reconnecting watcher sees the whole run. The idempotency key means a retried start returns the same run.</p>
-
-  <h2 id="data"><span class="n">05</span>Data model</h2>
   <div class="tbl"><table>
     <tr><th>Store</th><th>Table / key</th><th>Purpose</th></tr>
     <tr><td>Postgres (sharded by run_id hash)</td><td><code>run(tenant_id, run_id, workflow_ref, status, input_ref, priority, cost_usd, created_at, updated_at)</code></td><td>Current state, queryable</td></tr>
@@ -101,31 +136,20 @@ POST /v1/runs/{id}/retry   { "fromStep": "s_14" }</code></pre>
     <tr><td>S3</td><td>Large payloads, sandbox artefacts, LLM transcripts, per-tenant prefix and key</td><td>Keeps the event table small</td></tr>
     <tr><td>Redis / Kafka</td><td>Live event fan-out per run; tenant quota counters</td><td>Watchers and admission control</td></tr>
   </table></div>
-  <p>Writing the event and the next task in one local transaction (same shard, keyed by run_id) is what makes "no data loss" provable: a step is either recorded with its follow-up work, or not at all.</p>
+  </details>
 
-  <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
-  <div class="flow">
-    <span class="node">Client apps<small>SDK / REST</small></span><span class="arrow">→</span>
-    <span class="node">Run API<small>auth, idempotency</small></span><span class="arrow">→</span>
-    <span class="node hl">Orchestrator<small>deterministic, event-sourced</small></span><span class="arrow">⇄</span>
-    <span class="node store">History + tasks<small>Postgres shards</small></span>
+  <h2 id="arch"><span class="n">04</span>High-level architecture</h2>
+  <div class="arch">
+    <div class="tier"><span class="node">Client apps<small>SDK / REST</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><small>Control plane</small><span class="node">Run API<small>auth, idempotency</small></span><span class="node hl">Orchestrator<small>deterministic, event-sourced</small></span><span class="node store">History + tasks<small>Postgres shards</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><small>Execution plane</small><span class="node hl">Scheduler<small>fair share, admission</small></span><span class="node">LLM workers</span><span class="node">Tool workers<small>HTTP / MCP</small></span><span class="node">Sandbox pool<small>Firecracker / gVisor</small></span></div>
+    <div class="down">↓ <small>outbox</small></div>
+    <div class="tier"><small>Event plane</small><span class="node store">Kafka<small>run.events</small></span><span class="node">Event gateway<small>SSE</small></span><span class="node">Webhooks</span><span class="node">Eval + analytics</span></div>
   </div>
-  <div class="flow">
-    <span class="node store">Task queues<small>per kind, per tenant</small></span><span class="arrow">→</span>
-    <span class="node hl">Scheduler<small>fair share, admission</small></span><span class="arrow">→</span>
-    <span class="node">LLM workers<small>via LLM gateway</small></span>
-    <span class="node">Tool workers<small>HTTP / MCP clients</small></span>
-    <span class="node">Sandbox pool<small>Firecracker / gVisor</small></span>
-  </div>
-  <div class="flow">
-    <span class="node">Workers</span><span class="arrow">→<small>complete(task, result)</small></span>
-    <span class="node hl">Orchestrator</span><span class="arrow">→<small>outbox</small></span>
-    <span class="node store">Kafka<small>run.events</small></span><span class="arrow">→</span>
-    <span class="node">Event gateway<small>SSE watchers</small></span>
-    <span class="node">Webhooks</span>
-    <span class="node">Eval + analytics</span>
-  </div>
-  <p class="flow-caption">Figure: control plane (orchestrator and history), execution plane (scheduler and workers), and the event plane for watchers.</p>
+  <p>The orchestrator never calls an LLM or tool itself; workers do. This is Temporal's workflow/activity split. Build-or-buy answer: design the mechanism, then say you'd run Temporal underneath.</p>
+  <details class="deep"><summary>Go deeper: each component and build vs buy</summary>
   <ul>
     <li><b>Run API</b>: validates the workflow version, writes <code>RunStarted</code> and the first task, returns the run id.</li>
     <li><b>Orchestrator</b>: when a task completes, loads the run's history, replays the workflow definition deterministically to decide the next steps (branch on recorded outputs, loop counter, fan-out), and appends events plus new tasks in one transaction. It never calls an LLM or tool itself; those are non-deterministic and live in workers. This is Temporal's workflow/activity split.</li>
@@ -136,12 +160,52 @@ POST /v1/runs/{id}/retry   { "fromStep": "s_14" }</code></pre>
     <li><b>Approval service</b>: creates an approval record, notifies (email, Slack, the calling app's webhook), and on decision sends a signal to the run.</li>
   </ul>
   <div class="callout info"><b>Build or buy</b><p>Temporal (Java SDK fits a Spring shop), AWS Step Functions, Restate or DBOS give durable execution off the shelf; LangGraph with a Postgres checkpointer gives agent graphs with interrupts in Python, and Temporal ships a LangGraph plugin. In the interview, design the mechanism yourself (they want to see you understand it), then say you would run Temporal under the hood unless the platform's scheduling needs are unusual. Spring AI provides the <code>ChatClient</code>, tool calling and MCP client/server starters for the worker side.</p></div>
+  </details>
 
-  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+  <h2 id="follow"><span class="n">05</span>Follow one run through a crash</h2>
+  <div class="stepper"><b class="title">NDA workflow: extract → compare → approve → send</b><div class="frames">
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">Run API</span><span class="node">Orchestrator</span><span class="node store">History</span><span class="node">Workers</span><span class="node">Approval</span></div></div>
+      <figcaption>Run API writes <code>RunStarted</code> and the first task (extract parties, an LLM step) in one transaction. Returns 202.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node">Orchestrator</span><span class="node store">History</span><span class="node hl">LLM worker<small>lease 30 s</small></span><span class="node">Approval</span></div></div>
+      <figcaption>A worker leases the task with <code>FOR UPDATE SKIP LOCKED</code>, calls the model, reports the result.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node hl">Orchestrator<small>replay → next steps</small></span><span class="node store hl">History<small>StepCompleted #4</small></span><span class="node">Workers</span><span class="node">Approval</span></div></div>
+      <figcaption>The orchestrator appends <code>StepCompleted</code>, replays the graph and schedules a fan-out: one compare step per clause.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node">Orchestrator</span><span class="node store">History</span><span class="node bad hl">Sandbox worker<small>crashed</small></span><span class="node">Approval</span></div></div>
+      <figcaption>A sandbox worker dies mid-step. Nothing was committed for that step, so no partial state exists.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node">Orchestrator</span><span class="node store">History</span><span class="node hl">Worker 2<small>attempt 2</small></span><span class="node">Approval</span></div></div>
+      <figcaption>The lease expires, the reaper makes the task READY, another worker runs attempt 2. Earlier steps are not re-run.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node">Orchestrator</span><span class="node store hl">History<small>ApprovalRequested + 48 h timer</small></span><span class="node dim">Workers</span><span class="node hl">Approval</span></div></div>
+      <figcaption>Legal must approve before sending. The run releases every thread and sandbox and waits, at zero cost.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Run API</span><span class="node">Orchestrator</span><span class="node store">History</span><span class="node hl">Tool worker<small>esign.send · key run:step</small></span><span class="node">Approval ✓</span></div></div>
+      <figcaption><code>ApprovalDecided</code> arrives first, beating the timer. The send carries idempotency key <code>run:step</code>; a retry cannot send two envelopes.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node store hl">History<small>RunCompleted</small></span><span class="node hl">Kafka</span><span class="node">SSE watchers</span><span class="node">Webhook</span></div></div>
+      <figcaption>The outbox relays events: watchers see the whole run by replaying from any sequence, and the caller's webhook fires.</figcaption>
+    </figure>
+  </div></div>
 
-  <h3>7.1 Durable execution: event-sourced step history</h3>
-  <p>A run's state is a fold over its events. On crash or redeploy, any orchestrator node rebuilds the run by replaying history: recorded LLM and tool results are returned from the log, not re-executed. That is why the orchestrator code must be deterministic (no clock, random or I/O; those come from events), and why an agent's LLM call is a recorded step: the model would not give the same answer twice.</p>
-  <pre><code>sealed interface RunEvent permits RunStarted, StepScheduled, StepCompleted, StepFailed,
+  <h2 id="deep"><span class="n">06</span>Deep dives</h2>
+  <h3>6.1 Durable execution: event-sourced step history</h3>
+  <ul>
+    <li>State = a fold over events. Any node rebuilds a run by replay; recorded LLM and tool results come from the log.</li>
+    <li>So orchestrator code must be deterministic: no clock, random or I/O.</li>
+    <li>Each LLM turn and tool call is its own step: a crash after 25 minutes loses only the in-flight call.</li>
+  </ul>
+  <details class="code"><summary>Show Java: onTaskCompleted</summary><pre><code>sealed interface RunEvent permits RunStarted, StepScheduled, StepCompleted, StepFailed,
         ApprovalRequested, ApprovalDecided, TimerFired, RunCompleted {}
 record StepScheduled(String stepId, int attempt, StepKind kind, String inputRef) implements RunEvent {}
 record StepCompleted(String stepId, int attempt, String outputRef, long costMicros) implements RunEvent {}
@@ -160,7 +224,7 @@ public void onTaskCompleted(TaskResult r) {
         tasks.enqueue(r.runId(), next);
     }
     outbox.publish(r.runId(), seq);                         // relayed to Kafka for watchers and webhooks
-}</code></pre>
+}</code></pre></details>
   <pre><code>-- Worker leases the next task; SKIP LOCKED lets many workers poll one table without contention
 UPDATE task SET status = 'LEASED', lease_owner = :worker, lease_until = now() + interval '30 seconds'
 WHERE task_id = (SELECT task_id FROM task
@@ -168,22 +232,42 @@ WHERE task_id = (SELECT task_id FROM task
                  ORDER BY priority DESC, visible_at LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING *;
 -- reaper: UPDATE task SET status = 'READY' WHERE status = 'LEASED' AND lease_until &lt; now();</code></pre>
+  <details class="deep"><summary>Go deeper: replay, heartbeats and continue-as-new</summary>
+  <p>A run's state is a fold over its events. On crash or redeploy, any orchestrator node rebuilds the run by replaying history: recorded LLM and tool results are returned from the log, not re-executed. That is why the orchestrator code must be deterministic (no clock, random or I/O; those come from events), and why an agent's LLM call is a recorded step: the model would not give the same answer twice.</p>
   <p><b>Long steps</b> heartbeat (extend the lease and record progress, such as the last processed page). <b>Checkpointing inside an agent loop</b>: each LLM turn and each tool call is its own step, so a crash after 25 minutes loses at most the in-flight call. <b>History growth</b>: loops and long agents can create thousands of events; cap history per run and "continue-as-new" with a snapshot (Temporal does the same).</p>
+  </details>
 
-  <h3>7.2 Exactly-once effects for tools</h3>
+  <h3>6.2 Exactly-once effects for tools</h3>
+  <div class="keys">
+    <div class="key"><h4>Read-only</h4><p>Auto-retry freely.</p></div>
+    <div class="key"><h4>Idempotent writes</h4><p>Retry with key <code>runId:stepId</code>; the downstream API dedupes.</p></div>
+    <div class="key"><h4>Non-idempotent writes</h4><p>Record STARTED first; on retry, ask the downstream system before acting, or escalate.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: at-least-once execution</summary>
   <p>Execution is at-least-once: a worker can finish a tool call and crash before reporting. So effects must be idempotent.</p>
   <ul>
     <li>Every tool call gets an idempotency key <code>runId:stepId</code> (stable across attempts) passed to the downstream API (Stripe-style header). The tool provider dedupes.</li>
     <li>For tools that cannot dedupe, the <code>tool_call</code> table records <code>STARTED</code> before the call; on retry with <code>STARTED</code> and no result, the step queries the downstream system ("did envelope X get sent?") before acting, or escalates to a human.</li>
     <li>Classify tools as read-only (auto-retry freely), idempotent writes (retry with key) and non-idempotent writes (require approval or reconciliation).</li>
   </ul>
+  </details>
 
-  <h3>7.3 Human approval mid-run</h3>
+  <h3>6.3 Human approval mid-run</h3>
+  <p>Append <code>ApprovalRequested</code>, create a timer, release everything. Decision or timer: first wins. Snapshot sandbox state to S3 if needed.</p>
+  <details class="deep"><summary>Go deeper: LangGraph interrupts, Temporal signals, NDA example</summary>
   <p>An approval step appends <code>ApprovalRequested</code>, creates the approval record and a timer task (for example 48 hours), and the run releases every resource: no thread, no sandbox. The approval API appends <code>ApprovalDecided</code> as a signal and enqueues an orchestrator task; whichever of decision or timer arrives first wins (the other is ignored on replay). If the run had a sandbox with state, snapshot its filesystem to S3 before releasing it and restore on resume.</p>
   <p>LangGraph models the same thing with <code>interrupt()</code> inside a node, a checkpointer, and <code>Command(resume=...)</code> on the same <code>thread_id</code>; note that on resume LangGraph re-runs the whole node from the start, so code before the interrupt must be idempotent. Temporal uses signals and durable timers, and a waiting workflow costs nothing.</p>
   <div class="callout tip"><b>Legal-tech example</b><p>An NDA workflow: extract parties and terms (LLM), compare with the playbook (fan-out per clause, join), loop on redlines up to 3 times, then approval by legal before <code>esign.send</code>. The approval card shows the diff and the agent's reasoning; the send uses idempotency key <code>run:step</code> so a retry cannot send two envelopes.</p></div>
+  </details>
 
-  <h3>7.4 Shared, limited compute pool across tenants</h3>
+  <h3>6.4 Shared, limited compute pool</h3>
+  <div class="keys">
+    <div class="key"><h4>Quotas</h4><p>Guaranteed share (e.g. 50 sandboxes) plus burst (200) when idle.</p></div>
+    <div class="key"><h4>Fair queuing</h4><p>Lowest usage-to-weight tenant goes next; a 100k-run burst waits behind its own share.</p></div>
+    <div class="key"><h4>Admission and preemption</h4><p>Start only with free slots; evict checkpointed low-priority work.</p></div>
+    <div class="key"><h4>Isolation</h4><p>Firecracker microVM per run (~125 ms boot, warm pool), allow-listed egress.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: pool details</summary>
   <ul>
     <li><b>Quotas</b>: each tenant has a guaranteed share (e.g. 50 concurrent sandboxes) and a burst ceiling (200) usable only when the pool is idle.</li>
     <li><b>Fair queuing</b>: per-tenant queues; the scheduler picks the tenant with the lowest usage relative to its weight (deficit round robin / weighted fair queuing), then by priority within the tenant. A tenant firing 100k runs waits behind its own share.</li>
@@ -191,29 +275,47 @@ RETURNING *;
     <li><b>Preemption</b>: low-priority burst work can be checkpointed and evicted for guaranteed work, which is safe because state lives in history and sandbox snapshots.</li>
     <li><b>Isolation</b>: microVM per tenant run (Firecracker boots in ~125 ms; keep a warm pool), no shared kernel for untrusted code, per-tenant network policy, CPU and memory cgroups, wall-clock and token budgets per run.</li>
   </ul>
+  </details>
 
-  <h3>7.5 Agent loop, workflows and MCP</h3>
+  <h3>6.5 Agent loop, workflows, MCP, memory and evals</h3>
+  <div class="vs">
+    <div class="pick"><h4>Workflow <span class="tag">when path is known</span></h4><ul><li class="pro">Cheaper, testable, predictable</li><li class="con">Can't handle unknown step counts</li></ul><p class="when">Chaining, routing, fan-out, evaluator-optimiser.</p></div>
+    <div><h4>Agent (ReAct loop)</h4><ul><li class="pro">Open-ended tasks</li><li class="con">Needs maxSteps, cost, time limits, repeat detection</li></ul><p class="when">A workflow node can be an agent.</p></div>
+  </div>
+  <ul>
+    <li><b>MCP:</b> platform = host; one client per server; servers expose tools, resources, prompts.</li>
+    <li><b>Memory:</b> run-scoped state with reducers; tenant-scoped long-term memory; hand off summaries, not transcripts.</li>
+    <li><b>Evals:</b> golden tasks with expected trajectories and forbidden actions; CI gate; approval rejection rate online.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: agent semantics, MCP, shared memory and the eval pipeline</summary>
   <p>Follow Anthropic's "Building effective agents": use workflows (prompt chaining, routing, parallelisation, orchestrator-workers, evaluator-optimizer) where the path is known, and an autonomous agent only where the number of steps cannot be predicted. The platform supports both because a workflow node can be an agent.</p>
   <ul>
     <li><b>Agent step</b> = ReAct loop: LLM proposes tool calls, platform validates arguments against the tool schema, checks policy (approval needed?), runs tools as child steps, appends results, repeats. Stopping conditions: final answer, <code>maxSteps</code>, cost budget, wall-clock limit, or repeated identical calls.</li>
     <li><b>Branches</b> evaluate on recorded outputs; <b>loops</b> carry a counter in state with a hard maximum; <b>fan-out</b> schedules N child steps (or child runs) and a join step waits for all, any, or a quorum; fan-out width is capped per tenant.</li>
     <li><b>MCP</b>: the platform is the MCP <b>host</b>; for each MCP server an agent uses, a worker holds an MCP <b>client</b> connection; <b>servers</b> expose <b>tools</b> (model-invoked actions such as <code>esign.send</code>), <b>resources</b> (application-provided context such as a contract file or schema) and <b>prompts</b> (reusable templates). Remote servers use Streamable HTTP with OAuth; local ones stdio inside the sandbox. The 2026-07-28 spec makes the protocol stateless with per-request metadata and a <code>server/discover</code> call, deprecates sampling, and adds a Tasks extension that returns a durable handle for long-running tool calls, which maps neatly onto a waiting step.</li>
   </ul>
-
-  <h3>7.6 Memory shared between agents (Deloitte)</h3>
   <ul>
     <li><b>Run-scoped shared state</b> (blackboard): a typed state object in history; each step writes updates through reducers (append to a list, last-write-wins, merge maps). This is LangGraph's state-plus-reducers model, which EPAM asked about. Parallel branches writing the same key need a reducer, not a race.</li>
     <li><b>Long-term memory</b>: per tenant (and per user or agent) vector store plus key-value facts, written by an explicit "remember" step, read by retrieval at the start of a run. Scope memory by tenant id; never let one tenant's agent retrieve another's.</li>
     <li><b>Hand-offs</b> between agents pass a compact summary and references to artefacts in S3, not the full transcript, to control context size.</li>
   </ul>
-
-  <h3>7.7 Eval pipeline (Tekion asked for one)</h3>
   <div class="grid">
     <div class="card"><h4>Offline, before release</h4><ul><li>Golden tasks per agent: input, expected outcome, allowed tool trajectory, forbidden actions</li><li>Run in sandboxes against recorded or mocked tools (record and replay from real history)</li><li>Metrics: task success, tool-call accuracy (right tool, valid args), steps and cost per success, latency, policy violations</li><li>LLM-as-judge for open-ended output, calibrated against human labels</li><li>Gate in CI on prompt, model, tool or workflow version change; compare with the current version on the same set</li></ul></div>
     <div class="card"><h4>Online, in production</h4><ul><li>Sample completed runs into an eval queue; judge and human review</li><li>Approval rejection rate per agent (a strong quality signal)</li><li>Retries, loops hitting max, budget exhaustion, tool error rates</li><li>Canary new agent versions to a slice of runs; roll back on metric drop</li><li>For RAG steps: retrieval recall and faithfulness as in the RAG guide</li></ul></div>
   </div>
+  </details>
 
-  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
+  <h2 id="scale"><span class="n">07</span>Scaling, failure handling and consistency</h2>
+  <div class="tbl"><table>
+    <tr><th>Failure</th><th>What happens</th></tr>
+    <tr><td>Worker dies</td><td>Lease expires, attempt + 1; idempotency key stops double effects</td></tr>
+    <tr><td>Orchestrator dies</td><td>Stateless; any node replays; uncommitted work rolls back</td></tr>
+    <tr><td>LLM outage</td><td>Gateway fails over, or tasks back off while runs wait durably</td></tr>
+    <tr><td>Kafka down</td><td>Runs continue; watchers replay from history later</td></tr>
+    <tr><td>Bad workflow deploy</td><td>Running instances keep their version; replay tests catch non-determinism</td></tr>
+  </table></div>
+  <p>First to break at 10×: sandbox capacity and LLM rate limits, then the event table.</p>
+  <details class="deep"><summary>Go deeper: full failure table, backpressure, multi-region, guardrails</summary>
   <div class="tbl"><table>
     <tr><th>Failure</th><th>What happens</th></tr>
     <tr><td>Worker dies mid-step</td><td>Lease expires, task re-queued with attempt + 1; idempotency key prevents double effects.</td></tr>
@@ -230,8 +332,18 @@ RETURNING *;
     <li><b>Multi-region</b>: a run lives in one region (its shard); tenants pinned for residency; cross-region failover is async replication with a small RPO, accepted explicitly.</li>
   </ul>
   <div class="callout warn"><b>Guardrails</b><p><b>Prompt injection</b> through tool results and web pages is the main agent risk: tool output is data, write tools need policy checks and approvals, egress is allow-listed, and secrets never enter the model context. <b>PII under DPDP</b>: minimise what agents see, redact in logs and traces, honour erasure across history and S3 (crypto-shred per-tenant keys), in-region execution where required; the DPDP Rules' core obligations apply from 13 May 2027. <b>Tenant isolation</b>: microVM sandboxes, tenant-scoped credentials and memory, quota enforcement, audit trail of every tool call and approval. <b>Cost</b>: per-run token and dollar budgets enforced by the gateway.</p></div>
+  </details>
 
-  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
+  <h2 id="tradeoffs"><span class="n">08</span>Trade-offs</h2>
+  <div class="vs">
+    <div class="pick"><h4>Temporal <span class="tag">default</span></h4><ul><li class="pro">Proven durability, Java SDK, signals, timers</li><li class="con">Determinism rules; another cluster</li></ul><p class="when">This problem, unless scheduling is your differentiator.</p></div>
+    <div><h4>Own engine on Postgres + Kafka</h4><ul><li class="pro">Full control of fair scheduling and sandboxes</li><li class="con">Years of edge cases: timers, versioning, replay</li></ul><p class="when">Strong platform team.</p></div>
+  </div>
+  <div class="vs">
+    <div class="pick"><h4>Firecracker microVMs <span class="tag">untrusted code</span></h4><ul><li class="pro">VM-grade isolation, fast boot</li><li class="con">Ops complexity, bare metal</li></ul><p class="when">Many tenants' code.</p></div>
+    <div><h4>gVisor / containers</h4><ul><li class="pro">Easy on Kubernetes</li><li class="con">Weaker isolation</li></ul><p class="when">Trusted, first-party code.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full trade-offs table (LangGraph, Step Functions)</summary>
   <div class="tbl"><table>
     <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
     <tr><td>Temporal (self-host or cloud)</td><td>Proven durable execution, Java SDK, signals, timers, child workflows</td><td>Determinism rules to learn, another cluster, history limits per workflow</td><td>Default for this problem</td></tr>
@@ -241,17 +353,9 @@ RETURNING *;
     <tr><td>Firecracker microVMs</td><td>VM-grade isolation, fast boot</td><td>Ops complexity, needs bare metal or nested virtualisation</td><td>Untrusted code from many tenants</td></tr>
     <tr><td>gVisor / containers</td><td>Easier on Kubernetes</td><td>Weaker isolation than VMs (plain containers much weaker)</td><td>Trusted or first-party code</td></tr>
   </table></div>
+  </details>
 
-  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>What exactly guarantees "no data loss"?</summary><p>Every state change is an event appended in the same transaction as the tasks it causes, on a replicated database. Workers are at-least-once with leases; results are deduplicated by (run, step, attempt); side effects carry idempotency keys. Nothing important lives only in a worker's memory, a Kafka topic or Redis.</p></details>
-  <details class="qa"><summary>How is an agent different from a chain? When would you not use one? (Adobe, EPAM)</summary><p>A chain or workflow follows a predefined path; an agent lets the LLM choose the next tool and when to stop. Use workflows when the steps are known (cheaper, testable, predictable latency); use agents for open-ended tasks, with step, cost and time limits and human checkpoints.</p></details>
-  <details class="qa"><summary>How does the caller watch a run live without hammering the database?</summary><p>SSE from the event gateway: initial replay from history after the client's sequence number, then tail Kafka partitioned by run_id. LLM token deltas are streamed but not stored as events; only the final output is. Webhooks for fire-and-forget callers.</p></details>
-  <details class="qa"><summary>MCP: what are host, client and server, and tools vs resources? (Mastercard)</summary><p>The host is the AI application coordinating everything; it creates one client per server connection; servers expose capabilities. Tools are actions the model decides to invoke (with JSON Schema inputs). Resources are read-only context data the application chooses to attach. Prompts are reusable templates the user or app selects. Transports: stdio for local, Streamable HTTP with OAuth for remote.</p></details>
-  <details class="qa"><summary>A fan-out of 500 children: what can go wrong?</summary><p>History bloat and a thundering herd on the pool. Use child runs (each with its own history), cap concurrency per fan-out (e.g. 20 at a time), make the join count completions idempotently, and decide partial-failure policy (fail fast, best effort, quorum).</p></details>
-  <details class="qa"><summary>You change an agent's prompt while 10,000 runs are mid-flight. What happens?</summary><p>Runs are pinned to the agent and workflow versions they started with; new runs get the new version after it passes the eval gate. Allow explicit migration only at step boundaries.</p></details>
-  <details class="qa"><summary>How do you stop an agent from looping forever or burning money?</summary><p>maxSteps, per-run token and dollar budget checked by the LLM gateway before each call, wall-clock timeout, detection of repeated identical tool calls, and escalation to a human when limits hit.</p></details>
-
-  <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
+  <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
     <li>Running an agent as one long in-memory loop in a pod ("we will retry the run") so a crash after 40 minutes repeats every tool call.</li>
     <li>Holding a thread or sandbox while waiting for human approval.</li>
@@ -261,6 +365,29 @@ RETURNING *;
     <li>Hand-waving "eval": no golden tasks, no trajectory checks, no release gate.</li>
     <li>Not covering every clause of the prompt; Tekion's question lists six requirements and each is checked.</li>
   </ul></div>
+
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Why must the orchestrator never call the LLM itself?</p>
+    <div class="opts"><button class="opt" type="button">LLM calls are too slow for it</button><button class="opt" type="button">Replay must be deterministic; the model won't answer the same way twice</button><button class="opt" type="button">It has no network access</button></div>
+    <p class="why">LLM results are recorded as step events by workers, and replay reads them from history.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">A worker sends the envelope, then crashes before reporting. What prevents a second envelope?</p>
+    <div class="opts"><button class="opt" type="button">Exactly-once task delivery</button><button class="opt" type="button">A longer lease</button><button class="opt" type="button">The stable idempotency key run:step passed downstream</button></div>
+    <p class="why">Execution is at-least-once; effects become exactly-once via idempotency keys or reconciliation.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">A run waits 48 hours for legal approval. What does it hold?</p>
+    <div class="opts"><button class="opt" type="button">Nothing but its history and a timer</button><button class="opt" type="button">A thread</button><button class="opt" type="button">Its sandbox, to keep state warm</button></div>
+    <p class="why">Release threads and sandboxes; snapshot sandbox state to S3 if needed and restore on resume.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">One tenant fires 100k runs. How do other tenants stay unaffected?</p>
+    <div class="opts"><button class="opt" type="button">Global FIFO queue</button><button class="opt" type="button">Per-tenant queues with weighted fair scheduling and quotas</button><button class="opt" type="button">More sandboxes</button></div>
+    <p class="why">The burst waits behind its own share; admission control and 429s bound the backlog.</p></div>
+
+  <h2 id="followups"><span class="n">11</span>Follow-up questions interviewers asked</h2>
+  <details class="qa"><summary>What exactly guarantees "no data loss"?</summary><p>Every state change is an event appended in the same transaction as the tasks it causes, on a replicated database. Workers are at-least-once with leases; results are deduplicated by (run, step, attempt); side effects carry idempotency keys. Nothing important lives only in a worker's memory, a Kafka topic or Redis.</p></details>
+  <details class="qa"><summary>How is an agent different from a chain? When would you not use one? (Adobe, EPAM)</summary><p>A chain or workflow follows a predefined path; an agent lets the LLM choose the next tool and when to stop. Use workflows when the steps are known (cheaper, testable, predictable latency); use agents for open-ended tasks, with step, cost and time limits and human checkpoints.</p></details>
+  <details class="qa"><summary>How does the caller watch a run live without hammering the database?</summary><p>SSE from the event gateway: initial replay from history after the client's sequence number, then tail Kafka partitioned by run_id. LLM token deltas are streamed but not stored as events; only the final output is. Webhooks for fire-and-forget callers.</p></details>
+  <details class="qa"><summary>MCP: what are host, client and server, and tools vs resources? (Mastercard)</summary><p>The host is the AI application coordinating everything; it creates one client per server connection; servers expose capabilities. Tools are actions the model decides to invoke (with JSON Schema inputs). Resources are read-only context data the application chooses to attach. Prompts are reusable templates the user or app selects. Transports: stdio for local, Streamable HTTP with OAuth for remote.</p></details>
+  <details class="qa"><summary>A fan-out of 500 children: what can go wrong?</summary><p>History bloat and a thundering herd on the pool. Use child runs (each with its own history), cap concurrency per fan-out (e.g. 20 at a time), make the join count completions idempotently, and decide partial-failure policy (fail fast, best effort, quorum).</p></details>
+  <details class="qa"><summary>You change an agent's prompt while 10,000 runs are mid-flight. What happens?</summary><p>Runs are pinned to the agent and workflow versions they started with; new runs get the new version after it passes the eval gate. Allow explicit migration only at step boundaries.</p></details>
+  <details class="qa"><summary>How do you stop an agent from looping forever or burning money?</summary><p>maxSteps, per-run token and dollar budget checked by the LLM gateway before each call, wall-clock timeout, detection of repeated identical tool calls, and escalation to a human when limits hit.</p></details>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
@@ -273,7 +400,19 @@ RETURNING *;
     <div class="step"><span class="t">41–45 min</span><span>Failure table, guardrails, build vs buy (Temporal), summary.</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <h2 id="cheat"><span class="n">13</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Numbers: 2M runs/day, 2,100 steps/s peak, 28k open runs, 4,000 peak sandboxes.</li>
+    <li>Event + next task + outbox in one transaction on the run's shard.</li>
+    <li>Deterministic orchestrator replays history; workers do LLM and tool calls.</li>
+    <li>Workers lease with SKIP LOCKED and heartbeat; reaper re-queues.</li>
+    <li>Tools: read-only, idempotent (key run:step), non-idempotent (approval or reconcile).</li>
+    <li>Approvals: release resources, durable timer, first of decision/timer wins.</li>
+    <li>Pool: quotas, weighted fair queuing, admission, preemption, microVMs.</li>
+    <li>Build vs buy: design it, run Temporal underneath.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">14</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/8542635/" target="_blank" rel="noopener">Tekion Staff Software Engineer (AI), Sep 2026: agent runtime HLD and eval pipeline (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/7876633/" target="_blank" rel="noopener">EPAM Senior AI Engineer, Apr 2026: agents, HITL, LangGraph ReAct and reducers (LeetCode)</a></li>
@@ -290,5 +429,6 @@ RETURNING *;
 
   <div class="foot"><a href="ai-multi-tenant-chat-platform.html">← Multi-tenant chat platform</a><a href="../index.html">Back to the playbook →</a></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

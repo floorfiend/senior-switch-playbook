@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html" aria-current="page">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../dsa.html">Lesson · DSA</a></div>
   <h1>Binary Search on the Answer</h1>
-  <p class="lede">When a problem asks for the smallest capacity, the fastest speed or the largest minimum gap, you usually do not search the array. You search the range of possible answers with a yes/no feasibility check. Plus the rotated-array searches that keep showing up at Swiggy and Walmart.</p>
+  <p class="lede">Spot "minimum capacity / maximum minimum gap" problems and solve them by binary searching the answer range with a yes/no check.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 1–2 sessions of 2 h</span>
     <span class="fact"><b>Worked problems:</b> 7</span>
@@ -20,28 +20,88 @@
   </div>
   <div class="chips"><span class="chip hot">Amazon</span><span class="chip hot">Flipkart</span><span class="chip">InMobi</span><span class="chip">Angel One</span><span class="chip">Paytm</span><span class="chip">Dream11</span><span class="chip">Agoda</span><span class="chip">Nutanix</span><span class="chip">Microsoft</span><span class="chip hot">Swiggy</span><span class="chip">Walmart</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Don't search the array; search the range of possible answers.</li>
+    <li>Write <code>feasible(x)</code>: a greedy O(n) check "can it be done with x?".</li>
+    <li>It must be monotonic: false false … true true. Find the first true.</li>
+    <li>Cost: O(n · log range), about 30 passes for a range of 10^9.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Booking a tempo to move house. You don't compute the perfect truck size; you ask "does a 1-tonne tempo fit everything?". No → try bigger. Yes → try smaller. Each answer rules out half the sizes.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#when">When to use this pattern</a></li>
-    <li><a href="#model">The mental model</a></li>
+    <li><a href="#model">Watch it work: Koko</a></li>
+    <li><a href="#bounds">Choosing lo and hi</a></li>
+    <li><a href="#rotated">Rotated arrays</a></li>
     <li><a href="#templates">Java templates</a></li>
     <li><a href="#problems">Worked problems</a></li>
-    <li><a href="#mistakes">Mistakes and follow-ups</a></li>
-    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#mistakes">Common mistakes</a></li>
+    <li><a href="#interview">Interview questions</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
   <h2 id="when"><span class="n">01</span>When to use this pattern</h2>
-  <p>Recognition phrases, roughly in order of how loudly they shout "binary search on the answer":</p>
-  <ul>
+  <div class="keys">
+    <div class="key"><h4>"Minimise the maximum"</h4><p>Largest subarray sum, largest load per day, time of the slowest worker.</p></div>
+    <div class="key"><h4>"Maximise the minimum"</h4><p>Smallest gap between placed items (cows, balls, routers).</p></div>
+    <div class="key"><h4>"Smallest capacity / speed such that…"</h4><p>Some process must finish within a limit.</p></div>
+    <div class="key"><h4>Big range, cheap check</h4><p>n up to 10^5, values to 10^9. Trying every value is too slow; log₂(10^9) ≈ 30 tries is nothing.</p></div>
+  </div>
+  <div class="callout info"><b>Say this sentence out loud</b><p>"If capacity x works, every larger capacity works too." Then <code>feasible</code> looks like <code>F F F T T T</code> and you want the first T. Interviewers listen for it.</p>
+    <div class="cells"><span class="cell bad">F</span><span class="cell bad">F</span><span class="cell bad">F</span><span class="cell hl">T</span><span class="cell ok">T</span><span class="cell ok">T</span></div></div>
+  <details class="deep"><summary>Go deeper: recognition phrases in full</summary><ul>
     <li><b>"Minimise the maximum…"</b> (largest subarray sum, largest load per day, time for the slowest worker) and <b>"maximise the minimum…"</b> (smallest gap between placed items).</li>
     <li><b>"Smallest capacity / speed / radius / time such that…"</b> some process finishes within a limit.</li>
     <li>The answer is an integer (or real) in a range you can bound, the input is up to 10^5 elements, and values go up to 10^9. That range is too big to try every value, but log₂(10^9) ≈ 30 tries is nothing.</li>
     <li>Given a candidate answer x, you can check "is x good enough?" with a greedy pass in O(n), even though computing the best x directly looks hard (often a DP).</li>
-  </ul>
-  <div class="callout info"><b>The one property you must state out loud</b><p>Monotonicity: if capacity x works, every capacity larger than x also works. Then <code>feasible(x)</code> over the answer range looks like <code>false false false true true true</code>, and you want the first <code>true</code>. Say this sentence in the interview; it is what the interviewer is listening for.</p></div>
-  <p>The second family on this page is <b>rotated sorted arrays</b>: the array is sorted and then rotated, so it is not globally sorted, but at every <code>mid</code> at least one half is sorted, which is enough to discard half the range.</p>
+  </ul><p>Monotonicity: if capacity x works, every capacity larger than x also works. Then <code>feasible(x)</code> over the answer range looks like <code>false false false true true true</code>, and you want the first <code>true</code>. Say this sentence in the interview; it is what the interviewer is listening for.</p>
+  <p>The second family on this page is <b>rotated sorted arrays</b>: the array is sorted and then rotated, so it is not globally sorted, but at every <code>mid</code> at least one half is sorted, which is enough to discard half the range.</p></details>
 
-  <h2 id="model"><span class="n">02</span>The mental model, from scratch</h2>
+  <h2 id="model"><span class="n">02</span>Watch it work: Koko</h2>
+  <p>Piles [3, 6, 7, 11], h = 8. Hours at speed k = Σ ceil(pile / k). Cells are <b>speeds</b>, not input.</p>
+  <div class="stepper"><b class="title">Minimum eating speed · piles [3,6,7,11], h = 8</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell win">1</span><span class="cell win">2</span><span class="cell win">3</span><span class="cell win">4</span><span class="cell win">5</span><span class="cell win">6</span><span class="cell win">7</span><span class="cell win">8</span><span class="cell win">9</span><span class="cell win">10</span><span class="cell win">11</span></div>
+      <div class="ptrs"><span class="on">lo=1</span><span class="on">hi=11</span></div>
+      <figcaption>Answer range: speeds 1 to 11. At 11 every pile takes 1 hour (4 ≤ 8), so 11 surely works.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell win">1</span><span class="cell win">2</span><span class="cell win">3</span><span class="cell win">4</span><span class="cell win">5</span><span class="cell hl">6</span><span class="cell ok">7</span><span class="cell ok">8</span><span class="cell ok">9</span><span class="cell ok">10</span><span class="cell ok">11</span></div>
+      <div class="ptrs"><span>lo=1</span><span class="on">mid=6</span><span>hours=1+1+2+2=6</span><span>feasible</span></div>
+      <figcaption>6 hours ≤ 8, so 6 works. It might be the answer, so <code>hi = mid</code> (not mid − 1).</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">1</span><span class="cell bad">2</span><span class="cell hl">3</span><span class="cell win">4</span><span class="cell win">5</span><span class="cell win">6</span><span class="cell ok">7</span><span class="cell ok">8</span><span class="cell ok">9</span><span class="cell ok">10</span><span class="cell ok">11</span></div>
+      <div class="ptrs"><span>lo=1</span><span class="on">mid=3</span><span>hi=6</span><span>hours=1+2+3+4=10</span><span>too slow</span></div>
+      <figcaption>10 hours &gt; 8: speed 3 fails, and so does everything slower. <code>lo = mid + 1 = 4</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">1</span><span class="cell bad">2</span><span class="cell bad">3</span><span class="cell win">4</span><span class="cell hl">5</span><span class="cell ok">6</span><span class="cell ok">7</span><span class="cell ok">8</span><span class="cell ok">9</span><span class="cell ok">10</span><span class="cell ok">11</span></div>
+      <div class="ptrs"><span>lo=4</span><span class="on">mid=5</span><span>hi=6</span><span>hours=1+2+2+3=8</span><span>feasible</span></div>
+      <figcaption>Exactly 8 hours: still feasible. <code>hi = 5</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">1</span><span class="cell bad">2</span><span class="cell bad">3</span><span class="cell hl">4</span><span class="cell ok">5</span><span class="cell ok">6</span><span class="cell ok">7</span><span class="cell ok">8</span><span class="cell ok">9</span><span class="cell ok">10</span><span class="cell ok">11</span></div>
+      <div class="ptrs"><span>lo=4</span><span class="on">mid=4</span><span>hi=5</span><span>hours=1+2+2+3=8</span><span>feasible</span></div>
+      <figcaption>Speed 4 also takes 8 hours. <code>hi = 4</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">1</span><span class="cell bad">2</span><span class="cell bad">3</span><span class="cell hl">4</span><span class="cell ok">5</span><span class="cell ok">6</span><span class="cell ok">7</span><span class="cell ok">8</span><span class="cell ok">9</span><span class="cell ok">10</span><span class="cell ok">11</span></div>
+      <div class="ptrs"><span class="on">lo=hi=4</span><span>answer=4</span></div>
+      <figcaption><code>lo == hi</code>: the first true is 4. Four checks instead of eleven.</figcaption>
+    </figure>
+  </div></div>
+  <div class="flow">
+    <span class="node">answer range [lo, hi]</span><span class="arrow">→</span>
+    <span class="node hl">feasible(mid)?<small>greedy O(n) check</small></span><span class="arrow">→</span>
+    <span class="node">yes: hi = mid<small>no: lo = mid + 1</small></span><span class="arrow">→</span>
+    <span class="node">lo == hi: answer</span>
+  </div>
+  <p class="flow-caption">Total cost = O(n · log(hi − lo)); for hi ≈ 10^9 that is about 30 passes over the input.</p>
+  <details class="deep"><summary>Go deeper: the four steps and the trace table</summary>
   <p>Classic binary search answers "where is value v in a sorted array?". Generalise it: you have any range <code>[lo, hi]</code> and a predicate that is false up to some point and true after it. Binary search finds the boundary in O(log(hi − lo)) predicate calls. The array is gone; the "array" is the answer space, and you evaluate each "element" by running a simulation.</p>
   <ol>
     <li><b>Define the answer</b> (e.g. eating speed k).</li>
@@ -49,7 +109,6 @@
     <li><b>Pick bounds:</b> <code>lo</code> = an answer that is definitely the smallest possible (often max element, or 1), <code>hi</code> = an answer that definitely works (often sum, or max).</li>
     <li><b>Search for the first true</b> with the template below.</li>
   </ol>
-  <h3>Trace: Koko, piles [3, 6, 7, 11], h = 8 hours</h3>
   <p>Hours at speed k = Σ ceil(pile / k). <code>lo = 1</code>, <code>hi = 11</code> (at speed 11 every pile takes 1 hour, 4 ≤ 8).</p>
   <div class="tbl"><table>
     <tr><th>lo</th><th>hi</th><th>mid</th><th>hours at mid</th><th>feasible?</th><th>move</th></tr>
@@ -60,15 +119,9 @@
     <tr><td class="num">4</td><td class="num">4</td><td>–</td><td>–</td><td>–</td><td>stop, answer 4</td></tr>
   </table></div>
   <p>Notice <code>hi = mid</code> (not <code>mid − 1</code>) when mid is feasible: mid might be the answer. And <code>lo = mid + 1</code> when it is not: mid is ruled out. With <code>lo &lt; hi</code> as the loop condition and <code>mid</code> rounded down, the range shrinks every iteration, so it always terminates with <code>lo == hi</code> = the first true.</p>
-  <div class="flow">
-    <span class="node">answer range [lo, hi]</span><span class="arrow">→</span>
-    <span class="node hl">feasible(mid)?<small>greedy O(n) check</small></span><span class="arrow">→</span>
-    <span class="node">yes: hi = mid<small>no: lo = mid + 1</small></span><span class="arrow">→</span>
-    <span class="node">lo == hi: answer</span>
-  </div>
-  <p class="flow-caption">Figure: total cost = O(n · log(hi − lo)); for hi ≈ 10^9 that is about 30 passes over the input.</p>
+  </details>
 
-  <h3>Choosing lo and hi</h3>
+  <h2 id="bounds"><span class="n">03</span>Choosing lo and hi</h2>
   <div class="tbl"><table>
     <tr><th>Problem shape</th><th>lo</th><th>hi</th><th>Why</th></tr>
     <tr><td>Split into ≤ k groups, minimise max group sum</td><td>max element</td><td>sum of all</td><td>No group can be lighter than its heaviest item; one group holding everything always works.</td></tr>
@@ -76,19 +129,40 @@
     <tr><td>Maximise the minimum gap</td><td>1 (or 0)</td><td>(max − min) / (m − 1)</td><td>m items over that span cannot all be farther apart than the average gap.</td></tr>
     <tr><td>Radius / distance covering points</td><td>0</td><td>coordinate range</td><td>Radius spanning the whole range always covers.</td></tr>
   </table></div>
+  <p>Rule: <code>lo</code> must be a value that could be the answer; <code>hi</code> must surely work.</p>
 
-  <h3>Rotated arrays</h3>
-  <p>Take <code>[0,1,2,4,5,6,7]</code> rotated to <code>[4,5,6,7,0,1,2]</code>. Pick any mid: either <code>nums[lo..mid]</code> or <code>nums[mid..hi]</code> is sorted. Compare with an endpoint to know which. For the minimum, compare <code>nums[mid]</code> with <code>nums[hi]</code>: if larger, the drop is to the right of mid.</p>
-  <div class="tbl"><table>
-    <tr><th>lo</th><th>hi</th><th>mid</th><th>nums[mid] vs nums[hi]</th><th>move</th></tr>
-    <tr><td class="num">0</td><td class="num">6</td><td class="num">3</td><td>7 &gt; 2</td><td>lo = 4</td></tr>
-    <tr><td class="num">4</td><td class="num">6</td><td class="num">5</td><td>1 ≤ 2</td><td>hi = 5</td></tr>
-    <tr><td class="num">4</td><td class="num">5</td><td class="num">4</td><td>0 ≤ 1</td><td>hi = 4 → answer nums[4] = 0</td></tr>
-  </table></div>
+  <h2 id="rotated"><span class="n">04</span>Rotated arrays</h2>
+  <p>At any mid, one half is sorted. For the minimum, compare <code>nums[mid]</code> with <code>nums[hi]</code>.</p>
+  <div class="stepper"><b class="title">Find the minimum · [4,5,6,7,0,1,2]</b><div class="frames">
+    <figure class="frame">
+      <div class="cells idx"><span class="cell win" data-i="0">4</span><span class="cell win" data-i="1">5</span><span class="cell win" data-i="2">6</span><span class="cell hl" data-i="3">7</span><span class="cell win" data-i="4">0</span><span class="cell win" data-i="5">1</span><span class="cell win" data-i="6">2</span></div>
+      <div class="ptrs"><span>lo=0</span><span class="on">mid=3</span><span>hi=6</span><span>7 &gt; 2</span></div>
+      <figcaption>nums[mid] = 7 is bigger than nums[hi] = 2, so the drop is strictly right of mid. <code>lo = 4</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">4</span><span class="cell dim" data-i="1">5</span><span class="cell dim" data-i="2">6</span><span class="cell dim" data-i="3">7</span><span class="cell win" data-i="4">0</span><span class="cell hl" data-i="5">1</span><span class="cell win" data-i="6">2</span></div>
+      <div class="ptrs"><span>lo=4</span><span class="on">mid=5</span><span>hi=6</span><span>1 ≤ 2</span></div>
+      <figcaption>1 ≤ 2: mid..hi is sorted, so the minimum is at mid or to its left. <code>hi = 5</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">4</span><span class="cell dim" data-i="1">5</span><span class="cell dim" data-i="2">6</span><span class="cell dim" data-i="3">7</span><span class="cell hl" data-i="4">0</span><span class="cell win" data-i="5">1</span><span class="cell dim" data-i="6">2</span></div>
+      <div class="ptrs"><span>lo=4</span><span class="on">mid=4</span><span>hi=5</span><span>0 ≤ 1</span></div>
+      <figcaption>0 ≤ 1 again: <code>hi = 4</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell dim" data-i="0">4</span><span class="cell dim" data-i="1">5</span><span class="cell dim" data-i="2">6</span><span class="cell dim" data-i="3">7</span><span class="cell ok" data-i="4">0</span><span class="cell dim" data-i="5">1</span><span class="cell dim" data-i="6">2</span></div>
+      <div class="ptrs"><span class="on">lo=hi=4</span><span>answer=0</span></div>
+      <figcaption>Done: nums[4] = 0. It is the first-true template with predicate <code>nums[i] ≤ nums[last]</code>.</figcaption>
+    </figure>
+  </div></div>
 
-  <h2 id="templates"><span class="n">03</span>Java templates</h2>
-  <p>Memorise these two. Almost every bug in binary search comes from mixing the loop condition, the mid rounding and the updates from different templates.</p>
-  <pre><code>import java.util.function.LongPredicate;
+  <h2 id="templates"><span class="n">05</span>Java templates</h2>
+  <div class="vs">
+    <div class="pick"><h4>First true <span class="tag">minimise</span></h4><ul><li class="pro"><code>mid = lo + (hi − lo) / 2</code></li><li class="pro">true → <code>hi = mid</code></li><li class="pro">false → <code>lo = mid + 1</code></li></ul><p class="when">Koko, ship packages, split array, heaters.</p></div>
+    <div><h4>Last true <span class="tag">maximise</span></h4><ul><li class="pro"><code>mid = lo + (hi − lo + 1) / 2</code> (round up)</li><li class="pro">true → <code>lo = mid</code></li><li class="pro">false → <code>hi = mid − 1</code></li></ul><p class="when">Aggressive cows, magnetic force.</p></div>
+  </div>
+  <p>Most bugs come from mixing parts of the two templates.</p>
+  <details class="code"><summary>Show Java solution: first-true and last-true templates</summary><pre><code>import java.util.function.LongPredicate;
 
 class SearchTemplates {
     // FIRST TRUE: feasible is false...false true...true on [lo, hi] and feasible(hi) is true.
@@ -118,21 +192,26 @@ class SearchTemplates {
         }
         return lo;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(log(hi − lo)) predicate calls; with an O(n) predicate, O(n log R) total, O(1) extra space.</p>
+}</code></pre><p>Java's own <code>Arrays.binarySearch</code> uses <code>(low + high) &gt;&gt;&gt; 1</code>, which is also safe for non-negative ints. <b>Complexity:</b> O(log(hi − lo)) predicate calls; with an O(n) predicate, O(n log R) total, O(1) extra space.</p></details>
   <div class="callout tip"><b>Overflow checklist</b><ul>
-    <li><code>mid = lo + (hi - lo) / 2</code>, never <code>(lo + hi) / 2</code>. (Java's own <code>Arrays.binarySearch</code> uses <code>(low + high) &gt;&gt;&gt; 1</code>, which is also safe for non-negative ints.)</li>
-    <li>Accumulators inside feasible (total hours, sums) go in <code>long</code>: 10^5 elements × 10^9 overflows int.</li>
-    <li>Ceil division without overflow: <code>(p - 1) / k + 1</code> for p ≥ 1, instead of <code>(p + k - 1) / k</code>.</li>
+    <li><code>mid = lo + (hi - lo) / 2</code>, never <code>(lo + hi) / 2</code>.</li>
+    <li>Accumulators inside feasible go in <code>long</code>: 10^5 × 10^9 overflows int.</li>
+    <li>Ceil division: <code>(p - 1) / k + 1</code> for p ≥ 1, instead of <code>(p + k - 1) / k</code>.</li>
     <li>Bounds that are sums: compute <code>hi</code> as <code>long</code>.</li>
   </ul></div>
 
-  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+  <h2 id="problems"><span class="n">06</span>Worked problems</h2>
 
-  <h3 id="p-koko">1. Koko Eating Bananas</h3>
-  <p><a href="https://leetcode.com/problems/koko-eating-bananas/" target="_blank" rel="noopener">LeetCode 875</a> · Medium. There are piles of bananas and h hours. Each hour Koko picks one pile and eats up to k bananas from it. Find the minimum k that finishes all piles within h hours.</p>
-  <p><b>Key insight:</b> hours needed is non-increasing in k, so <code>hours(k) ≤ h</code> is a monotonic predicate. Search k in <code>[1, max(piles)]</code>. The trace is in section 02.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-koko">
+    <h3>1. Koko Eating Bananas <a href="https://leetcode.com/problems/koko-eating-bananas/" target="_blank" rel="noopener">LeetCode 875 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Each hour Koko eats up to k bananas from one pile. Minimum k that finishes all piles in h hours.</dd>
+        <dt>Insight</dt><dd>Hours needed only drops as k grows, so <code>hours(k) ≤ h</code> is monotonic. Search k in [1, max(piles)].</dd>
+        <dt>Cost</dt><dd>O(n log M) time where M = max pile, O(1) space</dd></dl>
+    <div class="ptrs"><span>piles</span></div>
+    <div class="cells"><span class="cell">3</span><span class="cell">6</span><span class="cell">7</span><span class="cell">11</span></div>
+    <div class="ptrs"><span class="on">hours at k = 4 (total 8)</span></div>
+    <div class="cells"><span class="cell ok">1</span><span class="cell ok">2</span><span class="cell ok">2</span><span class="cell ok">3</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int minEatingSpeed(int[] piles, int h) {
         int lo = 1, hi = 0;
         for (int p : piles) {
@@ -156,14 +235,18 @@ class SearchTemplates {
         }
         return hours &lt;= h;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n log M) time where M = max pile, O(1) space.</p>
-  <p><b>Edge cases:</b> h == number of piles → answer is max pile; one huge pile; total hours overflowing int when k is small (hence <code>long</code>).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>h == number of piles → answer is max pile; one huge pile; total hours overflowing int when k is small (hence <code>long</code>).</p></details>
+  </div>
 
-  <h3 id="p-ship">2. Capacity To Ship Packages Within D Days</h3>
-  <p><a href="https://leetcode.com/problems/capacity-to-ship-packages-within-d-days/" target="_blank" rel="noopener">LeetCode 1011</a> · Medium. Packages must ship in the given order; each day the ship carries a prefix of what is left, up to its capacity. Find the minimum capacity that ships everything within <code>days</code> days.</p>
-  <p><b>Key insight:</b> for a fixed capacity, greedy is optimal: load each day until the next package would overflow. Fewer days needed as capacity grows → monotonic. <code>lo</code> = heaviest package (anything smaller can never carry it), <code>hi</code> = total weight.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-ship">
+    <h3>2. Capacity To Ship Packages Within D Days <a href="https://leetcode.com/problems/capacity-to-ship-packages-within-d-days/" target="_blank" rel="noopener">LeetCode 1011 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Ship packages in order; each day carries a prefix up to capacity. Minimum capacity for <code>days</code> days.</dd>
+        <dt>Insight</dt><dd>For a fixed capacity, greedy (load until the next one overflows) is optimal. <code>lo</code> = heaviest package, <code>hi</code> = total.</dd>
+        <dt>Cost</dt><dd>O(n log(sum)) time, O(1) space</dd></dl>
+    <div class="ptrs"><span>weights 1..10, days = 5, capacity 15: one colour per day</span></div>
+    <div class="cells"><span class="cell win">1</span><span class="cell win">2</span><span class="cell win">3</span><span class="cell win">4</span><span class="cell win">5</span><span class="cell ok">6</span><span class="cell ok">7</span><span class="cell win">8</span><span class="cell ok">9</span><span class="cell win">10</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int shipWithinDays(int[] weights, int days) {
         int lo = 0, hi = 0;
         for (int w : weights) {
@@ -192,14 +275,18 @@ class SearchTemplates {
         }
         return d;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n log(sum)) time, O(1) space.</p>
-  <p><b>Edge cases:</b> days == n (answer = max weight); days == 1 (answer = sum); forgetting <code>lo = max</code> lets the greedy produce a wrong day count for a capacity smaller than one package.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>Fewer days needed as capacity grows → monotonic. days == n (answer = max weight); days == 1 (answer = sum); forgetting <code>lo = max</code> lets the greedy produce a wrong day count for a capacity smaller than one package.</p></details>
+  </div>
 
-  <h3 id="p-split">3. Split Array Largest Sum (= Book Allocation = Painter's Partition)</h3>
-  <p><a href="https://leetcode.com/problems/split-array-largest-sum/" target="_blank" rel="noopener">LeetCode 410</a> · Hard. Split an array into k non-empty contiguous parts to minimise the largest part sum. Book Allocation (allocate contiguous books to k students, minimise the maximum pages) and Painter's Partition (k painters, contiguous boards, minimise the time of the slowest) are the same problem with different nouns.</p>
-  <p><b>Key insight:</b> identical to shipping packages, with "days" renamed k. Feasible(x) = "greedy cut into pieces with sum ≤ x needs at most k pieces". Needing fewer than k pieces is fine: you can always split a piece further without increasing the max (every element is ≤ x because lo starts at the max element).</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-split">
+    <h3>3. Split Array Largest Sum (= Book Allocation = Painter's Partition) <a href="https://leetcode.com/problems/split-array-largest-sum/" target="_blank" rel="noopener">LeetCode 410 · Hard ↗</a></h3>
+    <dl><dt>Task</dt><dd>Split into k contiguous parts to minimise the largest part sum. Book Allocation and Painter's Partition are the same problem with different nouns.</dd>
+        <dt>Insight</dt><dd>Ship packages with "days" renamed k. Needing fewer than k pieces is fine: splitting further never raises the max.</dd>
+        <dt>Cost</dt><dd>O(n log(sum)) time, O(1) space; the DP is O(k · n²)</dd></dl>
+    <div class="ptrs"><span>[7,2,5,10,8], k = 2 → 18</span></div>
+    <div class="cells"><span class="cell win">7</span><span class="cell win">2</span><span class="cell win">5</span><span class="cell ok">10</span><span class="cell ok">8</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int splitArray(int[] nums, int k) {
         long lo = 0, hi = 0;
         for (int x : nums) {
@@ -229,14 +316,18 @@ class SearchTemplates {
         }
         return pieces;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n log(sum)) time, O(1) space. The DP alternative is O(k · n²); mention it and why the search is better.</p>
-  <p><b>Edge cases:</b> k == n (answer = max element); k == 1 (answer = sum); zeros in the array. In Book Allocation, return −1 when there are fewer books than students (each student must get at least one book); LeetCode guarantees k ≤ n.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Details and edge cases</summary><p>Feasible(x) = "greedy cut into pieces with sum ≤ x needs at most k pieces". Needing fewer than k pieces is fine: you can always split a piece further without increasing the max (every element is ≤ x because lo starts at the max element). The DP alternative is O(k · n²); mention it and why the search is better.</p><p>k == n (answer = max element); k == 1 (answer = sum); zeros in the array. In Book Allocation, return −1 when there are fewer books than students (each student must get at least one book); LeetCode guarantees k ≤ n.</p></details>
+  </div>
 
-  <h3 id="p-magnet">4. Magnetic Force Between Two Balls (= Aggressive Cows)</h3>
-  <p><a href="https://leetcode.com/problems/magnetic-force-between-two-balls/" target="_blank" rel="noopener">LeetCode 1552</a> · Medium. Place m balls in baskets at given positions so that the minimum distance between any two balls is as large as possible. Return that distance. Aggressive Cows (place c cows in stalls, maximise the minimum distance) is the same problem.</p>
-  <p><b>Key insight:</b> "maximise the minimum" → find the <b>last</b> gap d for which you can place all m balls with every adjacent pair ≥ d apart. Smaller gaps are easier, so the predicate is <code>true … true false … false</code>. The check is greedy after sorting: put a ball in the first basket and then in each basket at least d past the previous ball.</p>
-  <pre><code>import java.util.Arrays;
+  <div class="prob" id="p-magnet">
+    <h3>4. Magnetic Force Between Two Balls (= Aggressive Cows) <a href="https://leetcode.com/problems/magnetic-force-between-two-balls/" target="_blank" rel="noopener">LeetCode 1552 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Place m balls in baskets to make the minimum distance between any two as large as possible.</dd>
+        <dt>Insight</dt><dd>"Maximise the minimum" → <b>last</b> true gap. Sort, then greedily place each ball at the first basket ≥ d past the previous one.</dd>
+        <dt>Cost</dt><dd>O(n log n) sort + O(n log R) search</dd></dl>
+    <div class="ptrs"><span>positions [1,2,3,4,7], m = 3 → gap 3</span></div>
+    <div class="cells"><span class="cell hl">1</span><span class="cell dim">2</span><span class="cell dim">3</span><span class="cell hl">4</span><span class="cell hl">7</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.Arrays;
 
 class Solution {
     public int maxDistance(int[] position, int m) {
@@ -263,14 +354,18 @@ class Solution {
         }
         return placed &gt;= m;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n log n) for the sort + O(n log R) for the search, O(log n) sort stack space.</p>
-  <p><b>Edge cases:</b> m == 2 (answer = max − min); unsorted input (sort first, the most common bug); the up-rounded mid in last-true, without which <code>lo = mid</code> loops forever when <code>hi = lo + 1</code>.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Details and edge cases</summary><p>Aggressive Cows (place c cows in stalls, maximise the minimum distance) is the same problem. Smaller gaps are easier, so the predicate is <code>true … true false … false</code>. The check is greedy after sorting: put a ball in the first basket and then in each basket at least d past the previous ball. Space: O(log n) sort stack.</p><p>m == 2 (answer = max − min); unsorted input (sort first, the most common bug); the up-rounded mid in last-true, without which <code>lo = mid</code> loops forever when <code>hi = lo + 1</code>.</p></details>
+  </div>
 
-  <h3 id="p-heat">5. Heaters</h3>
-  <p><a href="https://leetcode.com/problems/heaters/" target="_blank" rel="noopener">LeetCode 475</a> · Medium · Microsoft. Houses and heaters sit at integer positions on a line. All heaters share one radius r. Find the minimum r so every house is within r of some heater.</p>
-  <p><b>Key insight:</b> a bigger radius covers everything a smaller one does → search r in <code>[0, 10^9]</code>. With both arrays sorted, coverage is one forward pass: for each house, skip heaters that are too far to its left (they are also too far for every later house), then check the current heater. An equally good direct answer: for each house, find its nearest heater with <code>Arrays.binarySearch</code> on sorted heaters and take the max of those distances. Say both; the interviewer often asks for the second as a follow-up.</p>
-  <pre><code>import java.util.Arrays;
+  <div class="prob" id="p-heat">
+    <h3>5. Heaters <a href="https://leetcode.com/problems/heaters/" target="_blank" rel="noopener">LeetCode 475 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Minimum shared radius so every house is within r of a heater. Microsoft.</dd>
+        <dt>Insight</dt><dd>Bigger radius covers more → search r in [0, 10^9]. Check coverage in one forward pass over both sorted arrays.</dd>
+        <dt>Cost</dt><dd>O(n log n + m log m + (n + m) log R) time</dd></dl>
+    <div class="ptrs"><span>houses 1..4, heaters at 1 and 4 → r = 1</span></div>
+    <div class="cells"><span class="cell hl">1</span><span class="cell ok">2</span><span class="cell ok">3</span><span class="cell hl">4</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>import java.util.Arrays;
 
 class Solution {
     public int findRadius(int[] houses, int[] heaters) {
@@ -301,14 +396,17 @@ class Solution {
         }
         return true;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(n log n + m log m + (n + m) log R) time, O(log n) sort space.</p>
-  <p><b>Edge cases:</b> a single heater; houses on both sides of all heaters; duplicates in either array; <code>heaters[j] + r</code> exceeding int when r ≈ 10^9 (cast to <code>long</code>).</p>
+}</code></pre></details>
+    <details class="deep"><summary>The direct answer and edge cases</summary><p>For each house, skip heaters that are too far to its left (they are also too far for every later house), then check the current heater. An equally good direct answer: for each house, find its nearest heater with <code>Arrays.binarySearch</code> on sorted heaters and take the max of those distances. Say both; the interviewer often asks for the second as a follow-up. Space: O(log n) sort.</p><p>A single heater; houses on both sides of all heaters; duplicates in either array; <code>heaters[j] + r</code> exceeding int when r ≈ 10^9 (cast to <code>long</code>).</p></details>
+  </div>
 
-  <h3 id="p-fmin">6. Find Minimum in Rotated Sorted Array</h3>
-  <p><a href="https://leetcode.com/problems/find-minimum-in-rotated-sorted-array/" target="_blank" rel="noopener">LeetCode 153</a> · Medium · Swiggy (twice). A sorted array of distinct values was rotated an unknown number of times. Return its minimum in O(log n).</p>
-  <p><b>Key insight:</b> compare <code>nums[mid]</code> with <code>nums[hi]</code>, not <code>nums[lo]</code>. If <code>nums[mid] &gt; nums[hi]</code> the rotation point is strictly right of mid; otherwise <code>mid..hi</code> is sorted and the minimum is at mid or left of it. Comparing with <code>nums[lo]</code> fails on an unrotated array. This is the first-true template with predicate <code>nums[i] ≤ nums[last]</code>.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-fmin">
+    <h3>6. Find Minimum in Rotated Sorted Array <a href="https://leetcode.com/problems/find-minimum-in-rotated-sorted-array/" target="_blank" rel="noopener">LeetCode 153 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Minimum of a rotated sorted array of distinct values in O(log n). Swiggy (twice).</dd>
+        <dt>Insight</dt><dd>Compare <code>nums[mid]</code> with <code>nums[hi]</code>, not <code>nums[lo]</code> (that fails on an unrotated array). See the stepper.</dd>
+        <dt>Cost</dt><dd>O(log n) time, O(1) space</dd></dl>
+    <div class="cells"><span class="cell">4</span><span class="cell">5</span><span class="cell">6</span><span class="cell">7</span><span class="cell ok">0</span><span class="cell">1</span><span class="cell">2</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int findMin(int[] nums) {
         int lo = 0, hi = nums.length - 1;
         while (lo &lt; hi) {
@@ -321,14 +419,18 @@ class Solution {
         }
         return nums[lo];
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(log n) time, O(1) space.</p>
-  <p><b>Edge cases:</b> not rotated (or rotated n times); one or two elements. Follow-up with duplicates (LeetCode 154): when <code>nums[mid] == nums[hi]</code> you cannot tell which side, so do <code>hi--</code>; worst case degrades to O(n) (e.g. <code>[1,1,1,0,1]</code>).</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases and duplicates</summary><p>If <code>nums[mid] &gt; nums[hi]</code> the rotation point is strictly right of mid; otherwise <code>mid..hi</code> is sorted and the minimum is at mid or left of it.</p><p>Not rotated (or rotated n times); one or two elements. Follow-up with duplicates (LeetCode 154): when <code>nums[mid] == nums[hi]</code> you cannot tell which side, so do <code>hi--</code>; worst case degrades to O(n) (e.g. <code>[1,1,1,0,1]</code>).</p></details>
+  </div>
 
-  <h3 id="p-srch">7. Search in Rotated Sorted Array</h3>
-  <p><a href="https://leetcode.com/problems/search-in-rotated-sorted-array/" target="_blank" rel="noopener">LeetCode 33</a> · Medium · Walmart. Same rotated array of distinct values; return the index of a target, or −1, in O(log n).</p>
-  <p><b>Key insight:</b> at each mid, one half is sorted. Check whether <code>nums[lo] ≤ nums[mid]</code> (left sorted) or not (right sorted). If the target lies inside the sorted half's value range, search there; otherwise search the other half. Note <code>≤</code>: when <code>lo == mid</code> the left half is one element and counts as sorted.</p>
-  <pre><code>class Solution {
+  <div class="prob" id="p-srch">
+    <h3>7. Search in Rotated Sorted Array <a href="https://leetcode.com/problems/search-in-rotated-sorted-array/" target="_blank" rel="noopener">LeetCode 33 · Medium ↗</a></h3>
+    <dl><dt>Task</dt><dd>Index of a target in the rotated array, or −1, in O(log n). Walmart.</dd>
+        <dt>Insight</dt><dd>One half is sorted (<code>nums[lo] ≤ nums[mid]</code> → left). If the target is in that half's range, go there; else go to the other half.</dd>
+        <dt>Cost</dt><dd>O(log n) time, O(1) space</dd></dl>
+    <div class="ptrs"><span>target 0: left half 4..7 is sorted, 0 isn't in it → go right</span></div>
+    <div class="cells"><span class="cell dim">4</span><span class="cell dim">5</span><span class="cell dim">6</span><span class="cell hl">7</span><span class="cell ok">0</span><span class="cell win">1</span><span class="cell win">2</span></div>
+    <details class="code"><summary>Show Java solution</summary><pre><code>class Solution {
     public int search(int[] nums, int target) {
         int lo = 0, hi = nums.length - 1;
         while (lo &lt;= hi) {
@@ -352,34 +454,60 @@ class Solution {
         }
         return -1;
     }
-}</code></pre>
-  <p><b>Complexity:</b> O(log n) time, O(1) space.</p>
-  <p><b>Edge cases:</b> one element; target at the rotation point; two elements <code>[3,1]</code> (the <code>≤</code> matters here). The alternative "find the pivot with problem 6, then binary search the right half" is two clean searches and perfectly acceptable.</p>
+}</code></pre></details>
+    <details class="deep"><summary>Edge cases</summary><p>Note <code>≤</code>: when <code>lo == mid</code> the left half is one element and counts as sorted. One element; target at the rotation point; two elements <code>[3,1]</code> (the <code>≤</code> matters here). The alternative "find the pivot with problem 6, then binary search the right half" is two clean searches and perfectly acceptable.</p></details>
+  </div>
 
-  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
+  <h2 id="mistakes"><span class="n">07</span>Common mistakes</h2>
   <div class="callout warn"><b>Mistakes that cost candidates the round</b><ul>
-    <li>Not stating why <code>feasible</code> is monotonic. Interviewers mark "pattern matched without understanding" when you cannot justify it.</li>
-    <li>Wrong <code>lo</code>: starting Ship Packages or Split Array at 0 or 1 instead of the max element, so the greedy silently accepts an impossible capacity.</li>
-    <li>Mixing templates: <code>while (lo &lt;= hi)</code> with <code>hi = mid</code> loops forever; last-true with a down-rounded mid loops forever.</li>
-    <li>Integer overflow in the predicate's accumulator or in <code>lo + hi</code>.</li>
+    <li>Not saying <i>why</i> <code>feasible</code> is monotonic: reads as "pattern matched without understanding".</li>
+    <li>Wrong <code>lo</code>: starting Ship Packages or Split Array at 0 or 1, so the greedy accepts an impossible capacity.</li>
+    <li>Mixing templates: <code>while (lo &lt;= hi)</code> with <code>hi = mid</code> loops forever; so does last-true with a down-rounded mid.</li>
+    <li>Integer overflow in the accumulator or in <code>lo + hi</code>.</li>
     <li>Forgetting to sort in Aggressive Cows / Heaters.</li>
-    <li>Writing the O(n·k) DP for Split Array without first checking whether binary search on the answer applies.</li>
+    <li>Jumping to the O(n·k) DP for Split Array.</li>
   </ul></div>
+
+  <h2 id="interview"><span class="n">08</span>Interview questions</h2>
   <details class="qa"><summary>Return the actual split (which books go to which student), not just the max.</summary><p>Run the greedy once more with the final answer and record the cut points. If exactly k parts are required and the greedy made fewer, split the largest-count parts further; any split keeps every part ≤ the answer.</p></details>
   <details class="qa"><summary>Koko: what if the answer can be a real number (eating speed in kg/hour)?</summary><p>Binary search on doubles: loop a fixed number of times (e.g. 100) or until <code>hi − lo &lt; 1e-7</code>, set <code>lo = mid</code> / <code>hi = mid</code> without ±1. A fixed iteration count avoids precision-dependent infinite loops.</p></details>
   <details class="qa"><summary>Why does greedy give the minimum number of days for a fixed capacity?</summary><p>Exchange argument: any optimal schedule can be transformed so day 1 takes as many packages as fit, without increasing the number of days, because moving a package from day 2 to day 1 never makes later days heavier. Induct on the remaining packages.</p></details>
   <details class="qa"><summary>How would this look in production code rather than LeetCode?</summary><p>Same shape as capacity planning: find the minimum number of Kafka partitions / pods such that a load simulation meets a p99 latency SLO. The simulation is the expensive predicate, so you minimise how many times you call it; that is exactly what binary search does (about 30 calls for a range of 10^9).</p></details>
   <details class="qa"><summary>Search in a rotated array with duplicates (LeetCode 81)?</summary><p>When <code>nums[lo] == nums[mid] == nums[hi]</code> you cannot tell which half is sorted; shrink both ends (<code>lo++</code>, <code>hi--</code>) and continue. Worst case O(n); say so.</p></details>
   <details class="qa"><summary>Find the k-th smallest element in a sorted n×n matrix, or the k-th smallest pair distance.</summary><p>Binary search on the value: feasible(x) = "count of elements ≤ x is at least k", counted in O(n) with a staircase walk (matrix) or two pointers on the sorted array (pair distances). Answer = first true.</p></details>
-
-  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
   <details class="qa"><summary>What two things must be true before binary search on the answer applies?</summary><p>The answer lies in a bounded ordered range, and the feasibility predicate is monotonic over it (once true, always true, or the reverse).</p></details>
   <details class="qa"><summary>In first-true, why <code>hi = mid</code> and not <code>hi = mid − 1</code>?</summary><p>mid passed the check, so it may be the answer; excluding it could skip the answer. The loop ends when <code>lo == hi</code>, which is then the first true.</p></details>
   <details class="qa"><summary>Positions [1,2,8,4,9], m = 3. What is the largest minimum distance?</summary><p>Sorted: 1,2,4,8,9. Gap 3: place at 1, 4, 8 → works. Gap 4: 1, 8 → only 2 balls. Answer 3.</p></details>
   <details class="qa"><summary>In Find Minimum in Rotated Sorted Array, why compare with nums[hi] instead of nums[lo]?</summary><p>If the array is not rotated, <code>nums[mid] &gt; nums[lo]</code> would wrongly send you right. Comparing with <code>nums[hi]</code> tells you directly whether the drop is to the right of mid in every case.</p></details>
   <details class="qa"><summary>What is the time complexity of Split Array Largest Sum with values up to 10^6 and n = 1000?</summary><p>Sum ≤ 10^9, so about 30 iterations × O(n) = roughly 30,000 operations: O(n log(sum)).</p></details>
 
-  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <h2 id="quiz"><span class="n">09</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">What must hold before binary search on the answer is valid?</p>
+    <div class="opts"><button class="opt" type="button">The input array is sorted</button><button class="opt" type="button">The answer is unique</button><button class="opt" type="button">feasible(x) is monotonic: once true, it stays true</button></div>
+    <p class="why">The input need not be sorted (Koko's piles aren't). What you search is the answer range, and it needs an F…F T…T shape.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">First-true template: feasible(mid) returns true. What next?</p>
+    <div class="opts"><button class="opt" type="button">hi = mid</button><button class="opt" type="button">hi = mid − 1</button><button class="opt" type="button">return mid</button></div>
+    <p class="why">mid works, so it may be the answer. Keep it in range; the loop ends at lo == hi.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Last-true with <code>mid = lo + (hi − lo) / 2</code> and <code>lo = mid</code> on success. lo = 3, hi = 4. What happens?</p>
+    <div class="opts"><button class="opt" type="button">Returns 4</button><button class="opt" type="button">Infinite loop if mid = 3 passes</button><button class="opt" type="button">Returns 3 correctly every time</button></div>
+    <p class="why">mid rounds down to 3; if it passes, lo stays 3 forever. Round up: <code>lo + (hi − lo + 1) / 2</code>.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Ship Packages: why is lo the heaviest package, not 1?</p>
+    <div class="opts"><button class="opt" type="button">It makes the search faster</button><button class="opt" type="button">Below it the greedy counts days for a ship that can't carry that package</button><button class="opt" type="button">LeetCode requires it</button></div>
+    <p class="why">The greedy assumes every package fits. Smaller capacities give a wrong (too small) day count and a wrong answer.</p></div>
+
+  <h2 id="cheat"><span class="n">10</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>"Minimise the max" / "maximise the min" / "smallest speed such that" → search the answer.</li>
+    <li>State the monotonicity: if x works, every bigger x works.</li>
+    <li>feasible(x) = greedy O(n) simulation; accumulate in <code>long</code>.</li>
+    <li>First true: <code>while (lo &lt; hi)</code>, mid down, true → hi = mid, false → lo = mid + 1.</li>
+    <li>Last true: mid rounded <b>up</b>, true → lo = mid, false → hi = mid − 1.</li>
+    <li>Bounds: lo = could-be answer (often max element), hi = surely works (often sum).</li>
+    <li>Rotated min: compare with nums[hi]. Rotated search: find the sorted half, check the target range.</li>
+    <li>Cost: O(n log R) ≈ 30 passes for R = 10^9.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">11</span>Sources / go deeper</h2>
   <ul class="sources">
     <li>Company tags: the 2025–26 interview reports collected in <a href="../index.html">the playbook</a>.</li>
     <li><a href="https://cp-algorithms.com/num_methods/binary_search.html" target="_blank" rel="noopener">cp-algorithms: binary search</a> (predicate form, search on real numbers)</li>
@@ -389,5 +517,6 @@ class Solution {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-sliding-window.html">Sliding window and two pointers</a> · <a href="dsa-heaps-intervals.html">Heaps and intervals</a> · <a href="dsa-graphs.html">Graphs</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

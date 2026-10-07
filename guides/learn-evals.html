@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>Evals for LLM apps</h1>
-  <p class="lede">Build the eval pipeline that tells you, with numbers, whether a prompt change made your contract Q&amp;A better or worse: a golden set, retrieval metrics, a calibrated LLM judge, a CI gate and online signals.</p>
+  <p class="lede">Prove with numbers whether a prompt or retrieval change made your contract Q&amp;A better or worse.</p>
   <div class="facts">
     <span class="fact"><b>Time:</b> 4–6 hours</span>
     <span class="fact"><b>Stack:</b> Python 3.11+, anthropic SDK, Ragas 0.4</span>
@@ -20,16 +20,40 @@
   </div>
   <div class="chips"><span class="chip hot">Tekion</span><span class="chip">EPAM</span><span class="chip">Adobe</span><span class="chip">Google</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Evals are your test suite: assert on pass rates over a dataset.</li>
+    <li>Golden set in git; score retrieval and generation separately.</li>
+    <li>Use binary PASS/FAIL judges, calibrated against human labels.</li>
+    <li>Gate CI on thresholds and baseline drops; feed production failures back in.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A board exam. The <b>answer key</b> is the golden set, the <b>examiner</b> is the LLM judge, and the <b>moderator</b> re-checks a sample of copies to make sure the examiner marks fairly. Results are only published if the pass rate clears the bar.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
-    <li><a href="#outcomes">What you'll be able to do</a></li>
-    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#ideas">Key ideas</a></li>
+    <li><a href="#pipeline">The pipeline, one case at a time</a></li>
+    <li><a href="#golden">Golden datasets</a></li>
+    <li><a href="#retrieval">Retrieval metrics</a></li>
+    <li><a href="#generation">Generation metrics</a></li>
+    <li><a href="#judge">LLM-as-judge done properly</a></li>
     <li><a href="#handson">Hands-on: an eval harness</a></li>
-    <li><a href="#interviews">How this shows up in interviews</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#interviews">Interview questions</a></li>
     <li><a href="#capstone">Capstone checkpoint</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
-  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <h2 id="ideas"><span class="n">01</span>Key ideas</h2>
+  <div class="keys">
+    <div class="key"><h4>Evals are tests</h4><p>Golden set = fixtures, retrieval metrics = repository tests, judge = an assertion a human must verify, CI gate = a failing build. Outputs are fuzzy, so assert on <b>rates</b>, not strings.</p></div>
+    <div class="key"><h4>Retrieval sets the ceiling</h4><p>If the right chunk never reaches the prompt, no prompt can save the answer. Measure retrieval and generation separately so you know which half broke.</p></div>
+    <div class="key"><h4>Binary judges</h4><p>PASS/FAIL with a one-sentence reason, one judge per failure mode. Reproducible, easy to label, maps straight to a pass rate.</p></div>
+    <div class="key"><h4>Trust, then verify</h4><p>A judge can be wrong. Compare it to 100 expert labels and report kappa and TNR before you gate on it.</p></div>
+    <div class="key"><h4>Close the loop</h4><p>Every production bug and thumbs-down becomes a golden case. Reading 50 traces beats any clever metric.</p></div>
+  </div>
+  <div class="callout info"><b>Interview reality</b><p>Tekion asked "design an eval pipeline for a RAG system"; EPAM and Adobe asked how you measure RAG quality; Google asked about agentic evals over golden sets. "We use Ragas" fails; the grade comes from the dataset, judge trust and release gate.</p></div>
+  <details class="deep"><summary>Go deeper: outcomes and the original framing</summary>
   <ul>
     <li>Build and version a <b>golden dataset</b> for a RAG system, including refusal and adversarial cases.</li>
     <li>Compute <b>recall@k, precision@k, MRR and nDCG</b> by hand and in code, and say which one you gate on and why.</li>
@@ -38,11 +62,6 @@
     <li>Run evals in <b>CI on every prompt or retrieval change</b>, failing the build on threshold breaches or regressions, for a few dollars per run.</li>
     <li>Close the loop with <b>online metrics and user feedback</b> that feed new golden cases.</li>
   </ul>
-  <div class="callout info"><b>Interview reality</b><p>"Design an eval pipeline for a RAG system" was asked at Tekion. EPAM and Adobe asked how you measure RAG quality. Google asked about agentic evaluation over golden sets. An answer that stops at "we use Ragas" fails; the grade comes from how you build the dataset, how you trust the judge, and what blocks a release.</p></div>
-
-  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
-
-  <h3>Evals are your test suite, not a report</h3>
   <p>You already know the shape. A golden dataset is your fixture set. Retrieval metrics are unit tests for the repository layer. An LLM judge is an assertion that needs a human to check it, because it can be wrong. The CI gate is the same as a failing JUnit build, and online metrics are your SLO dashboards. The difference: outputs are non-deterministic and "correct" is fuzzy, so you assert on <b>rates over a dataset</b>, not on single strings.</p>
   <p>Hamel Husain's framing is the one to quote: three levels of evaluation, ordered by cost.</p>
   <div class="tbl"><table>
@@ -52,8 +71,68 @@
     <tr><td>3. A/B testing</td><td>Two variants on real traffic, measured on user outcomes</td><td>Highest</td><td>Mature product with traffic</td></tr>
   </table></div>
   <p>His most important line of advice is to remove all friction from looking at your data. Most eval wins come from reading 50 traces and noticing a failure pattern, not from a clever metric.</p>
+  </details>
 
-  <h3>Golden datasets</h3>
+  <h2 id="pipeline"><span class="n">02</span>The pipeline, one case at a time</h2>
+  <div class="arch">
+    <div class="tier"><small>Offline, on every PR</small><span class="node store">golden.jsonl<small>git, versioned</small></span></div>
+    <div class="down">↓ <small>each question</small></div>
+    <div class="tier"><span class="node">RAG endpoint<small>?debug=true returns retrieved chunks</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node hl">Metrics<small>recall@k, MRR, citations, refusal</small></span><span class="node hl">Binary judge<small>Haiku 4.5, calibrated</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">Gate<small>thresholds + baseline diff</small></span><span class="node store">report.json<small>CI artefact</small></span></div>
+  </div>
+  <p>Online, production traces are sampled into the same judge, and failures become new golden cases.</p>
+
+  <div class="stepper"><b class="title">Scoring one golden question</b><div class="frames">
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node store hl">golden case<small>relevant: c7, c2</small></span><span class="node">RAG</span><span class="node">metrics</span><span class="node">judge</span><span class="node">gate</span></div></div>
+      <figcaption>The case says chunks <code>c7</code> and <code>c2</code> hold the answer, plus a reference answer and must-cite pages.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell" data-i="1">c4</span><span class="cell win" data-i="2">c7</span><span class="cell" data-i="3">c9</span><span class="cell win" data-i="4">c2</span><span class="cell" data-i="5">c1</span></div>
+      <div class="ptrs"><span class="on">retrieved top 5</span><span>relevant = green</span></div>
+      <figcaption>The endpoint returns its ranked chunks. Relevant ones land at ranks 2 and 4.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell hl" data-i="1">c4</span><span class="cell hl win" data-i="2">c7</span><span class="cell hl" data-i="3">c9</span><span class="cell win" data-i="4">c2</span><span class="cell" data-i="5">c1</span></div>
+      <div class="ptrs"><span class="on">recall@3 = 1/2 = 0.50</span><span class="on">recall@5 = 1.00</span><span>precision@5 = 0.40</span></div>
+      <figcaption>Top 3 holds one of two relevant chunks; top 5 holds both. Recall@5 is the gate.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells idx"><span class="cell" data-i="1">c4</span><span class="cell hl win" data-i="2">c7</span><span class="cell" data-i="3">c9</span><span class="cell win" data-i="4">c2</span><span class="cell" data-i="5">c1</span></div>
+      <div class="ptrs"><span class="on">MRR = 1/2</span><span class="on">nDCG@5 = 1.062 / 1.631 = 0.651</span></div>
+      <figcaption>First hit at rank 2 gives MRR 0.5. nDCG penalises relevant chunks ranked low.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">golden case</span><span class="node">RAG</span><span class="node hl">citations<small>(MSA-ACME, p12) present?</small></span><span class="node">judge</span><span class="node">gate</span></div></div>
+      <figcaption>Deterministic checks: are the must-cite pages cited, and did out-of-scope questions get refused? Free and exact.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">golden case</span><span class="node">RAG</span><span class="node">metrics</span><span class="node hl">judge<small>reason → PASS</small></span><span class="node">gate</span></div></div>
+      <figcaption>The judge sees question, context and answer, writes a reason, then a verdict: every claim supported, so PASS.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="stats"><div class="stat"><b>0.917</b><span>recall@5 ≥ 0.85</span></div><div class="stat"><b>0.95</b><span>grounded ≥ 0.90</span></div><div class="stat"><b>0.967</b><span>citation_ok ≥ 0.95</span></div></div>
+      <figcaption>All cases are averaged. Every metric clears its threshold and no metric fell more than 3 points vs main: exit 0.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="stats"><div class="stat"><b>0.90</b><span>citation_ok (was 0.967)</span></div><div class="stat"><b>exit 1</b><span>build fails</span></div></div>
+      <figcaption>A prompt tweak drops citations to 0.90: <code>FAIL: citation_ok regressed 0.967 -&gt; 0.9</code>. Read the failing rows' judge reasoning.</figcaption>
+    </figure>
+  </div></div>
+
+  <h2 id="golden"><span class="n">03</span>Golden datasets</h2>
+  <div class="keys">
+    <div class="key"><h4>Size</h4><p>Start at 50 hand-written cases; grow to 200–300. Beyond that you pay more without learning much.</p></div>
+    <div class="key"><h4>Stratify</h4><p>Lookups, comparisons, multi-hop, numbers/dates, and out-of-scope questions that must be refused. Tag each case to report per slice.</p></div>
+    <div class="key"><h4>Sources</h4><p>Redacted real questions, expert-written ones, and human-reviewed synthetic ones. Synthetic-only sets are too easy.</p></div>
+    <div class="key"><h4>Adversarial</h4><p>Injected "ignore previous instructions", near-duplicate clauses in other contracts, amended clauses.</p></div>
+    <div class="key"><h4>Versioned</h4><p>Lives in git next to the prompts. A metric means nothing without its dataset version.</p></div>
+  </div>
+  <p>Each case holds: question, relevant chunk ids, short reference answer, must-cite (document, page) pairs, and whether to refuse.</p>
+  <details class="deep"><summary>Go deeper: golden set details</summary>
   <p>A golden set is a versioned file of questions with what "good" looks like. For contract Q&amp;A each case holds the question, the chunk ids that contain the answer, a short reference answer, the (document, page) pairs that must be cited, and whether the system should refuse.</p>
   <ul>
     <li><b>Start at 50, grow to 200–300.</b> 50 hand-written cases find most regressions; past 300 you pay more without learning much.</li>
@@ -63,10 +142,12 @@
     <li><b>Version it in git</b> next to the prompts. A metric only means something together with the dataset version it was computed on.</li>
     <li><b>Every production bug becomes a golden case.</b> That is how the set stays honest.</li>
   </ul>
+  </details>
 
-  <h3>Retrieval metrics, with a worked example</h3>
-  <p>Retrieval decides the ceiling: if the right chunk is not retrieved, no prompt can save the answer. Evaluate it separately from generation so you know which half broke.</p>
-  <p>Example: the golden case says chunks <code>c7</code> and <code>c2</code> are relevant. The retriever returns, in order, <code>c4, c7, c9, c2, c1</code>.</p>
+  <h2 id="retrieval"><span class="n">04</span>Retrieval metrics</h2>
+  <p>Worked example: relevant = <code>c7, c2</code>; retriever returns <code>c4, c7, c9, c2, c1</code>.</p>
+  <div class="stats"><div class="stat"><b>recall@k</b><span>relevant found in top k / all relevant. Gate on it.</span></div><div class="stat"><b>precision@k</b><span>relevant in top k / k. Token noise.</span></div><div class="stat"><b>MRR</b><span>1 / rank of first hit.</span></div><div class="stat"><b>nDCG@k</b><span>DCG / ideal DCG. Ranking quality.</span></div></div>
+  <details class="deep"><summary>Go deeper: the worked tables (rank-by-rank DCG and metric values)</summary>
   <div class="tbl"><table>
     <tr><th>Rank i</th><th>Chunk</th><th>Relevant?</th><th>1 / log2(i+1)</th><th>DCG contribution</th></tr>
     <tr><td class="num">1</td><td>c4</td><td>no</td><td class="num">1.000</td><td class="num">0</td></tr>
@@ -82,9 +163,24 @@
     <tr><td>MRR</td><td>mean over queries of 1 / rank of first relevant</td><td class="num">1/2 = 0.50</td><td>How high the first good chunk lands. Matters if you only pass the top 1–3.</td></tr>
     <tr><td>nDCG@k</td><td>DCG / ideal DCG; rewards relevant chunks ranked higher</td><td class="num">1.062 / 1.631 = 0.651</td><td>Overall ranking quality; use when you rerank.</td></tr>
   </table></div>
+  </details>
+  <ul>
+    <li><b>Gate on recall@k</b>: missing evidence causes hallucination or a wrong refusal.</li>
+    <li><b>Use MRR / nDCG</b> to decide whether a reranker is worth its latency.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: ideal DCG and graded relevance</summary>
+  <p>Retrieval decides the ceiling: if the right chunk is not retrieved, no prompt can save the answer. Evaluate it separately from generation so you know which half broke.</p>
   <p>Ideal DCG puts both relevant chunks at ranks 1 and 2: 1.000 + 0.631 = 1.631. Graded relevance (2 = answers the question, 1 = related) plugs in as the numerator instead of 1. For contract Q&amp;A, <b>recall@k is the gate</b> (missing evidence causes hallucination or a wrong refusal) and MRR/nDCG tell you whether a reranker is worth its latency.</p>
+  </details>
 
-  <h3>Generation metrics</h3>
+  <h2 id="generation"><span class="n">05</span>Generation metrics</h2>
+  <div class="keys">
+    <div class="key"><h4>Faithfulness</h4><p>Is every claim supported by the retrieved context? Supported / total claims. The key metric for legal content.</p></div>
+    <div class="key"><h4>Answer relevance</h4><p>Does it answer the question asked? A faithful answer about the wrong clause fails here.</p></div>
+    <div class="key"><h4>Correctness</h4><p>Same facts as the reference? Use a binary judge, not BLEU or ROUGE.</p></div>
+    <div class="key"><h4>Citations and refusal</h4><p>Deterministic: must-cite pages present, out-of-scope refused. Run on every commit.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the full metric notes and Ragas context metrics</summary>
   <div class="grid">
     <div class="card"><h4>Faithfulness / groundedness</h4><p>Is every claim in the answer supported by the retrieved context? Ragas computes it as supported claims / total claims. The most important metric for legal content: an unsupported liability number is worse than no answer.</p></div>
     <div class="card"><h4>Answer relevance</h4><p>Does the answer address the question asked? A faithful answer about the wrong clause scores high on faithfulness and low here. Ragas generates questions from the answer and compares embeddings, so it needs an embedding model.</p></div>
@@ -92,8 +188,22 @@
     <div class="card"><h4>Citation accuracy and refusal</h4><p>Deterministic: are the must-cite (document, page) pairs present, and did out-of-scope questions get refused? Cheap, exact, run on every commit.</p></div>
   </div>
   <p><b>Context precision</b> and <b>context recall</b> in Ragas are LLM-judged versions of the retrieval metrics: they decide relevance of each retrieved chunk against a reference answer, which helps when you have no chunk-level labels yet. Once you have chunk ids in the golden set, the pure-Python metrics are exact, free and deterministic; prefer them.</p>
+  </details>
 
-  <h3>LLM-as-judge done properly</h3>
+  <h2 id="judge"><span class="n">06</span>LLM-as-judge done properly</h2>
+  <div class="vs">
+    <div class="pick"><h4>Binary PASS/FAIL <span class="tag">usual pick</span></h4><ul><li class="pro">Reproducible, easy for humans to label</li><li class="pro">Gives a pass rate you can gate on</li><li class="con">Need one judge per failure mode</li></ul><p class="when">Always, for gating.</p></div>
+    <div><h4>1–10 score</h4><ul><li class="con">Nobody can say what separates 6 from 7</li><li class="con">Drifts between runs; averages hide failures</li></ul><p class="when">Avoid; add another binary judge instead.</p></div>
+  </div>
+  <div class="keys">
+    <div class="key"><h4>Position bias</h4><p>Pairwise judges favour one slot. Run both orders; count a win only if it holds in both.</p></div>
+    <div class="key"><h4>Verbosity bias</h4><p>Judges prefer long answers. Say length does not matter; check pass rate vs length.</p></div>
+    <div class="key"><h4>Self-preference</h4><p>Judges favour their own model family. Judge with a different model, or prove it via calibration.</p></div>
+  </div>
+  <p><b>Calibration:</b> an expert labels 100 traces (60 PASS, 40 FAIL). The judge agrees on 54 passes and 30 fails.</p>
+  <div class="stats"><div class="stat"><b>0.84</b><span>agreement</span></div><div class="stat"><b>0.661</b><span>Cohen's kappa</span></div><div class="stat"><b>0.90</b><span>TPR</span></div><div class="stat"><b>0.75</b><span>TNR: 1 in 4 bad answers slips through</span></div></div>
+  <p><dfn title="Agreement corrected for the agreement you'd get by chance">Cohen's kappa</dfn> should be above about 0.6. <dfn title="True negative rate: share of human-FAIL cases the judge also fails">TNR</dfn> is the dangerous direction for legal content, so tighten the rubric ("any number not in the context is FAIL") and re-measure.</p>
+  <details class="deep"><summary>Go deeper: judge rules and the calibration arithmetic</summary>
   <ul>
     <li><b>Binary verdicts beat 1–10 scales.</b> Nobody can say what separates a 6 from a 7, scores drift between runs, and averages hide failures. PASS/FAIL with a one-sentence reason is reproducible, easy for humans to label, and maps straight onto a pass rate you can gate on.</li>
     <li><b>One judge per failure mode.</b> "Grounded?", "Cites the right page?", "Refuses when it should?" are separate prompts. A single "is this a good answer" judge mixes them and you cannot tell what regressed.</li>
@@ -113,19 +223,10 @@
     <tr><td>TNR</td><td>30 / 40</td><td class="num">0.75</td></tr>
   </table></div>
   <p>84% agreement sounds good, but TNR of 0.75 means one in four bad answers gets through. For legal content that is the dangerous direction, so you tighten the rubric (for example "any number not in the context is FAIL") and re-measure.</p>
+  </details>
 
-  <div class="flow">
-    <span class="node store">golden.jsonl<small>git, versioned</small></span><span class="arrow">→</span>
-    <span class="node">RAG endpoint<small>debug=true returns retrieved chunks</small></span><span class="arrow">→</span>
-    <span class="node hl">Metrics<small>recall@k, MRR, citations, refusal</small></span><span class="arrow">→</span>
-    <span class="node hl">Binary judge<small>Haiku 4.5, calibrated</small></span><span class="arrow">→</span>
-    <span class="node">Gate<small>thresholds + baseline diff</small></span><span class="arrow">→</span>
-    <span class="node store">report.json<small>CI artefact</small></span>
-  </div>
-  <p class="flow-caption">Figure: the offline eval pipeline. Online, production traces are sampled into the same judge and the failures become new golden cases.</p>
-
-  <h2 id="handson"><span class="n">03</span>Hands-on: an eval harness for the contract Q&amp;A endpoint</h2>
-  <p>You will build five small files. The system under test is the Spring Boot endpoint from <a href="learn-spring-rag-endpoint.html">the RAG endpoint lesson</a>; for evals it accepts <code>?debug=true</code> (disabled in production) and also returns the ranked retrieved chunks with their ids and text.</p>
+  <h2 id="handson"><span class="n">07</span>Hands-on: an eval harness for the contract Q&amp;A endpoint</h2>
+  <p>System under test: the endpoint from <a href="learn-spring-rag-endpoint.html">the RAG endpoint lesson</a>, with <code>?debug=true</code> (eval profile only) returning ranked chunks.</p>
 
   <h3>Step 1: project setup</h3>
   <pre><code>uv init contract-evals &amp;&amp; cd contract-evals
@@ -133,13 +234,13 @@ uv add anthropic ragas
 export ANTHROPIC_API_KEY=sk-ant-...   # never commit; CI reads it from a secret</code></pre>
 
   <h3>Step 2: the golden set (golden.jsonl)</h3>
-  <p>One JSON object per line. Chunk ids follow the pattern <code>&lt;documentId&gt;#p&lt;page&gt;#c&lt;n&gt;</code> that the ingestion step writes into chunk metadata, so a label survives re-ingestion as long as chunking settings do not change. When you change chunk size, re-label (or label by (document, page) and treat any chunk on that page as relevant).</p>
+  <p>Chunk ids look like <code>&lt;documentId&gt;#p&lt;page&gt;#c&lt;n&gt;</code>; re-label if chunk size changes.</p>
   <pre><code>{"id": "liab-001", "question": "What is the liability cap in the Acme MSA?", "relevant_chunks": ["MSA-ACME-2025#p12#c0"], "reference": "Aggregate liability is capped at the fees paid in the 12 months before the claim (clause 7.2, page 12).", "must_cite": [["MSA-ACME-2025", 12]], "expect_refusal": false, "tags": ["liability"]}
 {"id": "term-004", "question": "How much notice is needed to terminate the Acme MSA for convenience?", "relevant_chunks": ["MSA-ACME-2025#p18#c1"], "reference": "30 days' written notice (clause 11.1, page 18).", "must_cite": [["MSA-ACME-2025", 18]], "expect_refusal": false, "tags": ["termination"]}
 {"id": "oos-002", "question": "What is the GST rate on software services?", "relevant_chunks": [], "reference": "", "must_cite": [], "expect_refusal": true, "tags": ["out-of-scope"]}</code></pre>
 
-  <h3>Step 3: retrieval metrics with a self-check (retrieval_metrics.py)</h3>
-  <pre><code>"""Retrieval metrics over ranked chunk ids. Pure Python, no dependencies."""
+  <h3>Step 3: retrieval metrics (retrieval_metrics.py)</h3>
+  <details class="code"><summary>Show Python: retrieval_metrics.py</summary><pre><code>"""Retrieval metrics over ranked chunk ids. Pure Python, no dependencies."""
 import math
 
 
@@ -176,13 +277,13 @@ if __name__ == "__main__":
     assert reciprocal_rank(ranked, gold) == 0.5
     assert abs(ndcg_at_k(ranked, gold, 5) - 0.6509) &lt; 1e-3, ndcg_at_k(ranked, gold, 5)
     assert reciprocal_rank(["x"], gold) == 0.0
-    print("retrieval metrics OK, nDCG@5 =", round(ndcg_at_k(ranked, gold, 5), 4))</code></pre>
+    print("retrieval metrics OK, nDCG@5 =", round(ndcg_at_k(ranked, gold, 5), 4))</code></pre></details>
   <pre><code>$ python3 retrieval_metrics.py
 retrieval metrics OK, nDCG@5 = 0.6509</code></pre>
 
   <h3>Step 4: a binary groundedness judge (judge.py)</h3>
-  <p>Haiku 4.5 is the judge: $1 per million input tokens and $5 per million output, and a yes/no decision does not need a bigger model once calibrated. Temperature 0, reason before verdict, and an unparseable reply counts as FAIL so a broken judge can never inflate the pass rate.</p>
-  <pre><code>"""Binary LLM judge: one failure mode per rubric, PASS/FAIL only."""
+  <p>Haiku 4.5, temperature 0, reason before verdict. Unparseable output counts as FAIL.</p>
+  <details class="code"><summary>Show Python: judge.py</summary><pre><code>"""Binary LLM judge: one failure mode per rubric, PASS/FAIL only."""
 import json
 
 import anthropic
@@ -213,11 +314,11 @@ def judge_grounded(question: str, answer: str, contexts: list[str]) -&gt; tuple[
         data = json.loads(text[text.index("{"): text.rindex("}") + 1])
         return data["verdict"] == "PASS", data.get("reasoning", "")
     except (ValueError, KeyError):
-        return False, f"unparseable judge output: {text[:200]}"  # count as FAIL, never silently pass</code></pre>
+        return False, f"unparseable judge output: {text[:200]}"  # count as FAIL, never silently pass</code></pre></details>
 
   <h3>Step 5: the runner and gate (run_evals.py)</h3>
-  <p>It asks every golden question, computes the deterministic metrics, calls the judge for answered cases, writes <code>report.json</code>, and exits with status 1 if any metric is below its threshold or dropped more than 3 points against the baseline report from <code>main</code>.</p>
-  <pre><code>"""Offline eval run: golden set -&gt; RAG endpoint -&gt; metrics -&gt; report.json; exit 1 on threshold or regression."""
+  <p>Exit 1 if any metric is under its threshold or dropped more than 3 points vs main.</p>
+  <details class="code"><summary>Show Python: run_evals.py</summary><pre><code>"""Offline eval run: golden set -&gt; RAG endpoint -&gt; metrics -&gt; report.json; exit 1 on threshold or regression."""
 import json
 import sys
 import urllib.request
@@ -277,7 +378,7 @@ def main(golden_path: str, baseline_path: str | None) -&gt; int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) &gt; 2 else None))</code></pre>
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) &gt; 2 else None))</code></pre></details>
   <pre><code>$ uv run python run_evals.py golden.jsonl baseline/report.json
 {
   "recall@5": 0.917,
@@ -289,11 +390,10 @@ if __name__ == "__main__":
 }
 $ echo $?
 0</code></pre>
-  <p>Your numbers will differ; what matters is the shape. When a change lowers <code>citation_ok</code> from 0.967 to 0.90 you get <code>FAIL: citation_ok regressed 0.967 -&gt; 0.9</code> and exit code 1. Open <code>report.json</code> and read the failing rows' <code>judge_reasoning</code>; that is where the fix comes from.</p>
 
   <h3>Step 6: a Ragas second opinion (ragas_faithfulness.py)</h3>
-  <p>Ragas 0.4 metrics live in <code>ragas.metrics.collections</code> and take an LLM built by <code>llm_factory</code>; Anthropic is a supported provider. Use it as a cross-check on your own judge, and for metrics you have not built yet (<code>ContextRecall</code> takes <code>user_input</code>, <code>retrieved_contexts</code>, <code>reference</code>; <code>AnswerRelevancy</code> also needs an embeddings object).</p>
-  <pre><code>"""Second opinion on groundedness with Ragas 0.4 Faithfulness (claims supported / total claims)."""
+  <p>Disagreement between Ragas and your judge is the cheapest way to find judge blind spots.</p>
+  <details class="code"><summary>Show Python: ragas_faithfulness.py</summary><pre><code>"""Second opinion on groundedness with Ragas 0.4 Faithfulness (claims supported / total claims)."""
 import asyncio
 import json
 import sys
@@ -316,15 +416,14 @@ async def main(report_path: str) -&gt; None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1]))</code></pre>
+    asyncio.run(main(sys.argv[1]))</code></pre></details>
   <pre><code>$ uv run python ragas_faithfulness.py report.json
 1.00  What is the liability cap in the Acme MSA?
 0.50  How much notice is needed to terminate the Acme MSA for conv
 mean faithfulness: 0.75</code></pre>
-  <p>A 0.50 means half the extracted claims were not found in the context; if your binary judge passed that same answer, look at it by hand. Disagreement between the two judges is the cheapest way to find judge blind spots.</p>
 
   <h3>Step 7: calibrate the judge (calibrate.py)</h3>
-  <pre><code>"""Judge vs human labels: agreement, Cohen's kappa, TPR, TNR. Input: list of (human_pass, judge_pass)."""
+  <details class="code"><summary>Show Python: calibrate.py</summary><pre><code>"""Judge vs human labels: agreement, Cohen's kappa, TPR, TNR. Input: list of (human_pass, judge_pass)."""
 
 
 def calibration(pairs: list[tuple[bool, bool]]) -&gt; dict:
@@ -342,14 +441,13 @@ def calibration(pairs: list[tuple[bool, bool]]) -&gt; dict:
 if __name__ == "__main__":
     labels = [(True, True)] * 54 + [(True, False)] * 6 + [(False, True)] * 10 + [(False, False)] * 30
     print(calibration(labels))
-    assert calibration(labels) == {"agreement": 0.84, "kappa": 0.661, "tpr": 0.9, "tnr": 0.75}</code></pre>
+    assert calibration(labels) == {"agreement": 0.84, "kappa": 0.661, "tpr": 0.9, "tnr": 0.75}</code></pre></details>
   <pre><code>$ python3 calibrate.py
 {'agreement': 0.84, 'kappa': 0.661, 'tpr': 0.9, 'tnr': 0.75}</code></pre>
-  <p>Feed it real pairs: export 100 traces to a spreadsheet, have a domain expert mark PASS/FAIL without seeing the judge's verdict, then join on trace id.</p>
 
   <h3>Step 8: run it in CI on prompt and retrieval changes</h3>
-  <p>Only run the expensive suite when something that affects answers changes: prompts, retrieval code, chunking config, model ids, or the golden set itself. Keep the main-branch report as the baseline artefact.</p>
-  <pre><code>name: rag-evals
+  <p>Trigger only on paths that change answers; keep main's report as the baseline.</p>
+  <details class="code"><summary>Show GitHub Actions workflow</summary><pre><code>name: rag-evals
 on:
   pull_request:
     paths:
@@ -380,11 +478,13 @@ jobs:
         run: uv run python run_evals.py golden.jsonl ../baseline/report.json
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: eval-report, path: evals/report.json }</code></pre>
-  <p><b>Cost per run</b>, 200 cases: the system under test on Sonnet 5.5 at about 4,000 input and 400 output tokens per answer is 200 × (4,000 × $2 + 400 × $10) / 1M = <b>$2.40</b>. The Haiku judge at about 1,500 input and 150 output tokens is 200 × (1,500 × $1 + 150 × $5) / 1M = <b>$0.45</b>. Under $3 per PR. To cut further: run deterministic metrics on every PR and the judge only when prompts change, sample a fixed stratified 50 on PRs and the full set nightly, and cache answers keyed by (prompt hash, model, question) so unchanged cases are not re-generated.</p>
+        with: { name: eval-report, path: evals/report.json }</code></pre></details>
+  <div class="stats"><div class="stat"><b>$2.40</b><span>200 answers on Sonnet 5.5</span></div><div class="stat"><b>$0.45</b><span>200 Haiku judge calls</span></div><div class="stat"><b>&lt; $3</b><span>per PR</span></div></div>
   <div class="callout warn"><b>Flakiness</b><p>Generation is non-deterministic, so a 1-point swing is noise. Gate on drops larger than your measured run-to-run variance (run the suite 3 times on an unchanged branch to measure it), and put hard floors only on deterministic metrics like citation and refusal.</p></div>
 
   <h3>Step 9: online metrics and user feedback</h3>
+  <p>Watch thumbs up/down, citation click-through, refusal rate per tenant, a 1–5% sampled online judge, p95 latency and cost per answer.</p>
+  <details class="deep"><summary>Go deeper: online signals table</summary>
   <div class="tbl"><table>
     <tr><th>Signal</th><th>How you collect it</th><th>What it catches</th></tr>
     <tr><td>Thumbs up/down + optional reason</td><td>UI buttons writing (trace id, verdict, reason) to a table</td><td>Wrong answers users notice; low volume, biased to angry users</td></tr>
@@ -393,9 +493,45 @@ jobs:
     <tr><td>Sampled online judge</td><td>Async job runs the groundedness judge on 1–5% of production traces</td><td>Quality drift on real questions, by tenant and document type</td></tr>
     <tr><td>Latency p95, tokens and cost per answer</td><td>Micrometer <code>gen_ai.client.token.usage</code> and timers</td><td>Cost and latency regressions that evals on a laptop miss</td></tr>
   </table></div>
+  </details>
+  <p>Weekly: read thumbs-down traces and online judge FAILs, fix the biggest failure mode, add the cases to <code>golden.jsonl</code>.</p>
+  <details class="deep"><summary>Go deeper: notes on each step</summary>
+  <p>You will build five small files. The system under test is the Spring Boot endpoint from <a href="learn-spring-rag-endpoint.html">the RAG endpoint lesson</a>; for evals it accepts <code>?debug=true</code> (disabled in production) and also returns the ranked retrieved chunks with their ids and text.</p>
+  <p>One JSON object per line. Chunk ids follow the pattern <code>&lt;documentId&gt;#p&lt;page&gt;#c&lt;n&gt;</code> that the ingestion step writes into chunk metadata, so a label survives re-ingestion as long as chunking settings do not change. When you change chunk size, re-label (or label by (document, page) and treat any chunk on that page as relevant).</p>
+  <p>Haiku 4.5 is the judge: $1 per million input tokens and $5 per million output, and a yes/no decision does not need a bigger model once calibrated. Temperature 0, reason before verdict, and an unparseable reply counts as FAIL so a broken judge can never inflate the pass rate.</p>
+  <p>It asks every golden question, computes the deterministic metrics, calls the judge for answered cases, writes <code>report.json</code>, and exits with status 1 if any metric is below its threshold or dropped more than 3 points against the baseline report from <code>main</code>.</p>
+  <p>Your numbers will differ; what matters is the shape. When a change lowers <code>citation_ok</code> from 0.967 to 0.90 you get <code>FAIL: citation_ok regressed 0.967 -&gt; 0.9</code> and exit code 1. Open <code>report.json</code> and read the failing rows' <code>judge_reasoning</code>; that is where the fix comes from.</p>
+  <p>Ragas 0.4 metrics live in <code>ragas.metrics.collections</code> and take an LLM built by <code>llm_factory</code>; Anthropic is a supported provider. Use it as a cross-check on your own judge, and for metrics you have not built yet (<code>ContextRecall</code> takes <code>user_input</code>, <code>retrieved_contexts</code>, <code>reference</code>; <code>AnswerRelevancy</code> also needs an embeddings object).</p>
+  <p>A 0.50 means half the extracted claims were not found in the context; if your binary judge passed that same answer, look at it by hand. Disagreement between the two judges is the cheapest way to find judge blind spots.</p>
+  <p>Feed it real pairs: export 100 traces to a spreadsheet, have a domain expert mark PASS/FAIL without seeing the judge's verdict, then join on trace id.</p>
+  <p>Only run the expensive suite when something that affects answers changes: prompts, retrieval code, chunking config, model ids, or the golden set itself. Keep the main-branch report as the baseline artefact.</p>
+  <p><b>Cost per run</b>, 200 cases: the system under test on Sonnet 5.5 at about 4,000 input and 400 output tokens per answer is 200 × (4,000 × $2 + 400 × $10) / 1M = <b>$2.40</b>. The Haiku judge at about 1,500 input and 150 output tokens is 200 × (1,500 × $1 + 150 × $5) / 1M = <b>$0.45</b>. Under $3 per PR. To cut further: run deterministic metrics on every PR and the judge only when prompts change, sample a fixed stratified 50 on PRs and the full set nightly, and cache answers keyed by (prompt hash, model, question) so unchanged cases are not re-generated.</p>
   <p>Weekly, read the thumbs-down traces and the online judge's FAILs, group them into failure modes, fix the biggest one, and add the cases to <code>golden.jsonl</code>. That loop is the real deliverable; the metrics just keep it honest.</p>
+  </details>
 
-  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>Stopping at "we use Ragas" with no golden set or calibration.</li>
+    <li>Using 1–10 scores and averaging them.</li>
+    <li>Gating on 1-point swings that are just run-to-run noise.</li>
+    <li>Only scoring the final answer, so you can't tell retrieval from generation failures.</li>
+    <li>Letting an unparseable judge reply count as PASS.</li>
+  </ul></div>
+
+  <h2 id="quiz"><span class="n">08</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">Recall@5 is 1.0 for a case but the groundedness judge fails it. Where is the bug?</p>
+    <div class="opts"><button class="opt" type="button">The retriever</button><button class="opt" type="button">The golden set</button><button class="opt" type="button">Generation: prompt, noisy context or chunk boundaries</button></div>
+    <p class="why">The evidence reached the prompt, so retrieval did its job. Try reranking to top 3, a stricter grounding prompt, or bigger chunks.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Your judge has 84% agreement with experts and TNR 0.75. What does that mean for a legal bot?</p>
+    <div class="opts"><button class="opt" type="button">It's good enough to gate on</button><button class="opt" type="button">One in four bad answers passes; tighten the rubric</button><button class="opt" type="button">It fails too many good answers</button></div>
+    <p class="why">TNR is the share of bad answers the judge catches. Missing bad answers is the dangerous direction for legal content.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Which retrieval metric do you gate a RAG release on?</p>
+    <div class="opts"><button class="opt" type="button">Recall@k</button><button class="opt" type="button">Precision@k</button><button class="opt" type="button">BLEU</button></div>
+    <p class="why">If the evidence never reaches the prompt, the model hallucinates or refuses wrongly. Precision and nDCG tune noise and ranking.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">How do you keep eval CI cheap and non-flaky?</p>
+    <div class="opts"><button class="opt" type="button">Run the full judged suite on every commit and fail on any drop</button><button class="opt" type="button">Skip the judge entirely</button><button class="opt" type="button">Path-filter, sample on PRs, full set nightly, gate on drops above measured variance</button></div>
+    <p class="why">Generation is non-deterministic. Measure run-to-run variance by running an unchanged branch 3 times, and gate above it.</p></div>
+
+  <h2 id="interviews"><span class="n">09</span>Interview questions</h2>
   <details class="qa"><summary>Design an eval pipeline for a RAG system. (Tekion)</summary><p>Four parts. (1) A versioned golden set of 50–300 cases stratified by intent, with chunk-level relevance labels, reference answers, must-cite pages and must-refuse cases. (2) Retrieval evaluated separately: recall@k as the gate, MRR/nDCG to judge rerankers. (3) Generation: deterministic checks (citations present and correct, refusal, format) plus a binary groundedness judge calibrated against 100 expert labels to kappa above 0.6. (4) CI on prompt/retrieval changes with thresholds and a baseline diff, plus online sampling of production traces into the same judge, thumbs feedback, and a weekly loop that turns failures into golden cases.</p></details>
   <details class="qa"><summary>Why binary pass/fail instead of a 1–10 score?</summary><p>Scales are not reproducible: the same answer gets a 6 or a 7 depending on the run, and humans cannot agree on the difference either, so you cannot calibrate. Binary verdicts with a one-sentence reason are easy to label, give a pass rate you can threshold, and force you to define exactly what failure means. If you need nuance, add another binary judge for another failure mode.</p></details>
   <details class="qa"><summary>How do you know your LLM judge is right?</summary><p>Calibrate it. A domain expert labels 100 traces blind; I compute agreement, Cohen's kappa, TPR and TNR. I care most about TNR, the share of bad answers the judge catches. I iterate the rubric until the numbers are acceptable, re-check when the judge model changes, and spot-check disagreements with Ragas faithfulness.</p></details>
@@ -407,8 +543,9 @@ jobs:
   <details class="qa"><summary>What biases does an LLM judge have?</summary><p>Position bias in pairwise comparisons (fix by swapping order and requiring consistency), verbosity bias (state length does not matter, check correlation with length), self-preference for its own model family (use a different judge model or prove it via calibration), and leniency on confident-sounding answers (require evidence from the context in the reason).</p></details>
   <details class="qa"><summary>Which online metrics do you watch after launch?</summary><p>Thumbs up/down rate with reasons, refusal rate per tenant, citation click-through, a sampled online groundedness judge, p95 latency and cost per answer. Each alert links to traces, and every confirmed failure becomes a golden case.</p></details>
 
-  <h2 id="capstone"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <h2 id="capstone"><span class="n">10</span>Capstone checkpoint</h2>
   <p>Week 7 milestone for the contract Q&amp;A + risky-clause flagger:</p>
+  <details class="deep"><summary>Show the six week-7 tasks</summary>
   <ol>
     <li>Write 60 golden cases over your 10–20 sample contracts: 40 answerable (lookups, numbers, multi-hop), 10 out-of-scope refusals, 10 adversarial (similar clauses across contracts, an injected instruction inside a contract).</li>
     <li>Add 30 cases for the risky-clause flagger: contract id plus the expected set of flagged clause numbers and risk types. Score with per-class precision and recall; a missed uncapped-liability clause matters more than a false flag.</li>
@@ -417,9 +554,22 @@ jobs:
     <li>Make one deliberate improvement (reranking, chunk size, a stricter prompt) and show the before/after table. This table is your strongest interview artefact.</li>
     <li>Wire the GitHub Actions workflow so a PR that edits a prompt shows the eval summary.</li>
   </ol>
+  </details>
   <div class="callout tip"><b>Done when</b><p>Your README has a metrics table with dataset version, a CI run link, a calibrated judge with its kappa, and one improvement proven by numbers.</p></div>
 
-  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <h2 id="cheat"><span class="n">11</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Golden set: 50 → 300 cases, stratified, versioned in git, includes refusals and adversarial.</li>
+    <li>Retrieval: recall@k is the gate; MRR/nDCG judge rerankers.</li>
+    <li>Generation: faithfulness, relevance, correctness, citations, refusal.</li>
+    <li>Judge: binary, one per failure mode, reason before verdict, unparseable = FAIL.</li>
+    <li>Calibrate on 100 expert labels: kappa &gt; 0.6, watch TNR.</li>
+    <li>Biases: position, verbosity, self-preference.</li>
+    <li>CI: path-filtered, thresholds + baseline diff, under $3 per PR.</li>
+    <li>Online: thumbs, refusal rate, sampled judge, p95, cost → new golden cases.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">12</span>Sources / go deeper</h2>
   <ul class="sources">
     <li><a href="https://hamel.dev/blog/posts/evals/" target="_blank" rel="noopener">Hamel Husain, "Your AI Product Needs Evals" (March 2024)</a></li>
     <li><a href="https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/" target="_blank" rel="noopener">Ragas docs: available metrics</a></li>
@@ -432,5 +582,6 @@ jobs:
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-spring-rag-endpoint.html">RAG endpoint</a> · <a href="learn-production-ai.html">Production AI</a> · <a href="ai-rag-enterprise-qa.html">RAG enterprise Q&amp;A design</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

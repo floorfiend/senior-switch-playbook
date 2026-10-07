@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html" aria-current="page">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../backend.html">Lesson · Java &amp; backend</a></div>
   <h1>Database isolation, locking and indexes</h1>
-  <p class="lede">What actually happens inside PostgreSQL and MySQL InnoDB when two transactions touch the same rows, how an index finds a row in three page reads, and the SQL you will be asked to write live. Enough depth to survive a dedicated database round.</p>
+  <p class="lede">Name the anomaly two transactions can cause, pick the fix your database actually needs, and explain how an index finds a row in three page reads.</p>
   <div class="facts">
     <span class="fact"><b>Study time:</b> 5–6 hours</span>
     <span class="fact"><b>Exercise:</b> 45 min with Docker</span>
@@ -20,19 +20,44 @@
   </div>
   <div class="chips"><span class="chip hot">Dream11</span><span class="chip hot">Zomato</span><span class="chip">InMobi</span><span class="chip">Freshworks</span><span class="chip">CRED</span><span class="chip">JPMC</span><span class="chip">Goldman Sachs</span><span class="chip">Kotak</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Five anomalies: dirty read, non-repeatable, phantom, lost update, write skew.</li>
+    <li>"Repeatable Read" means different things in Postgres and MySQL.</li>
+    <li>Read-modify-write: atomic update, conditional update, row lock, or version column.</li>
+    <li>A B+tree finds any row in 3–4 page reads.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A library register. MVCC hands each reader a photocopy of the register as it was when they walked in. A lock is the librarian holding the register while someone writes. An index is the floor → aisle → shelf signboard that gets you to one book in three looks.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#why">Why interviewers ask this</a></li>
-    <li><a href="#concepts">Core concepts</a></li>
-    <li><a href="#internals">How it works internally</a></li>
+    <li><a href="#concepts">The five anomalies, as races</a></li>
+    <li><a href="#levels">Which level prevents what</a></li>
+    <li><a href="#fixes">Fixing read-modify-write</a></li>
+    <li><a href="#internals">MVCC, locks and deadlocks</a></li>
+    <li><a href="#indexes">B-tree indexes and EXPLAIN</a></li>
+    <li><a href="#lsm">LSM trees, Cassandra and replication</a></li>
     <li><a href="#patterns">Patterns and production gotchas</a></li>
+    <li><a href="#quiz">Quick check</a></li>
     <li><a href="#qa">Interview questions</a></li>
-    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
-  <p>Every backend system you will design in an interview ends at a database, and the senior signal is whether you know what the database guarantees and what it does not. Real 2025–26 reports:</p>
-  <ul>
+  <div class="tbl"><table>
+    <tr><th>Company</th><th>Asked</th></tr>
+    <tr><td>Dream11 SDE-2</td><td>An hour of isolation, locks and replication, starting from your project.</td></tr>
+    <tr><td>Zomato SDE-2</td><td>Latest state per order in the last hour; which indexes at scale?</td></tr>
+    <tr><td>InMobi SDE-2</td><td>Seat booking: pessimistic vs optimistic locking.</td></tr>
+    <tr><td>Freshworks, Kotak</td><td>How indexes work; what locks exist and when to avoid them.</td></tr>
+    <tr><td>CRED SDE-2</td><td>LSM trees and SSTables. Candidate named them, could not explain, rejected.</td></tr>
+    <tr><td>JPMC Lead SE</td><td>Cassandra partition vs clustering key, tunable consistency.</td></tr>
+  </table></div>
+  <div class="callout info"><b>The bar for 5 years of experience</b><p>Name the anomaly, say which isolation level prevents it in your database, and give the fix you would ship. "Use transactions" reads as junior.</p></div>
+  <details class="deep"><summary>Go deeper: the full interview reports</summary>
+    <p>Every backend system you will design in an interview ends at a database, and the senior signal is whether you know what the database guarantees and what it does not. Real 2025–26 reports:</p>
+    <ul>
     <li><b>Dream11 SDE-2</b> ran a round that started from the candidate's project, moved to why that database was chosen, then into concurrency control, isolation levels, locks and replication, all scenario-based, for an hour.</li>
     <li><b>Zomato SDE-2</b> gave an order-state-transition table (Created → Confirmed → Reached Merchant → Reached Customer → Delivered) and asked for every order's latest state in the last hour, excluding delivered ones, then "how does this behave at scale, which indexes would you add?"</li>
     <li><b>InMobi SDE-2</b> asked how to handle concurrency during seat booking: pessimistic versus optimistic locking, then the core booking code.</li>
@@ -41,12 +66,45 @@
     <li><b>JPMC Lead SE</b>: rapid fire on Cassandra replication factor, partition key versus clustering key, and tuning consistency.</li>
     <li><b>Kotak SDE-2</b>: what is a lock, which kinds exist, when to use one and when to avoid it.</li>
   </ul>
-  <div class="callout info"><b>The bar for 5 years of experience</b><p>Name the anomaly, say which isolation level prevents it in the database you actually use, and give the fix you would ship (atomic update, row lock, version column or SERIALIZABLE with retry). Generic "use transactions" answers read as junior.</p></div>
+    <p>Name the anomaly, say which isolation level prevents it in the database you actually use, and give the fix you would ship (atomic update, row lock, version column or SERIALIZABLE with retry). Generic "use transactions" answers read as junior.</p>
+  </details>
 
-  <h2 id="concepts"><span class="n">02</span>Core concepts, built up</h2>
-
-  <h3>Transactions and the five anomalies</h3>
-  <p>A transaction is a unit that commits or rolls back as a whole. Isolation is the "I" in ACID: how much one in-flight transaction can see or disturb another. Full isolation (serializability) means the result equals some one-at-a-time ordering. Weaker levels trade correctness for concurrency, and each lets specific anomalies through.</p>
+  <h2 id="concepts"><span class="n">02</span>The five anomalies, as races</h2>
+  <p><dfn title="How much one in-flight transaction can see or disturb another; the I in ACID">Isolation</dfn> decides what a running transaction can see of another. Each row below is one moment in time.</p>
+  <h3>Dirty read</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>T1 (transfer)</th><th>T2 (payment page)</th></tr></thead><tbody>
+    <tr><td>t1</td><td><code>UPDATE balance = 500</code> (not committed)</td><td></td></tr>
+    <tr><td>t2</td><td></td><td>reads 500</td></tr>
+    <tr><td>t3</td><td><code>ROLLBACK</code></td><td class="bad">showed money that never existed</td></tr>
+  </tbody></table></div>
+  <h3>Non-repeatable read</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>T1 (invoice report)</th><th>T2</th></tr></thead><tbody>
+    <tr><td>t1</td><td>reads price = 100</td><td></td></tr>
+    <tr><td>t2</td><td></td><td>updates price to 120, commits</td></tr>
+    <tr><td>t3</td><td class="bad">reads price = 120 in the same report</td><td></td></tr>
+  </tbody></table></div>
+  <h3>Phantom</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>T1</th><th>T2</th></tr></thead><tbody>
+    <tr><td>t1</td><td><code>COUNT(*)</code> bookings for the slot = 3</td><td></td></tr>
+    <tr><td>t2</td><td></td><td>inserts a booking, commits</td></tr>
+    <tr><td>t3</td><td class="bad">same count now returns 4</td><td></td></tr>
+  </tbody></table></div>
+  <h3>Lost update</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Signer A</th><th>Signer B</th><th>signed_count</th></tr></thead><tbody>
+    <tr><td>t1</td><td>reads 2</td><td></td><td>2</td></tr>
+    <tr><td>t2</td><td></td><td>reads 2</td><td>2</td></tr>
+    <tr><td>t3</td><td>writes 3, commits</td><td></td><td>3</td></tr>
+    <tr><td>t4</td><td></td><td>writes 3, commits</td><td class="bad">3, should be 4</td></tr>
+  </tbody></table></div>
+  <h3>Write skew</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>T1 (Alice)</th><th>T2 (Bob)</th><th>On call</th></tr></thead><tbody>
+    <tr><td>t1</td><td>counts on-call doctors: 2</td><td>counts on-call doctors: 2</td><td>Alice, Bob</td></tr>
+    <tr><td>t2</td><td>sets <b>Alice</b> off call</td><td>sets <b>Bob</b> off call</td><td>different rows</td></tr>
+    <tr><td>t3</td><td>commits</td><td>commits</td><td class="bad">nobody on call</td></tr>
+  </tbody></table></div>
+  <p>Write skew is the sneaky one: each transaction updates a <i>different</i> row, so no row lock ever conflicts.</p>
+  <details class="deep"><summary>Go deeper: definitions and examples of all five</summary>
+    <p>A transaction is a unit that commits or rolls back as a whole. Isolation is the "I" in ACID: how much one in-flight transaction can see or disturb another. Full isolation (serializability) means the result equals some one-at-a-time ordering. Weaker levels trade correctness for concurrency, and each lets specific anomalies through.</p>
   <div class="tbl"><table>
     <tr><th>Anomaly</th><th>What happens</th><th>Concrete example</th></tr>
     <tr><td>Dirty read</td><td>T2 reads data T1 wrote but has not committed; T1 rolls back.</td><td>Payment page shows a balance credited by a transfer that later failed.</td></tr>
@@ -55,9 +113,22 @@
     <tr><td>Lost update</td><td>Both read X, both compute X+1, both write; one increment vanishes.</td><td>Two signers update <code>signed_count</code> on the same envelope; one is lost.</td></tr>
     <tr><td>Write skew</td><td>Both read an overlapping set, each updates a <i>different</i> row based on what it read, and together they break an invariant.</td><td>Two on-call doctors each check "someone else is on call" and both go off call.</td></tr>
   </table></div>
+  </details>
 
-  <h3>Which level prevents which, in PostgreSQL and MySQL</h3>
-  <p>The SQL standard defines levels by the anomalies they forbid, but real engines differ. This table is what interviewers probe:</p>
+  <h2 id="levels"><span class="n">03</span>Which level prevents what</h2>
+  <div class="tbl"><table class="race"><thead><tr><th>Level</th><th>Dirty</th><th>Non-repeat.</th><th>Phantom</th><th>Lost update</th><th>Write skew</th></tr></thead><tbody>
+    <tr><td><b>PG</b> Read Committed (default)</td><td class="ok">safe</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td></tr>
+    <tr><td><b>PG</b> Repeatable Read</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">2nd writer errors</td><td class="bad">yes</td></tr>
+    <tr><td><b>PG</b> Serializable (SSI)</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">one aborts (40001)</td></tr>
+    <tr><td><b>MySQL</b> Read Uncommitted</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td></tr>
+    <tr><td><b>MySQL</b> Read Committed</td><td class="ok">safe</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td><td class="bad">yes</td></tr>
+    <tr><td><b>MySQL</b> Repeatable Read (default)</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">snapshot / gap locks</td><td class="bad">silently lost</td><td class="bad">yes</td></tr>
+    <tr><td><b>MySQL</b> Serializable</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td><td class="ok">safe</td></tr>
+  </tbody></table></div>
+  <p>PG Read Uncommitted behaves exactly like Read Committed.</p>
+  <div class="callout warn"><b>The trap answer</b><p>"Repeatable Read prevents lost updates" is true in PostgreSQL and false in MySQL InnoDB. Same name, different engine behaviour. If you use MySQL at Repeatable Read and do <code>SELECT</code> then <code>UPDATE ... SET count = ?</code>, you can lose writes. Say which engine you mean.</p></div>
+  <details class="deep"><summary>Go deeper: the full matrix with engine notes</summary>
+    <p>The SQL standard defines levels by the anomalies they forbid, but real engines differ. This table is what interviewers probe:</p>
   <div class="tbl"><table>
     <tr><th>Level</th><th>Dirty</th><th>Non-repeatable</th><th>Phantom</th><th>Lost update</th><th>Write skew</th></tr>
     <tr><td><b>PG</b> Read Uncommitted</td><td colspan="5">Behaves exactly like Read Committed in PostgreSQL</td></tr>
@@ -69,10 +140,16 @@
     <tr><td><b>MySQL</b> Repeatable Read (default)</td><td>Prevented</td><td>Prevented for plain SELECT</td><td>Plain SELECT: snapshot hides them. Locking reads: next-key locks block inserts</td><td><b>Not detected</b>: UPDATE reads the latest committed row, so read-modify-write silently loses</td><td>Possible</td></tr>
     <tr><td><b>MySQL</b> Serializable</td><td>Prevented</td><td>Prevented</td><td>Prevented</td><td>Prevented (plain SELECT becomes <code>FOR SHARE</code>; conflicts deadlock and one aborts)</td><td>Prevented</td></tr>
   </table></div>
-  <div class="callout warn"><b>The trap answer</b><p>"Repeatable Read prevents lost updates" is true in PostgreSQL and false in MySQL InnoDB. Same name, different engine behaviour. If you use MySQL at Repeatable Read and do <code>SELECT</code> then <code>UPDATE ... SET count = ?</code>, you can lose writes. Say which engine you mean.</p></div>
+  </details>
 
-  <h3>The four fixes for read-modify-write</h3>
-  <pre><code>-- 1. Atomic update: let the database do the arithmetic (best when possible)
+  <h2 id="fixes"><span class="n">04</span>Fixing read-modify-write</h2>
+  <div class="keys">
+    <div class="key"><h4>1. Atomic update</h4><p>Let the DB do the arithmetic: <code>SET n = n + 1</code>.</p></div>
+    <div class="key"><h4>2. Conditional update</h4><p><code>UPDATE … WHERE status = 'FREE'</code>, check rows affected. No lock, no version, no retry loop. Most candidates miss it.</p></div>
+    <div class="key"><h4>3. Row lock</h4><p><code>SELECT … FOR UPDATE</code>, then write.</p></div>
+    <div class="key"><h4>4. Version column</h4><p><code>WHERE version = ?</code>; 0 rows means someone else won.</p></div>
+  </div>
+  <details class="code"><summary>Show SQL: the four fixes</summary><pre><code>-- 1. Atomic update: let the database do the arithmetic (best when possible)
 UPDATE envelope SET signed_count = signed_count + 1 WHERE id = :id;
 
 -- 2. Conditional atomic update: encode the invariant in the WHERE clause
@@ -87,15 +164,12 @@ COMMIT;
 
 -- 4. Optimistic lock: version column checked at write time
 UPDATE seat SET status = 'BOOKED', version = version + 1
-WHERE id = :id AND version = :versionIRead;     -- 0 rows = conflict, retry or fail</code></pre>
-  <p>Option 2 is the one most candidates miss. For "hold this seat" it needs no explicit lock, no version column and no retry loop: the row lock taken by the UPDATE plus the predicate make it safe at any isolation level.</p>
-
-  <h3>Pessimistic versus optimistic (the InMobi question)</h3>
-  <div class="grid">
-    <div class="card"><h4>Pessimistic: <code>SELECT … FOR UPDATE</code></h4><ul><li>Takes a row lock on read; others block until commit.</li><li>Good when conflicts are frequent (hot seats in the first minute of a sale, one wallet row).</li><li>Costs: blocked threads hold DB connections; deadlock risk; never hold it across an HTTP call.</li><li>Use <code>NOWAIT</code> or a lock timeout so users get "seat taken" instead of a 30-second spinner.</li></ul></div>
-    <div class="card"><h4>Optimistic: JPA <code>@Version</code></h4><ul><li>No lock on read; the UPDATE checks the version.</li><li>Good when conflicts are rare and transactions are short or span user think-time (edit form open for two minutes).</li><li>Loser gets an exception: retry automatically if the operation is idempotent, or show "someone changed this".</li><li>Under heavy contention it degrades into retry storms.</li></ul></div>
+WHERE id = :id AND version = :versionIRead;     -- 0 rows = conflict, retry or fail</code></pre></details>
+  <div class="vs">
+    <div><h4>Pessimistic: <code>FOR UPDATE</code></h4><ul><li class="pro">No retries</li><li class="con">Blocked threads hold DB connections; deadlock risk</li><li class="con">Never hold it across an HTTP call</li></ul><p class="when">Frequent conflicts: hot seats, one wallet row. Use <code>NOWAIT</code> or a lock timeout.</p></div>
+    <div class="pick"><h4>Optimistic: <code>@Version</code> <span class="tag">usual pick</span></h4><ul><li class="pro">No lock on read; works across user think-time</li><li class="con">Loser gets an exception and retries</li><li class="con">Retry storms under heavy contention</li></ul><p class="when">Rare conflicts, short transactions, edit forms.</p></div>
   </div>
-  <pre><code>@Entity
+  <details class="code"><summary>Show Java: Seat entity with @Version and a locking query</summary><pre><code>@Entity
 public class Seat {
     @Id private Long id;
     private String status;
@@ -111,11 +185,8 @@ public interface SeatRepository extends JpaRepository&lt;Seat, Long&gt; {
     @Modifying
     @Query("update Seat s set s.status = 'HELD', s.heldBy = :user where s.id = :id and s.status = 'FREE'")
     int tryHold(@Param("id") Long id, @Param("user") String user);   // 1 = held, 0 = lost the race
-}</code></pre>
-  <p>With <code>@Version</code>, a stale write throws <code>OptimisticLockException</code>, which Spring translates to <code>ObjectOptimisticLockingFailureException</code>. It surfaces at flush or commit, not at the <code>save()</code> line, so catch it outside the <code>@Transactional</code> method if you want to retry.</p>
-
-  <h3>Queue-style locking: <code>SKIP LOCKED</code></h3>
-  <p>For a table used as a work queue (outbox relays, document-processing jobs), many workers must each grab different rows without blocking each other.</p>
+}</code></pre></details>
+  <h3>Work queues: <code>SKIP LOCKED</code></h3>
   <pre><code>-- Each worker claims up to 50 unclaimed jobs; rows locked by other workers are skipped, not waited on
 WITH next AS (
   SELECT id FROM job
@@ -127,16 +198,19 @@ WITH next AS (
 UPDATE job SET status = 'RUNNING', locked_by = :worker, locked_at = now()
 FROM next WHERE job.id = next.id
 RETURNING job.*;</code></pre>
-  <p>PostgreSQL has supported <code>SKIP LOCKED</code> since 9.5 and MySQL since 8.0. Pair it with a partial index on pending rows (below) and a reaper that resets rows stuck in RUNNING after a lease expires.</p>
-
-  <h2 id="internals"><span class="n">03</span>How it works internally</h2>
-
-  <h3>MVCC: readers do not block writers</h3>
-  <p>Both engines use multi-version concurrency control: an UPDATE creates a new version of the row instead of overwriting it, and each transaction reads the version that was committed as of its snapshot.</p>
-  <div class="grid">
-    <div class="card"><h4>PostgreSQL</h4><ul><li>Every heap tuple carries <code>xmin</code> (creating transaction) and <code>xmax</code> (deleting or updating transaction).</li><li>UPDATE = write a new tuple + set <code>xmax</code> on the old one. Old versions stay in the table until <b>VACUUM</b> removes them.</li><li>A snapshot is the set of transaction IDs that were in progress; visibility is computed per tuple.</li><li>Read Committed takes a new snapshot per statement; Repeatable Read takes one at the first statement.</li><li>Cost: table and index bloat, and long-running transactions stop VACUUM from cleaning anything newer than them.</li></ul></div>
-    <div class="card"><h4>MySQL InnoDB</h4><ul><li>Updates the row in place in the clustered index and writes the previous version to the <b>undo log</b>.</li><li>A <b>read view</b> decides visibility; older versions are rebuilt by walking undo records.</li><li>A purge thread discards undo once no read view needs it.</li><li>Locking reads and UPDATE/DELETE read the <i>latest</i> committed version, not the snapshot. This is why RR does not detect lost updates.</li><li>Cost: long transactions grow the undo history ("history list length").</li></ul></div>
+  <p>Each worker claims different rows without waiting. Pair it with a partial index on pending rows and a reaper for expired leases.</p>
+  <details class="deep"><summary>Go deeper: pessimistic vs optimistic, exceptions and SKIP LOCKED</summary>
+    <p>Option 2 is the one most candidates miss. For "hold this seat" it needs no explicit lock, no version column and no retry loop: the row lock taken by the UPDATE plus the predicate make it safe at any isolation level.</p>
+    <div class="grid">
+    <div class="card"><h4>Pessimistic: <code>SELECT … FOR UPDATE</code></h4><ul><li>Takes a row lock on read; others block until commit.</li><li>Good when conflicts are frequent (hot seats in the first minute of a sale, one wallet row).</li><li>Costs: blocked threads hold DB connections; deadlock risk; never hold it across an HTTP call.</li><li>Use <code>NOWAIT</code> or a lock timeout so users get "seat taken" instead of a 30-second spinner.</li></ul></div>
+    <div class="card"><h4>Optimistic: JPA <code>@Version</code></h4><ul><li>No lock on read; the UPDATE checks the version.</li><li>Good when conflicts are rare and transactions are short or span user think-time (edit form open for two minutes).</li><li>Loser gets an exception: retry automatically if the operation is idempotent, or show "someone changed this".</li><li>Under heavy contention it degrades into retry storms.</li></ul></div>
   </div>
+    <p>With <code>@Version</code>, a stale write throws <code>OptimisticLockException</code>, which Spring translates to <code>ObjectOptimisticLockingFailureException</code>. It surfaces at flush or commit, not at the <code>save()</code> line, so catch it outside the <code>@Transactional</code> method if you want to retry.</p>
+    <p>For a table used as a work queue (outbox relays, document-processing jobs), many workers must each grab different rows without blocking each other.</p>
+    <p>PostgreSQL has supported <code>SKIP LOCKED</code> since 9.5 and MySQL since 8.0. Pair it with a partial index on pending rows (below) and a reaper that resets rows stuck in RUNNING after a lease expires.</p>
+  </details>
+
+  <h2 id="internals"><span class="n">05</span>MVCC, locks and deadlocks</h2>
   <div class="flow">
     <span class="node">T1 snapshot<small>txid 100</small></span><span class="arrow">→</span>
     <span class="node store">row v1<small>xmin 90</small></span><span class="arrow">←<small>UPDATE</small></span>
@@ -144,8 +218,30 @@ RETURNING job.*;</code></pre>
     <span class="node store hl">row v2<small>xmin 101</small></span>
   </div>
   <p class="flow-caption">Figure: T1 started before T2 committed, so T1 keeps reading v1. A new transaction sees v2. VACUUM removes v1 once no snapshot can see it.</p>
-
-  <h3>Lock types you should name</h3>
+  <p><dfn title="Multi-version concurrency control: updates create new row versions, readers see the version committed as of their snapshot">MVCC</dfn>: readers never block writers.</p>
+  <div class="vs">
+    <div><h4>PostgreSQL</h4><ul><li class="pro">New tuple per UPDATE (<code>xmin</code>/<code>xmax</code>)</li><li class="con">VACUUM must clean old versions; bloat</li><li class="con">Long transactions stall VACUUM</li></ul></div>
+    <div><h4>MySQL InnoDB</h4><ul><li class="pro">Update in place, old version in undo log</li><li class="con">UPDATE reads the <i>latest</i> row, not the snapshot</li><li class="con">Long transactions grow undo history</li></ul></div>
+  </div>
+  <div class="keys">
+    <div class="key"><h4>Row exclusive</h4><p><code>FOR UPDATE</code>, UPDATE, DELETE. Blocks writers; plain reads pass.</p></div>
+    <div class="key"><h4>Gap / next-key</h4><p>InnoDB RR: locks the gap so nobody inserts into a scanned range.</p></div>
+    <div class="key"><h4>SIRead (PG Serializable)</h4><p>Non-blocking; records reads so SSI can abort a dangerous cycle.</p></div>
+    <div class="key"><h4>Advisory</h4><p>App-defined lock on a number: "one instance runs this tenant's job".</p></div>
+  </div>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>T1</th><th>T2</th></tr></thead><tbody>
+    <tr><td>t1</td><td>locks row A</td><td>locks row B</td></tr>
+    <tr><td>t2</td><td>wants B: waits</td><td>wants A: waits</td></tr>
+    <tr><td>t3</td><td colspan="2" class="bad">Deadlock. PG aborts one after 1 s (40P01); InnoDB at once (1213)</td></tr>
+    <tr><td>fix</td><td colspan="2" class="ok"><code>ORDER BY id FOR UPDATE</code>; short transactions; bounded retry</td></tr>
+  </tbody></table></div>
+  <details class="deep"><summary>Go deeper: MVCC in both engines, every lock type, deadlock handling</summary>
+    <p>Both engines use multi-version concurrency control: an UPDATE creates a new version of the row instead of overwriting it, and each transaction reads the version that was committed as of its snapshot.</p>
+  <div class="grid">
+    <div class="card"><h4>PostgreSQL</h4><ul><li>Every heap tuple carries <code>xmin</code> (creating transaction) and <code>xmax</code> (deleting or updating transaction).</li><li>UPDATE = write a new tuple + set <code>xmax</code> on the old one. Old versions stay in the table until <b>VACUUM</b> removes them.</li><li>A snapshot is the set of transaction IDs that were in progress; visibility is computed per tuple.</li><li>Read Committed takes a new snapshot per statement; Repeatable Read takes one at the first statement.</li><li>Cost: table and index bloat, and long-running transactions stop VACUUM from cleaning anything newer than them.</li></ul></div>
+    <div class="card"><h4>MySQL InnoDB</h4><ul><li>Updates the row in place in the clustered index and writes the previous version to the <b>undo log</b>.</li><li>A <b>read view</b> decides visibility; older versions are rebuilt by walking undo records.</li><li>A purge thread discards undo once no read view needs it.</li><li>Locking reads and UPDATE/DELETE read the <i>latest</i> committed version, not the snapshot. This is why RR does not detect lost updates.</li><li>Cost: long transactions grow the undo history ("history list length").</li></ul></div>
+  </div>
+    <h3>Lock types you should name</h3>
   <div class="tbl"><table>
     <tr><th>Lock</th><th>Where</th><th>What it does</th></tr>
     <tr><td>Row exclusive (<code>FOR UPDATE</code>, UPDATE, DELETE)</td><td>Both</td><td>Blocks other writers and other locking reads of the row. Plain MVCC reads still go through.</td></tr>
@@ -163,23 +259,46 @@ RETURNING job.*;</code></pre>
     <li><b>Prevent:</b> lock rows in a consistent order (<code>ORDER BY id FOR UPDATE</code>; in a transfer, always lock the lower account ID first), keep transactions short, add indexes so UPDATEs lock fewer rows (an unindexed WHERE in InnoDB locks every scanned row and gap).</li>
     <li><b>Handle:</b> deadlocks are normal under load. Retry the whole transaction a bounded number of times. Spring surfaces them as <code>CannotAcquireLockException</code> / <code>PessimisticLockingFailureException</code>.</li>
   </ul>
+  </details>
 
-  <h3>B-tree indexes</h3>
-  <p>Both engines use B+trees: values only in the leaves, internal pages hold separator keys and child pointers, leaves are linked for range scans. Pages are 8 KB in PostgreSQL and 16 KB in InnoDB. With a fan-out of several hundred keys per page, three or four levels reach hundreds of millions of rows, so a point lookup is three or four page reads, most from cache.</p>
-  <div class="flow">
-    <span class="node">Root page<small>keys 1000 | 5000</small></span><span class="arrow">→</span>
-    <span class="node">Internal page<small>1000 | 2000 | 3000</small></span><span class="arrow">→</span>
-    <span class="node hl">Leaf page<small>sorted keys + pointers</small></span><span class="arrow">↔</span>
-    <span class="node">Next leaf<small>range scan</small></span>
+  <h2 id="indexes"><span class="n">06</span>B-tree indexes and EXPLAIN</h2>
+  <div class="stepper"><b class="title">B+tree lookup: WHERE id = 2345, then a range scan</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">&lt; 1000</span><span class="cell">1000</span><span class="cell dim">…</span><span class="cell">5000</span><span class="cell dim">≥ 5000</span></div>
+      <div class="ptrs"><span class="on">root page</span><span>reads = 1</span></div>
+      <figcaption>Start at the root. It holds only separator keys and child pointers, a few hundred per 8 KB (PG) or 16 KB (InnoDB) page.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">&lt; 1000</span><span class="cell hl">1000 ≤ 2345 &lt; 5000</span><span class="cell dim">≥ 5000</span></div>
+      <div class="ptrs"><span class="on">follow middle child</span><span>reads = 1</span></div>
+      <figcaption>2345 is between 1000 and 5000, so follow that one pointer. Every other branch is skipped.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">1000</span><span class="cell hl">2000</span><span class="cell">3000</span><span class="cell">4000</span></div>
+      <div class="ptrs"><span class="on">internal page</span><span>2000 ≤ 2345 &lt; 3000</span><span>reads = 2</span></div>
+      <figcaption>The internal page narrows it again to the 2000–2999 child.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">2101</span><span class="cell">2230</span><span class="cell hl">2345</span><span class="cell">2480</span><span class="cell">2611</span></div>
+      <div class="ptrs"><span class="on">leaf page</span><span>found</span><span>reads = 3</span></div>
+      <figcaption>The leaf holds sorted keys. Found in 3 page reads; four levels cover hundreds of millions of rows.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell hl">2345 → ctid (12,7)</span><span class="cell win">heap page 12</span></div>
+      <div class="ptrs"><span>PostgreSQL</span><span class="on">+1 heap read</span><span>InnoDB: row is in the leaf</span></div>
+      <figcaption>PG leaves point into the heap (unless an index-only scan applies). In InnoDB the PK leaf <i>is</i> the row.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell win">2345</span><span class="cell win">2480</span><span class="cell win">2611</span><span class="cell">→</span><span class="cell win">3002</span><span class="cell hl">3010</span><span class="cell dim">3055</span></div>
+      <div class="ptrs"><span class="on">BETWEEN 2345 AND 3010</span><span>walk sibling leaves</span></div>
+      <figcaption>A range scan finds 2345 once, then walks the linked leaves until a key passes 3010.</figcaption>
+    </figure>
+  </div></div>
+  <div class="vs">
+    <div><h4>InnoDB: clustered</h4><ul><li class="pro">Table is the PK tree; PK lookup returns the row</li><li class="con">Secondary index → PK → second walk</li><li class="con">Random UUIDv4 keys split pages; use BIGINT or UUIDv7</li></ul></div>
+    <div><h4>PostgreSQL: heap</h4><ul><li class="pro">Every index points to a tuple ID</li><li class="con">Index-only scan needs pages marked all-visible by VACUUM</li></ul></div>
   </div>
-  <p class="flow-caption">Figure: a lookup descends from root to leaf; a range scan walks sibling leaves.</p>
-  <div class="grid">
-    <div class="card"><h4>InnoDB: clustered</h4><p>The table <i>is</i> the primary-key B+tree; leaves hold full rows. Secondary index leaves hold the PK value, so a secondary lookup is two tree walks. Random UUIDv4 primary keys insert all over the tree and cause page splits; prefer <code>BIGINT</code> or time-ordered UUIDv7.</p></div>
-    <div class="card"><h4>PostgreSQL: heap</h4><p>Rows live in an unordered heap; every index (including the PK) points to a tuple ID (<code>ctid</code>). An index-only scan can skip the heap only when the visibility map marks the page all-visible, which VACUUM maintains. PostgreSQL 18 adds a built-in <code>uuidv7()</code>.</p></div>
-  </div>
-
-  <h3>Composite index column order</h3>
-  <p>A composite index on <code>(a, b, c)</code> is sorted by a, then b within a, then c. It serves queries that constrain a leftmost prefix. Order columns as <b>equality, then sort, then range</b>:</p>
+  <h3>Composite order: equality, then sort, then range</h3>
   <pre><code>-- Query: a tenant's pending documents, newest first
 SELECT id, title FROM document
 WHERE tenant_id = ? AND status = 'PENDING' AND created_at &gt; now() - interval '7 days'
@@ -188,9 +307,7 @@ ORDER BY created_at DESC LIMIT 20;
 CREATE INDEX idx_doc_tenant_status_created
   ON document (tenant_id, status, created_at DESC);   -- equality, equality, range+sort
 -- (created_at, tenant_id, status) would scan every tenant's last 7 days and then filter</code></pre>
-  <p>A range condition stops the index from narrowing later columns, because within the range the later column is no longer sorted. Higher selectivity first is a weaker rule than "equality before range". PostgreSQL 18 adds <b>skip scan</b>, so a B-tree on <code>(status, created_at)</code> can now serve <code>WHERE created_at &gt; …</code> when <code>status</code> has few distinct values. Do not rely on it in an interview answer; design the index for the query.</p>
-
-  <h3>Covering and partial indexes</h3>
+  <p>After a range column, later columns are no longer sorted, so the index cannot narrow them.</p>
   <pre><code>-- Covering: the index has every column the query needs, so the table is never touched
 CREATE INDEX idx_order_user ON orders (user_id, created_at DESC) INCLUDE (status, amount);  -- PG 11+
 -- MySQL: put the columns in the key; EXPLAIN shows "Using index"
@@ -198,10 +315,7 @@ CREATE INDEX idx_order_user ON orders (user_id, created_at DESC) INCLUDE (status
 -- Partial (PostgreSQL): index only the rows you query; small, hot, cheap to maintain
 CREATE INDEX idx_job_pending ON job (run_at) WHERE status = 'PENDING';
 CREATE UNIQUE INDEX uq_active_email ON users (email) WHERE deleted_at IS NULL;  -- soft-delete-safe uniqueness</code></pre>
-  <p>MySQL has no partial indexes; the usual workaround is a generated column that is NULL for inactive rows, indexed (NULLs do not collide in a UNIQUE index). Every index costs write throughput, storage and buffer pool, so drop the ones <code>pg_stat_user_indexes.idx_scan</code> shows are unused.</p>
-
-  <h3>Reading EXPLAIN and EXPLAIN ANALYZE</h3>
-  <p><code>EXPLAIN</code> shows the plan and estimates. <code>EXPLAIN ANALYZE</code> runs the query and adds actual time, rows and loops. In PostgreSQL 18 it includes <code>BUFFERS</code> automatically; on older versions write <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p>
+  <h3>Reading EXPLAIN ANALYZE</h3>
   <pre><code>Limit  (cost=0.56..42.10 rows=20 width=48) (actual time=0.041..0.212 rows=20 loops=1)
   -&gt;  Index Scan using idx_doc_tenant_status_created on document
         (cost=0.56..1830.44 rows=880 width=48) (actual time=0.040..0.205 rows=20 loops=1)
@@ -209,7 +323,30 @@ CREATE UNIQUE INDEX uq_active_email ON users (email) WHERE deleted_at IS NULL;  
         Buffers: shared hit=24
 Planning Time: 0.180 ms
 Execution Time: 0.240 ms</code></pre>
-  <div class="tbl"><table>
+  <div class="keys">
+    <div class="key"><h4>Seq Scan + selective filter</h4><p>Missing or unusable index: function on column, type cast, <code>LIKE '%x'</code>.</p></div>
+    <div class="key"><h4>Estimate ≠ actual rows</h4><p>Stale stats: <code>ANALYZE</code>. Bad estimates pick bad joins.</p></div>
+    <div class="key"><h4>Heap Fetches &gt; 0</h4><p>Index-only scan, but VACUUM has not marked pages all-visible.</p></div>
+    <div class="key"><h4>external merge</h4><p>Sort spilled to disk; an index in that order removes it.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: B+tree layout, composite and partial indexes, every EXPLAIN signal</summary>
+    <p>Both engines use B+trees: values only in the leaves, internal pages hold separator keys and child pointers, leaves are linked for range scans. Pages are 8 KB in PostgreSQL and 16 KB in InnoDB. With a fan-out of several hundred keys per page, three or four levels reach hundreds of millions of rows, so a point lookup is three or four page reads, most from cache.</p>
+    <div class="flow">
+    <span class="node">Root page<small>keys 1000 | 5000</small></span><span class="arrow">→</span>
+    <span class="node">Internal page<small>1000 | 2000 | 3000</small></span><span class="arrow">→</span>
+    <span class="node hl">Leaf page<small>sorted keys + pointers</small></span><span class="arrow">↔</span>
+    <span class="node">Next leaf<small>range scan</small></span>
+  </div>
+  <p class="flow-caption">Figure: a lookup descends from root to leaf; a range scan walks sibling leaves.</p>
+    <div class="grid">
+    <div class="card"><h4>InnoDB: clustered</h4><p>The table <i>is</i> the primary-key B+tree; leaves hold full rows. Secondary index leaves hold the PK value, so a secondary lookup is two tree walks. Random UUIDv4 primary keys insert all over the tree and cause page splits; prefer <code>BIGINT</code> or time-ordered UUIDv7.</p></div>
+    <div class="card"><h4>PostgreSQL: heap</h4><p>Rows live in an unordered heap; every index (including the PK) points to a tuple ID (<code>ctid</code>). An index-only scan can skip the heap only when the visibility map marks the page all-visible, which VACUUM maintains. PostgreSQL 18 adds a built-in <code>uuidv7()</code>.</p></div>
+  </div>
+    <p>A composite index on <code>(a, b, c)</code> is sorted by a, then b within a, then c. It serves queries that constrain a leftmost prefix. Order columns as <b>equality, then sort, then range</b>:</p>
+    <p>A range condition stops the index from narrowing later columns, because within the range the later column is no longer sorted. Higher selectivity first is a weaker rule than "equality before range". PostgreSQL 18 adds <b>skip scan</b>, so a B-tree on <code>(status, created_at)</code> can now serve <code>WHERE created_at &gt; …</code> when <code>status</code> has few distinct values. Do not rely on it in an interview answer; design the index for the query.</p>
+    <p>MySQL has no partial indexes; the usual workaround is a generated column that is NULL for inactive rows, indexed (NULLs do not collide in a UNIQUE index). Every index costs write throughput, storage and buffer pool, so drop the ones <code>pg_stat_user_indexes.idx_scan</code> shows are unused.</p>
+    <p><code>EXPLAIN</code> shows the plan and estimates. <code>EXPLAIN ANALYZE</code> runs the query and adds actual time, rows and loops. In PostgreSQL 18 it includes <code>BUFFERS</code> automatically; on older versions write <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p>
+    <div class="tbl"><table>
     <tr><th>Look for</th><th>Meaning</th></tr>
     <tr><td>Seq Scan on a big table with a selective filter</td><td>Missing or unusable index (function on the column, implicit type cast, leading wildcard <code>LIKE '%x'</code>).</td></tr>
     <tr><td>Estimated rows far from actual rows</td><td>Stale statistics (<code>ANALYZE</code> the table) or correlated columns (<code>CREATE STATISTICS</code>). Bad estimates cause bad join choices.</td></tr>
@@ -220,9 +357,9 @@ Execution Time: 0.240 ms</code></pre>
     <tr><td>Sort Method: external merge</td><td>Sort spilled to disk; an index that provides the order removes the sort.</td></tr>
     <tr><td>MySQL <code>type</code> column</td><td>From best to worst: const, eq_ref, ref, range, index (full index scan), ALL (full table scan). <code>Extra</code>: "Using index" (covering), "Using filesort", "Using temporary". MySQL 8.0.18+ has <code>EXPLAIN ANALYZE</code>.</td></tr>
   </table></div>
+  </details>
 
-  <h3>B-tree versus LSM tree (the CRED question)</h3>
-  <p>An LSM (log-structured merge) tree optimises writes by never updating in place.</p>
+  <h2 id="lsm"><span class="n">07</span>LSM trees, Cassandra and replication</h2>
   <div class="flow">
     <span class="node">Write<small>key, value</small></span><span class="arrow">→</span>
     <span class="node store">WAL<small>append, for crash recovery</small></span><span class="arrow">+</span>
@@ -231,7 +368,31 @@ Execution Time: 0.240 ms</code></pre>
     <span class="node store">L1 … Ln<small>larger, merged</small></span>
   </div>
   <p class="flow-caption">Figure: LSM write path. Reads check the memtable, then SSTables from newest to oldest, using a Bloom filter per SSTable to skip files that cannot contain the key.</p>
-  <ul>
+  <div class="vs">
+    <div><h4>B+tree (Postgres, InnoDB)</h4><ul><li class="pro">Predictable 3–4 page reads, great ranges</li><li class="con">Random in-place page writes</li></ul><p class="when">Transactions, mixed load, secondary indexes, joins.</p></div>
+    <div><h4>LSM (Cassandra, RocksDB)</h4><ul><li class="pro">Sequential appends, very high write throughput</li><li class="con">Reads may touch several SSTables; compaction cost</li></ul><p class="when">Events, time series, messages, feeds.</p></div>
+  </div>
+  <pre><code>CREATE TABLE audit_event (
+  tenant_id  text,
+  day        date,
+  event_time timestamp,
+  event_id   timeuuid,
+  action     text,
+  PRIMARY KEY ((tenant_id, day), event_time, event_id)
+) WITH CLUSTERING ORDER BY (event_time DESC, event_id DESC);</code></pre>
+  <div class="keys">
+    <div class="key"><h4>Partition key</h4><p><code>(tenant_id, day)</code> is hashed to pick replicas. Every query must supply it. <code>day</code> caps partition size.</p></div>
+    <div class="key"><h4>Clustering columns</h4><p>Sort rows inside a partition: "latest 50 today" is one sequential slice.</p></div>
+    <div class="key"><h4>QUORUM</h4><p>RF 3, read and write 2 of 3: R + W &gt; N, so reads see the latest acknowledged write.</p></div>
+  </div>
+  <div class="vs">
+    <div class="pick"><h4>Async replication <span class="tag">default</span></h4><ul><li class="pro">Lowest latency</li><li class="con">Replica can lag seconds; failover can lose commits</li></ul></div>
+    <div><h4>Sync / semi-sync</h4><ul><li class="pro">A replica has the WAL before commit returns</li><li class="con">One round trip per commit; a stuck replica stalls writes</li></ul></div>
+  </div>
+  <p><b>Read-your-writes on replicas</b>: after a save, read from the primary for a few seconds, or only from a replica past your commit LSN/GTID.</p>
+  <details class="deep"><summary>Go deeper: SSTables, compaction, Cassandra and replication modes</summary>
+    <p>An LSM (log-structured merge) tree optimises writes by never updating in place.</p>
+    <ul>
     <li><b>SSTable</b> (sorted string table): an immutable file of key-sorted records, with a block index and a Bloom filter. Because it never changes, it can be cached, copied and merged safely. Google BigTable introduced the term; Cassandra, HBase, RocksDB and ScyllaDB use the same idea.</li>
     <li><b>Deletes</b> write a tombstone; the data disappears only when compaction merges past it (Cassandra keeps tombstones for <code>gc_grace_seconds</code> so replicas learn about the delete).</li>
     <li><b>Compaction</b>: size-tiered merges similar-sized files (cheap writes, more space and read amplification); leveled keeps non-overlapping ranges per level (better reads, more write amplification).</li>
@@ -244,24 +405,12 @@ Execution Time: 0.240 ms</code></pre>
     <tr><td>Amplification</td><td>Write amplification from page rewrites</td><td>Write amplification from compaction; space amplification from obsolete versions</td></tr>
     <tr><td>Choose when</td><td>Transactions, mixed reads and writes, secondary indexes, joins</td><td>Write-heavy, append-like data: events, time series, messages, feeds</td></tr>
   </table></div>
-
-  <h3>Cassandra partition key versus clustering key (the JPMC question)</h3>
-  <pre><code>CREATE TABLE audit_event (
-  tenant_id  text,
-  day        date,
-  event_time timestamp,
-  event_id   timeuuid,
-  action     text,
-  PRIMARY KEY ((tenant_id, day), event_time, event_id)
-) WITH CLUSTERING ORDER BY (event_time DESC, event_id DESC);</code></pre>
-  <ul>
+    <ul>
     <li><b>Partition key</b> <code>(tenant_id, day)</code> is hashed (Murmur3) to a token, which picks the replica nodes. All rows of a partition live together. Every query must supply the full partition key. Adding <code>day</code> bounds partition size (keep partitions well under ~100 MB) and stops a big tenant becoming one hot partition.</li>
     <li><b>Clustering columns</b> <code>event_time, event_id</code> sort rows on disk inside the partition, which makes "latest 50 events for tenant X today" a sequential slice.</li>
     <li><b>Tunable consistency</b>: with replication factor 3, writing and reading at <code>QUORUM</code> (2 of 3) gives R + W &gt; N, so a read overlaps the latest acknowledged write. <code>LOCAL_QUORUM</code> keeps that inside one data centre.</li>
   </ul>
-
-  <h3>Replication and read replicas</h3>
-  <p>PostgreSQL streams WAL to standbys (physical replication); MySQL ships the binlog (row-based by default, with GTIDs). Both are asynchronous by default, which means a replica can be seconds behind.</p>
+    <p>PostgreSQL streams WAL to standbys (physical replication); MySQL ships the binlog (row-based by default, with GTIDs). Both are asynchronous by default, which means a replica can be seconds behind.</p>
   <div class="tbl"><table>
     <tr><th>Mode</th><th>Guarantee</th><th>Cost</th></tr>
     <tr><td>Async</td><td>Commit returns before any replica has the data; failover can lose recent commits</td><td>Lowest latency</td></tr>
@@ -269,11 +418,15 @@ Execution Time: 0.240 ms</code></pre>
     <tr><td><code>remote_apply</code> (PG)</td><td>The standby has applied it, so reads there see it</td><td>Highest latency</td></tr>
   </table></div>
   <p><b>Read-your-writes on replicas</b>: after a user saves, the next page load may hit a lagging replica and show old data. Fixes: route that user's reads to the primary for a few seconds after a write; or record the commit LSN / GTID and only read from a replica that has passed it; or read from primary for anything the user just changed. Monitor lag with <code>pg_stat_replication.replay_lag</code> or <code>Seconds_Behind_Source</code>.</p>
+  </details>
 
-  <h2 id="patterns"><span class="n">04</span>Practical patterns and production gotchas</h2>
-
-  <h3>The Zomato query, done properly</h3>
-  <pre><code>-- order_event(id BIGSERIAL, order_id BIGINT, state TEXT, created_at TIMESTAMPTZ)
+  <h2 id="patterns"><span class="n">08</span>Patterns and production gotchas</h2>
+  <div class="prob">
+    <h3>Zomato: latest state per order in the last hour</h3>
+    <dl><dt>Task</dt><dd>Every order's latest state among events in the last hour, excluding Delivered.</dd>
+        <dt>Insight</dt><dd><code>ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY created_at DESC, id DESC)</code>, keep rn = 1. At scale, keep <code>orders.current_state</code> instead.</dd>
+        <dt>Cost</dt><dd>Index <code>(created_at) INCLUDE (order_id, state, id)</code>: index-only range scan</dd></dl>
+    <details class="code"><summary>Show SQL solution</summary><pre><code>-- order_event(id BIGSERIAL, order_id BIGINT, state TEXT, created_at TIMESTAMPTZ)
 -- Latest state per order among events in the last hour, excluding delivered orders
 WITH ranked AS (
   SELECT order_id, state, created_at,
@@ -289,13 +442,23 @@ WHERE rn = 1 AND state &lt;&gt; 'DELIVERED';
 SELECT DISTINCT ON (order_id) order_id, state, created_at
 FROM order_event
 WHERE created_at &gt;= now() - interval '1 hour'
-ORDER BY order_id, created_at DESC, id DESC;      -- then filter state in an outer query</code></pre>
-  <p>Clarify first: "orders with any activity in the last hour" (above) or "orders whose latest state overall is not delivered and changed in the last hour"? They differ for an order delivered 2 hours ago with no new events. Use <code>id</code> as a tiebreaker because two events can share a timestamp.</p>
+ORDER BY order_id, created_at DESC, id DESC;      -- then filter state in an outer query</code></pre></details>
+    <details class="deep"><summary>Clarifying questions, indexes and the at-scale answer</summary><p>Clarify first: "orders with any activity in the last hour" (above) or "orders whose latest state overall is not delivered and changed in the last hour"? They differ for an order delivered 2 hours ago with no new events. Use <code>id</code> as a tiebreaker because two events can share a timestamp.</p>
   <p><b>Indexes:</b> <code>CREATE INDEX ON order_event (created_at) INCLUDE (order_id, state, id)</code> makes the one-hour window an index-only range scan. If the question is "latest event per order" over all time, <code>(order_id, created_at DESC)</code> lets each order's latest row be the first index entry.</p>
-  <p><b>At scale</b> (the follow-up): ranking every event in the window gets expensive at millions of orders per hour. The senior answer is to stop deriving current state from history on every read: keep <code>orders.current_state</code> updated in the same transaction as the event insert, and add a partial index <code>ON orders (updated_at) WHERE current_state &lt;&gt; 'DELIVERED'</code>. The event table stays for audit and is range-partitioned by day so old partitions can be dropped instead of deleted.</p>
-
-  <h3>Other SQL you will be asked to write</h3>
-  <pre><code>-- Second-highest distinct salary (LeetCode 176); returns NULL if it does not exist
+  <p><b>At scale</b> (the follow-up): ranking every event in the window gets expensive at millions of orders per hour. The senior answer is to stop deriving current state from history on every read: keep <code>orders.current_state</code> updated in the same transaction as the event insert, and add a partial index <code>ON orders (updated_at) WHERE current_state &lt;&gt; 'DELIVERED'</code>. The event table stays for audit and is range-partitioned by day so old partitions can be dropped instead of deleted.</p></details>
+  </div>
+  <div class="prob">
+    <h3>Other SQL you will be asked to write</h3>
+    <dl><dt>Task</dt><dd>Second-highest salary, top N per group, running totals.</dd>
+        <dt>Insight</dt><dd>Window functions run after WHERE/GROUP BY, so filter on rank in an outer query.</dd>
+        <dt>Cost</dt><dd>One sort per partition</dd></dl>
+    <div class="matrix">
+      <div class="cells"><span class="cell">salary</span><span class="cell">100</span><span class="cell">100</span><span class="cell">90</span></div>
+      <div class="cells"><span class="cell">ROW_NUMBER</span><span class="cell win">1</span><span class="cell win">2</span><span class="cell win">3</span></div>
+      <div class="cells"><span class="cell">RANK</span><span class="cell win">1</span><span class="cell win">1</span><span class="cell bad">3</span></div>
+      <div class="cells"><span class="cell">DENSE_RANK</span><span class="cell win">1</span><span class="cell win">1</span><span class="cell ok">2</span></div>
+    </div>
+    <details class="code"><summary>Show SQL solutions</summary><pre><code>-- Second-highest distinct salary (LeetCode 176); returns NULL if it does not exist
 SELECT MAX(salary) AS second_highest
 FROM employee
 WHERE salary &lt; (SELECT MAX(salary) FROM employee);
@@ -323,11 +486,18 @@ SELECT day, revenue,
 FROM daily_revenue;
 
 -- Duplicates: emails used by more than one account
-SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code></pre>
-  <p>Know the difference between <code>ROW_NUMBER</code> (always unique), <code>RANK</code> (ties share, gaps after: 1,1,3) and <code>DENSE_RANK</code> (ties share, no gaps: 1,1,2). Window functions run after <code>WHERE</code>/<code>GROUP BY</code>/<code>HAVING</code>, which is why you cannot filter on <code>rn</code> in the same query level.</p>
-
-  <h3>Spring Boot gotchas</h3>
-  <ul>
+SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code></pre></details>
+    <details class="deep"><summary>Window function details</summary><p>Know the difference between <code>ROW_NUMBER</code> (always unique), <code>RANK</code> (ties share, gaps after: 1,1,3) and <code>DENSE_RANK</code> (ties share, no gaps: 1,1,2). Window functions run after <code>WHERE</code>/<code>GROUP BY</code>/<code>HAVING</code>, which is why you cannot filter on <code>rn</code> in the same query level.</p></details>
+  </div>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>Calling a vendor or S3 inside a transaction holding <code>FOR UPDATE</code>.</li>
+    <li><code>@Transactional</code> self-invocation: no transaction, no lasting row lock.</li>
+    <li>SERIALIZABLE without a retry on 40001, placed outside the transaction.</li>
+    <li>Unindexed <code>UPDATE … WHERE</code> in InnoDB: locks every scanned row and gap.</li>
+    <li>Plain <code>CREATE INDEX</code> on a live table; use <code>CONCURRENTLY</code>.</li>
+  </ul></div>
+  <details class="deep"><summary>Go deeper: Spring Boot gotchas in full</summary>
+    <ul>
     <li><b>Self-invocation</b>: calling a <code>@Transactional</code> method from another method of the same bean bypasses the proxy, so there is no transaction and no row lock lasts past the statement.</li>
     <li><b>Long transactions</b>: never call a payment gateway or S3 inside a transaction that holds <code>FOR UPDATE</code>. Locks are held until commit; one slow vendor call stalls every booking on that row and pins a Hikari connection.</li>
     <li><b>Open Session in View</b> is on by default in Spring Boot and keeps a connection for the whole request. Set <code>spring.jpa.open-in-view=false</code>.</li>
@@ -336,8 +506,23 @@ SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code><
     <li><b>Batch deletes and updates</b>: <code>UPDATE ... WHERE status = 'X'</code> without an index locks every scanned row in InnoDB at RR. Update in chunks by primary key.</li>
     <li><b>Migrations</b>: <code>CREATE INDEX CONCURRENTLY</code> in PostgreSQL (cannot run inside a transaction, so Flyway needs it in a non-transactional migration); online DDL in MySQL 8.</li>
   </ul>
+  </details>
 
-  <h2 id="qa"><span class="n">05</span>Interview questions with senior answers</h2>
+  <h2 id="quiz"><span class="n">09</span>Quick check</h2>
+  <div class="quiz" data-answer="2"><p class="q">MySQL at Repeatable Read: two sessions SELECT a counter, then each UPDATE it to value + 1. Result?</p>
+    <div class="opts"><button class="opt" type="button">Second UPDATE fails with a serialization error</button><button class="opt" type="button">Correct: RR prevents it</button><button class="opt" type="button">One increment is silently lost</button></div>
+    <p class="why">InnoDB's UPDATE reads the latest committed row and does not detect the conflict. PostgreSQL RR would raise an error.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Two doctors each check "someone else is on call" and go off call. Which level stops it?</p>
+    <div class="opts"><button class="opt" type="button">Repeatable Read</button><button class="opt" type="button">Serializable</button><button class="opt" type="button">Read Committed with FOR UPDATE on your own row</button></div>
+    <p class="why">Write skew touches different rows, so row locks never conflict. Only SERIALIZABLE (or locking the whole set) catches it.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Query: <code>WHERE tenant_id = ? AND status = 'PENDING' ORDER BY created_at DESC</code>. Best index?</p>
+    <div class="opts"><button class="opt" type="button">(tenant_id, status, created_at)</button><button class="opt" type="button">(created_at, tenant_id, status)</button><button class="opt" type="button">Three single-column indexes</button></div>
+    <p class="why">Equality columns first, then the sort column, so rows come out pre-sorted.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Hot seat at sale start, 500 users click "book" in one second. Which locking?</p>
+    <div class="opts"><button class="opt" type="button">Optimistic @Version with retries</button><button class="opt" type="button">A conditional UPDATE … WHERE status = 'FREE', or FOR UPDATE NOWAIT</button><button class="opt" type="button">SERIALIZABLE on every request</button></div>
+    <p class="why">High contention turns optimistic retries into a storm. One conditional update decides the winner atomically.</p></div>
+
+  <h2 id="qa"><span class="n">10</span>Interview questions with senior answers</h2>
   <details class="qa"><summary>What isolation level does your service use, and why?</summary><p>PostgreSQL's default, Read Committed. Most of our writes are single-row atomic updates or inserts guarded by unique constraints, which are safe at RC. Where we have read-then-write invariants (counting signers before completing an envelope) we take a row lock on the parent with <code>FOR UPDATE</code>. I would use Serializable only for a small set of transactions whose invariant spans many rows, wrapped in a retry loop, because SSI aborts add retries under contention.</p></details>
   <details class="qa"><summary>Does Repeatable Read prevent phantoms?</summary><p>The SQL standard allows phantoms at RR. PostgreSQL's RR is snapshot isolation, so a repeated query sees no new rows. InnoDB's RR hides them from plain SELECTs via the read view and blocks them for locking reads via next-key locks, but a plain SELECT followed by an UPDATE can still act on rows inserted after the snapshot. Neither stops write skew.</p></details>
   <details class="qa"><summary>Explain write skew with an example and how to stop it.</summary><p>The on-call doctor case: rule "at least one doctor on call". Alice and Bob each run <code>SELECT count(*) WHERE on_call</code>, see 2, and each sets themselves off call. They updated different rows, so no row-level conflict is detected and both commit with zero on call. Fixes: SERIALIZABLE in PostgreSQL (SSI detects the dependency cycle); lock the rows you read with <code>FOR UPDATE</code>; or materialise the conflict as one row (a <code>shift</code> row both must update).</p></details>
@@ -352,9 +537,8 @@ SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code><
   <details class="qa"><summary>Partition key versus clustering key in Cassandra?</summary><p>The partition key is hashed to choose which nodes own the data and must be fully specified in queries; rows of one partition live together. Clustering columns define the sort order inside the partition, enabling efficient range slices. Design tables per query, bucket partition keys by time to keep partitions bounded, and use QUORUM reads and writes for read-after-write consistency.</p></details>
   <details class="qa"><summary>Optimistic lock failed. Should you retry automatically?</summary><p>Only if the operation is a pure function of current state (increment a counter, append an item) and the request is idempotent: reload, reapply, save, with a small bounded number of attempts. If the user decided based on what they saw (editing a contract field), do not retry silently; return 409 Conflict and let them review the new version.</p></details>
   <details class="qa"><summary>What makes a covering index, and what is the trade-off?</summary><p>The index contains every column the query reads, so the engine never visits the table: "Index Only Scan" in PostgreSQL, "Using index" in MySQL. Use <code>INCLUDE</code> in PostgreSQL to add payload columns without affecting sort order. Trade-off: a bigger index, slower writes, and more memory pressure.</p></details>
-
-  <h2 id="exercise"><span class="n">06</span>Hands-on exercise (45 minutes)</h2>
-  <ol>
+  <details class="deep"><summary>Hands-on exercise (45 minutes)</summary>
+    <ol>
     <li>Start PostgreSQL: <code>docker run --rm -e POSTGRES_PASSWORD=pw -p 5432:5432 postgres:18</code>. Open two <code>psql</code> sessions.</li>
     <li><b>Lost update.</b> <code>CREATE TABLE counter(id int primary key, n int); INSERT INTO counter VALUES (1, 0);</code> In both sessions at Read Committed: <code>BEGIN; SELECT n FROM counter WHERE id=1;</code> then each runs <code>UPDATE counter SET n = 1 WHERE id=1; COMMIT;</code>. Final value is 1, not 2. Repeat with <code>BEGIN ISOLATION LEVEL REPEATABLE READ</code> and observe the serialization error in the second session. Repeat with <code>SET n = n + 1</code> at RC and see it is correct.</li>
     <li><b>Write skew.</b> Create <code>doctor(name text primary key, on_call bool)</code> with two doctors on call. In both sessions at Repeatable Read, count on-call doctors, then each sets a different doctor off call and commits. Both succeed. Repeat at <code>SERIALIZABLE</code>; one commit fails with 40001.</li>
@@ -362,8 +546,22 @@ SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code><
     <li><b>Indexes.</b> Generate 2 million <code>order_event</code> rows with <code>generate_series</code> and random states. Run the Zomato query with <code>EXPLAIN ANALYZE</code>, add <code>(created_at) INCLUDE (order_id, state, id)</code>, run it again, and compare Buffers and execution time. Write down why the plan changed.</li>
     <li>Stretch: add <code>@Version</code> to a JPA entity in a small Spring Boot app, fire 20 concurrent updates with an <code>ExecutorService</code>, and count <code>ObjectOptimisticLockingFailureException</code>s.</li>
   </ol>
+  </details>
 
-  <h2 id="sources"><span class="n">07</span>Sources and go deeper</h2>
+  <h2 id="cheat"><span class="n">11</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Anomalies: dirty, non-repeatable, phantom, lost update, write skew.</li>
+    <li>PG default RC; RR detects lost update; only SERIALIZABLE stops write skew (retry 40001).</li>
+    <li>MySQL default RR: snapshot reads, gap locks, but lost updates are silent.</li>
+    <li>Fixes: SET n = n + 1, conditional UPDATE, FOR UPDATE (NOWAIT), @Version.</li>
+    <li>Work queue: FOR UPDATE SKIP LOCKED + partial index + lease reaper.</li>
+    <li>Deadlock: lock in id order, short transactions, bounded retry.</li>
+    <li>B+tree: 3–4 page reads; composite order = equality, sort, range.</li>
+    <li>LSM: memtable → SSTables → compaction; write-heavy data.</li>
+    <li>Cassandra: partition key picks nodes, clustering sorts; QUORUM: R + W &gt; N.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">12</span>Sources and go deeper</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/6583413/" target="_blank" rel="noopener">Dream11 SDE-2: concurrency control, isolation levels, locks, replication round (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/7573378/" target="_blank" rel="noopener">Zomato SDE-2, Nov 2025: order latest-state SQL and indexes, Kafka lag (LeetCode)</a></li>
@@ -382,5 +580,6 @@ SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) &gt; 1;</code><
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="java-concurrency.html">Java concurrency</a> · <a href="distributed-transactions.html">Distributed transactions</a> · <a href="lld-booking-system.html">Booking system LLD</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

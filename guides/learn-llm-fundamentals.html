@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>LLM fundamentals for engineers</h1>
-  <p class="lede">Tokens, context windows, pricing, how a transformer actually produces the next token, embeddings, sampling, the KV cache, why models hallucinate, and when to pick RAG, fine-tuning or LoRA. Enough depth to answer the "explain how an LLM works" round without hand-waving.</p>
+  <p class="lede">Answer the "explain how an LLM works" round without hand-waving: tokens, cost, attention, sampling, KV cache, hallucinations, and RAG vs fine-tuning.</p>
   <div class="facts">
     <span class="fact"><b>Time:</b> 3 hours</span>
     <span class="fact"><b>Prereq:</b> high-school vectors and matrices</span>
@@ -20,40 +20,60 @@
   </div>
   <div class="chips"><span class="chip hot">LinkedIn</span><span class="chip hot">Amazon</span><span class="chip">Adobe</span><span class="chip">Microsoft</span><span class="chip">Avaamo</span><span class="chip">Mastercard</span><span class="chip">Capgemini</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Text becomes tokens (~4 English chars each); you pay per token.</li>
+    <li>A transformer scores every vocab token; sampling picks one; repeat.</li>
+    <li>Attention = a soft hash lookup: softmax(QKᵀ/√d_k)·V.</li>
+    <li>Hallucination is built in; ground with RAG and make errors detectable.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Phone autocomplete on steroids. It suggests the next word from everything typed so far, you tap one, and it suggests again. It has read a lot, but nothing in it checks whether the sentence is true.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#outcomes">What you'll be able to do</a></li>
-    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#concepts">Tokens, context and cost</a></li>
+    <li><a href="#generate">How the next token is made</a></li>
+    <li><a href="#attention">Attention</a></li>
+    <li><a href="#embed">Embeddings and sampling</a></li>
+    <li><a href="#kv">KV cache and hallucinations</a></li>
+    <li><a href="#choose">RAG vs fine-tuning, BERT vs GPT</a></li>
     <li><a href="#handson">Hands-on: compute it yourself</a></li>
     <li><a href="#interview">How this shows up in interviews</a></li>
+    <li><a href="#quiz">Quick check</a></li>
     <li><a href="#exercise">Capstone checkpoint</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
   <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
-  <ul>
-    <li>Explain tokens and estimate cost for a feature from token counts and per-MTok prices.</li>
-    <li>Walk an interviewer through how a decoder-only transformer generates text, including the attention formula and what Q, K and V are.</li>
-    <li>Compute cosine similarity by hand and explain why it is used for embeddings.</li>
-    <li>Explain temperature, top-p and top-k with numbers, and the KV cache with a memory estimate.</li>
-    <li>Give a precise answer to "why do LLMs hallucinate?" and to "RAG or fine-tuning?", and contrast BERT with GPT.</li>
-  </ul>
+  <div class="keys">
+    <div class="key"><h4>Cost a feature</h4><p>From token counts and per-MTok prices.</p></div>
+    <div class="key"><h4>Explain generation</h4><p>Decoder-only transformer, the attention formula, Q, K and V.</p></div>
+    <div class="key"><h4>Cosine by hand</h4><p>And why embeddings use it.</p></div>
+    <div class="key"><h4>Sampling and KV cache</h4><p>Temperature, top-p, top-k with numbers; a KV memory estimate.</p></div>
+    <div class="key"><h4>Precise answers</h4><p>Why LLMs hallucinate, RAG or fine-tuning, BERT vs GPT.</p></div>
+  </div>
 
-  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
+  <h2 id="concepts"><span class="n">02</span>Tokens, context and cost</h2>
+  <p>A <dfn title="A sub-word unit from a fixed vocabulary; every token maps to an integer id">token</dfn> is a chunk of text. One plausible split (illustrative; real splits depend on the tokenizer):</p>
+  <div class="cells"><span class="cell">The</span><span class="cell">␣Supplier</span><span class="cell">␣shall</span><span class="cell hl">␣indem</span><span class="cell hl">nif</span><span class="cell hl">ication</span><span class="cell">␣of</span><span class="cell">␣₹</span><span class="cell">5</span><span class="cell">,</span><span class="cell">00</span><span class="cell">,</span><span class="cell">000</span></div>
+  <p class="flow-caption">Common words are one token; a rare word like <code>indemnification</code> splits into 3–4 pieces; numbers and symbols split a lot.</p>
+  <div class="keys">
+    <div class="key"><h4>Rule of thumb</h4><p>≈ 4 English chars per token. 8,000-word contract ≈ 10–11k tokens.</p></div>
+    <div class="key"><h4>Not English? More tokens</h4><p>Code, numbers, Hindi and other Indic scripts cost several times more.</p></div>
+    <div class="key"><h4>Tokenizers change</h4><p>Opus 4.7+ makes ~30% more tokens. Recount with <code>count_tokens</code>.</p></div>
+    <div class="key"><h4>Why letters are hard</h4><p>The model never sees letters, so counting or reversing them is hard.</p></div>
+  </div>
 
-  <h3>2.1 Tokens and tokenisation</h3>
-  <p>Models do not see characters or words. A tokenizer splits text into tokens from a fixed vocabulary (typically tens of thousands to a few hundred thousand entries) built with an algorithm like byte-pair encoding (BPE): start from bytes, repeatedly merge the most frequent adjacent pair, stop at the target vocabulary size. Common words become one token, rare words split into pieces (<code>indemnification</code> may be three or four tokens), and every token maps to an integer id. Think of it as a compression dictionary, similar to how a ZIP dictionary is learned from frequent byte sequences.</p>
-  <ul>
-    <li>Rule of thumb for English: about 4 characters or 0.75 words per token. A 20-page contract of 8,000 words is roughly 10,000–11,000 tokens.</li>
-    <li>Non-English text, code, numbers and unusual formatting use more tokens per character. Hindi and other Indic scripts often cost several times more tokens than the same meaning in English.</li>
-    <li>Tokenizers differ between model generations. Claude Opus 4.7 and later models use a newer tokenizer that produces about 30% more tokens for the same text, so recount when you migrate rather than reusing old numbers. The API has a free <code>count_tokens</code> endpoint for exactly this.</li>
-    <li>Tokenisation explains classic failures: counting letters in a word or reversing strings is hard because the model never saw individual letters.</li>
-  </ul>
+  <h3>Context window</h3>
+  <div class="stats">
+    <div class="stat"><b>1M</b><span>tokens: Sonnet 5.5, Opus 5.5 (4.6+ models)</span></div>
+    <div class="stat"><b>200k</b><span>tokens: Haiku 4.5</span></div>
+    <div class="stat"><b>128,000</b><span>max <code>max_tokens</code> on Sonnet 5.5</span></div>
+  </div>
+  <p>Window = system prompt + messages + tool definitions + output. Big is not free: send the 5 relevant clauses, not 300 contracts.</p>
 
-  <h3>2.2 Context window</h3>
-  <p>The context window is the maximum number of tokens the model can attend to in one request: system prompt + all messages + tool definitions + the output it generates. Claude Sonnet 5.5 and Opus 5.5 (and other 4.6-and-later models) have a 1M-token context window at standard pricing; Haiku 4.5 has 200k. <code>max_tokens</code> caps the output part, and on Sonnet 5.5 its maximum is 128,000.</p>
-  <p>A big window is not free memory. You pay for every input token on every call, latency grows with input length, and models attend less reliably to facts buried in the middle of very long inputs. That is why retrieval still matters even with 1M tokens: you send the 5 relevant clauses, not 300 contracts.</p>
-
-  <h3>2.3 Pricing per token, with real arithmetic</h3>
+  <h3>Pricing, with real arithmetic</h3>
   <div class="tbl"><table>
     <thead><tr><th>Model</th><th>Input $/MTok</th><th>Output $/MTok</th><th>Cache read $/MTok</th><th>Typical use</th></tr></thead>
     <tbody>
@@ -62,7 +82,23 @@
       <tr><td>Claude Opus 5.5</td><td class="num">$4</td><td class="num">$20</td><td class="num">$0.20</td><td>Hardest reasoning and long agentic work</td></tr>
     </tbody>
   </table></div>
-  <p>Worked example: a contract Q&amp;A request sends 6,000 input tokens (system prompt + 5 retrieved chunks + question) and gets 500 output tokens.</p>
+  <div class="prob">
+    <h3>Worked example: contract Q&amp;A</h3>
+    <dl><dt>Request</dt><dd>6,000 input tokens (system prompt + 5 retrieved chunks + question), 500 output tokens.</dd>
+        <dt>Sonnet 5.5</dt><dd>6,000 × $2 / 1M = $0.012 + 500 × $10 / 1M = $0.005 = <b>$0.017</b> → $1,700/day at 100k requests.</dd>
+        <dt>Haiku 4.5</dt><dd>6,000 × $1 / 1M = $0.006 + 500 × $5 / 1M = $0.0025 = <b>$0.0085</b> → $850/day.</dd>
+        <dt>Levers</dt><dd>Smaller model, fewer/shorter chunks, prompt caching (reads cost 10% of input), Batch API (50% off), shorter outputs (5× input price).</dd></dl>
+  </div>
+  <details class="deep"><summary>Go deeper: BPE, context windows and pricing in full</summary>
+  <p>Models do not see characters or words. A tokenizer splits text into tokens from a fixed vocabulary (typically tens of thousands to a few hundred thousand entries) built with an algorithm like byte-pair encoding (BPE): start from bytes, repeatedly merge the most frequent adjacent pair, stop at the target vocabulary size. Common words become one token, rare words split into pieces (<code>indemnification</code> may be three or four tokens), and every token maps to an integer id. Think of it as a compression dictionary, similar to how a ZIP dictionary is learned from frequent byte sequences.</p>
+  <ul>
+    <li>Rule of thumb for English: about 4 characters or 0.75 words per token. A 20-page contract of 8,000 words is roughly 10,000–11,000 tokens.</li>
+    <li>Non-English text, code, numbers and unusual formatting use more tokens per character. Hindi and other Indic scripts often cost several times more tokens than the same meaning in English.</li>
+    <li>Tokenizers differ between model generations. Claude Opus 4.7 and later models use a newer tokenizer that produces about 30% more tokens for the same text, so recount when you migrate rather than reusing old numbers. The API has a free <code>count_tokens</code> endpoint for exactly this.</li>
+    <li>Tokenisation explains classic failures: counting letters in a word or reversing strings is hard because the model never saw individual letters.</li>
+  </ul>
+  <p>The context window is the maximum number of tokens the model can attend to in one request: system prompt + all messages + tool definitions + the output it generates. Claude Sonnet 5.5 and Opus 5.5 (and other 4.6-and-later models) have a 1M-token context window at standard pricing; Haiku 4.5 has 200k. <code>max_tokens</code> caps the output part, and on Sonnet 5.5 its maximum is 128,000.</p>
+  <p>A big window is not free memory. You pay for every input token on every call, latency grows with input length, and models attend less reliably to facts buried in the middle of very long inputs. That is why retrieval still matters even with 1M tokens: you send the 5 relevant clauses, not 300 contracts.</p>
   <div class="tbl"><table>
     <thead><tr><th>Model</th><th>Input cost</th><th>Output cost</th><th>Per request</th><th>100k requests/day</th></tr></thead>
     <tbody>
@@ -71,9 +107,9 @@
     </tbody>
   </table></div>
   <p>Levers: smaller model where quality allows, fewer and shorter retrieved chunks, prompt caching of the stable prefix (cache reads cost 10% of base input on most models), the Batch API (50% off) for offline jobs, and shorter outputs (output tokens cost 5× input).</p>
+  </details>
 
-  <h3>2.4 How a transformer generates text</h3>
-  <p>A GPT-style model is a function: given a sequence of token ids, output a probability distribution over the vocabulary for the next token. Generation is a loop around that function.</p>
+  <h2 id="generate"><span class="n">03</span>How the next token is made</h2>
   <div class="flow">
     <span class="node">Text<small>"The Supplier shall"</small></span><span class="arrow">→</span>
     <span class="node">Tokenizer<small>ids [464, 30092, 4093]</small></span><span class="arrow">→</span>
@@ -83,6 +119,47 @@
     <span class="node">Sample<small>next token</small></span><span class="arrow">↺</span>
   </div>
   <p class="flow-caption">Figure: autoregressive decoding. The sampled token is appended and the loop runs again until an end token, a stop sequence, or max_tokens. Token ids are illustrative.</p>
+
+  <div class="stepper"><b class="title">Generating the token after "The Supplier"</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell hl">The</span><span class="cell hl">␣Supplier</span></div>
+      <div class="ptrs"><span class="on">tokenise</span><span>ids (illustrative)</span></div>
+      <figcaption>The prompt becomes token ids from the vocabulary.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell win">[0.12, −0.4, …]</span><span class="cell win">[0.88, 0.05, …]</span></div>
+      <div class="ptrs"><span class="on">embed + position</span></div>
+      <figcaption>Each id is looked up in a learned table to get a vector of thousands of numbers. Position is added so order matters.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">block 1</span><span class="cell">block 2</span><span class="cell hl">…</span><span class="cell">block N</span></div>
+      <div class="ptrs"><span class="on">attention + MLP</span><span>× dozens</span></div>
+      <figcaption>Dozens of blocks: attention lets each token pull in earlier tokens' information, then an MLP transforms it, with residuals and normalisation.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">shall 3.0</span><span class="cell">may 2.0</span><span class="cell">must 1.5</span><span class="cell">banana −2.0</span></div>
+      <div class="ptrs"><span class="on">logits</span></div>
+      <figcaption>The last position's vector is multiplied by an output matrix: one score (logit) per vocabulary token. Four shown.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell hl">shall 0.626</span><span class="cell win">may 0.230</span><span class="cell win">must 0.140</span><span class="cell dim">banana 0.004</span></div>
+      <div class="ptrs"><span class="on">softmax, T=1.0</span></div>
+      <figcaption>Softmax turns logits into probabilities that sum to 1. These are the script's real numbers.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell win">The</span><span class="cell win">␣Supplier</span><span class="cell ok">␣shall</span><span class="cell">?</span></div>
+      <div class="ptrs"><span class="on">sample → "shall"</span><span>append</span></div>
+      <figcaption>Sampling picks <code>shall</code> (likely, not certain). It is appended and the whole loop runs again for the next token.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell dim">The (K,V cached)</span><span class="cell dim">Supplier (K,V cached)</span><span class="cell dim">shall (K,V cached)</span><span class="cell hl">new token</span></div>
+      <div class="ptrs"><span class="on">decode step</span><span>KV cache hit</span></div>
+      <figcaption>Earlier tokens' keys and values are reused from the KV cache, so each step computes only the new token.</figcaption>
+    </figure>
+  </div></div>
+  <p>Training: predict the next token on trillions of tokens, then instruction tuning and RL from human and AI feedback. <b>Nothing in that objective checks truth.</b></p>
+  <details class="deep"><summary>Go deeper: the four stages and training</summary>
+  <p>A GPT-style model is a function: given a sequence of token ids, output a probability distribution over the vocabulary for the next token. Generation is a loop around that function.</p>
   <ol>
     <li><b>Embedding</b>: each token id is looked up in a learned table to get a vector (thousands of dimensions). Position information is added so the model knows order.</li>
     <li><b>Transformer blocks</b> (dozens of them, stacked): each block has a self-attention layer, where every token gathers information from earlier tokens, followed by a feed-forward network (MLP) applied to each position, with residual connections and normalisation around both.</li>
@@ -90,16 +167,23 @@
     <li><b>Sampling</b>: pick one token from that distribution (see 2.6), append it, repeat.</li>
   </ol>
   <p>Training is "predict the next token" on trillions of tokens (pre-training), then instruction tuning and reinforcement learning from human and AI feedback to make the model follow instructions, refuse harmful requests and use tools. Nothing in that objective checks truth, which matters for hallucinations.</p>
+  </details>
 
-  <h3>2.5 Attention, intuitively and exactly</h3>
-  <p>Intuition: in "The Supplier shall indemnify the Customer, and it shall pay within 30 days", to process <i>it</i> the model needs to know <i>it</i> refers to the Supplier. Attention lets the vector for <i>it</i> look back at every earlier token, score how relevant each is, and pull in a weighted mix of their information.</p>
-  <p>Each token's vector is projected by three learned matrices into:</p>
-  <ul>
-    <li><b>Query (Q)</b>: what this token is looking for ("who is the subject?").</li>
-    <li><b>Key (K)</b>: what each token offers as a label ("I am a party name").</li>
-    <li><b>Value (V)</b>: the information each token passes on if selected.</li>
-  </ul>
-  <p>Java analogy: a soft <code>HashMap</code> lookup. Instead of an exact key match returning one value, the query is compared with every key, and you get a weighted average of all values, weighted by similarity.</p>
+  <h2 id="attention"><span class="n">04</span>Attention</h2>
+  <p>"The Supplier shall indemnify the Customer, and <i>it</i> shall pay within 30 days." To process <i>it</i>, the model must look back and find the Supplier. Attention weights from the hands-on script, query = <code>indemnify</code>:</p>
+  <div class="matrix">
+    <div class="cells"><span class="cell">from \ to</span><span class="cell">Supplier</span><span class="cell">shall</span><span class="cell">indemnify</span></div>
+    <div class="cells"><span class="cell">Supplier</span><span class="cell win">✓</span><span class="cell dim">−∞</span><span class="cell dim">−∞</span></div>
+    <div class="cells"><span class="cell">shall</span><span class="cell win">✓</span><span class="cell win">✓</span><span class="cell dim">−∞</span></div>
+    <div class="cells"><span class="cell">indemnify</span><span class="cell hl">0.63</span><span class="cell win">0.164</span><span class="cell win">0.206</span></div>
+  </div>
+  <p class="flow-caption">Each row sums to 1. The causal mask (−∞) hides future tokens. The last row is the script's real output: 63% of "indemnify" comes from "Supplier".</p>
+  <div class="keys">
+    <div class="key"><h4>Query (Q)</h4><p>What this token is looking for ("who is the subject?").</p></div>
+    <div class="key"><h4>Key (K)</h4><p>What each token offers as a label ("I am a party name").</p></div>
+    <div class="key"><h4>Value (V)</h4><p>The information passed on if selected.</p></div>
+    <div class="key"><h4>Java analogy</h4><p>A soft <code>HashMap</code>: compare the query with every key and return a similarity-weighted average of all values.</p></div>
+  </div>
   <div class="callout info"><b>Scaled dot-product attention</b><p><code>Attention(Q, K, V) = softmax(Q·Kᵀ / √d_k) · V</code></p><ul>
     <li><code>Q·Kᵀ</code>: dot product of each query with each key = relevance scores (an n × n matrix for n tokens).</li>
     <li><code>/ √d_k</code>: divide by the square root of the key dimension so scores do not grow with dimension and push softmax into saturation (tiny gradients).</li>
@@ -107,13 +191,15 @@
     <li><code>· V</code>: weighted sum of value vectors = the new representation of each token.</li>
     <li>In a decoder (GPT), a <b>causal mask</b> sets scores for future positions to −∞ so token i only sees tokens ≤ i.</li>
   </ul></div>
+  <details class="deep"><summary>Go deeper: attention in prose</summary>
+  <p>Intuition: in "The Supplier shall indemnify the Customer, and it shall pay within 30 days", to process <i>it</i> the model needs to know <i>it</i> refers to the Supplier. Attention lets the vector for <i>it</i> look back at every earlier token, score how relevant each is, and pull in a weighted mix of their information.</p>
+  <p>Java analogy: a soft <code>HashMap</code> lookup. Instead of an exact key match returning one value, the query is compared with every key, and you get a weighted average of all values, weighted by similarity.</p>
   <p><b>Multi-head attention</b> runs this several times in parallel with different learned projections (one head may track syntax, another coreference), then concatenates the results. The cost is the n × n score matrix: attention is O(n²) in sequence length for compute, which is why long contexts are expensive and why so much engineering goes into making them cheaper.</p>
+  </details>
 
-  <h3>2.6 Embeddings and cosine similarity</h3>
-  <p>An embedding model maps a whole piece of text to one fixed-length vector (for example 1,024 numbers) such that texts with similar meaning land close together. This is a different model from the chat model; Anthropic does not ship one and points to Voyage AI (for example <code>voyage-4</code>, or <code>voyage-law-2</code> for legal text). RAG stores chunk embeddings and finds the chunks nearest to the question's embedding.</p>
-  <p>Closeness is usually measured with cosine similarity, the cosine of the angle between two vectors:</p>
-  <p><code>cos(a, b) = (a · b) / (‖a‖ × ‖b‖)</code>, ranging from −1 (opposite) through 0 (unrelated) to 1 (same direction).</p>
-  <p>Worked example with toy 3-dimensional vectors whose dimensions loosely mean (liability, termination, payment):</p>
+  <h2 id="embed"><span class="n">05</span>Embeddings and sampling</h2>
+  <p>An <dfn title="A model that maps a whole text to one fixed-length vector so similar meanings land close together">embedding model</dfn> turns text into one vector (e.g. 1,024 numbers). It is separate from the chat model; Anthropic points to Voyage AI (<code>voyage-4</code>, or <code>voyage-law-2</code> for legal). RAG finds chunks whose vectors are nearest the question's.</p>
+  <p><code>cos(a, b) = (a · b) / (‖a‖ × ‖b‖)</code>, from −1 (opposite) through 0 (unrelated) to 1 (same direction). Toy dimensions: (liability, termination, payment).</p>
   <div class="tbl"><table>
     <thead><tr><th>Step</th><th>query = [0.9, 0.1, 0.2] vs liability = [0.8, 0.2, 0.1]</th><th>query vs termination = [0.1, 0.9, 0.2]</th></tr></thead>
     <tbody>
@@ -123,16 +209,9 @@
       <tr><td>Cosine</td><td class="num">0.76 / 0.770 = <b>0.987</b></td><td class="num">0.22 / 0.86 = <b>0.256</b></td></tr>
     </tbody>
   </table></div>
-  <p>Cosine ignores length, so a short clause and a long clause about the same thing still match. If vectors are normalised to length 1 (Voyage embeddings are), cosine equals the plain dot product and gives the same ranking as Euclidean distance, so databases can use the cheaper operation.</p>
+  <p>Cosine ignores length. On unit-length vectors (Voyage's are) it equals the dot product and ranks like Euclidean distance.</p>
 
-  <h3>2.7 Sampling: temperature, top-k, top-p</h3>
-  <p>The model outputs logits; sampling decides which token to emit.</p>
-  <ul>
-    <li><b>Temperature</b> T divides the logits before softmax: <code>p_i = exp(z_i / T) / Σ exp(z_j / T)</code>. T &lt; 1 sharpens the distribution (more deterministic); T &gt; 1 flattens it (more varied, more mistakes). T → 0 approaches greedy decoding (always the top token).</li>
-    <li><b>Top-k</b> keeps only the k most likely tokens, renormalises, then samples.</li>
-    <li><b>Top-p (nucleus)</b> keeps the smallest set of top tokens whose cumulative probability reaches p, then samples. It adapts: when the model is confident the set is tiny, when unsure it is larger.</li>
-  </ul>
-  <p>Numbers from the hands-on script below, for logits shall=3.0, may=2.0, must=1.5, banana=−2.0:</p>
+  <h3>Sampling: temperature, top-k, top-p</h3>
   <div class="tbl"><table>
     <thead><tr><th>Setting</th><th>shall</th><th>may</th><th>must</th><th>banana</th></tr></thead>
     <tbody>
@@ -142,14 +221,48 @@
       <tr><td>T = 1.0, top-p 0.9</td><td class="num">0.629</td><td class="num">0.231</td><td class="num">0.140</td><td class="num">removed</td></tr>
     </tbody>
   </table></div>
-  <div class="callout warn"><b>Current Claude models</b><p>On the newest Claude models (Sonnet 5.5, Opus 5.5), <code>temperature</code> and <code>top_p</code> are deprecated and only the default is accepted; the current Python SDK does not even expose them on <code>messages.create</code>. Older models such as Haiku 4.5 accepted them. Know the concepts for interviews; in production, control behaviour with instructions, examples, structured outputs and the <code>effort</code> setting. Also: temperature 0 never guaranteed identical outputs, because of floating-point non-determinism in batched GPU inference.</p></div>
+  <div class="keys">
+    <div class="key"><h4>Temperature T</h4><p><code>p_i = exp(z_i / T) / Σ exp(z_j / T)</code>. T &lt; 1 sharpens; T &gt; 1 flattens; T → 0 ≈ greedy.</p></div>
+    <div class="key"><h4>Top-k</h4><p>Keep the k most likely tokens, renormalise, sample.</p></div>
+    <div class="key"><h4>Top-p (nucleus)</h4><p>Keep the smallest top set reaching cumulative p. Tiny when confident, larger when unsure.</p></div>
+  </div>
+  <div class="callout warn"><b>Current Claude models</b><p>Sonnet 5.5 and Opus 5.5 accept only the default <code>temperature</code>/<code>top_p</code>. Steer with instructions, examples, structured outputs and <code>effort</code>.</p></div>
+  <details class="deep"><summary>Go deeper: embeddings and sampling in prose</summary>
+  <p>An embedding model maps a whole piece of text to one fixed-length vector (for example 1,024 numbers) such that texts with similar meaning land close together. This is a different model from the chat model; Anthropic does not ship one and points to Voyage AI (for example <code>voyage-4</code>, or <code>voyage-law-2</code> for legal text). RAG stores chunk embeddings and finds the chunks nearest to the question's embedding.</p>
+  <p>Cosine ignores length, so a short clause and a long clause about the same thing still match. If vectors are normalised to length 1 (Voyage embeddings are), cosine equals the plain dot product and gives the same ranking as Euclidean distance, so databases can use the cheaper operation.</p>
+  <p>The model outputs logits; sampling decides which token to emit.</p>
+  <ul>
+    <li><b>Temperature</b> T divides the logits before softmax: <code>p_i = exp(z_i / T) / Σ exp(z_j / T)</code>. T &lt; 1 sharpens the distribution (more deterministic); T &gt; 1 flattens it (more varied, more mistakes). T → 0 approaches greedy decoding (always the top token).</li>
+    <li><b>Top-k</b> keeps only the k most likely tokens, renormalises, then samples.</li>
+    <li><b>Top-p (nucleus)</b> keeps the smallest set of top tokens whose cumulative probability reaches p, then samples. It adapts: when the model is confident the set is tiny, when unsure it is larger.</li>
+  </ul>
+  <p>Numbers from the hands-on script below, for logits shall=3.0, may=2.0, must=1.5, banana=−2.0 (table above).</p>
+  <p>On the newest Claude models (Sonnet 5.5, Opus 5.5), <code>temperature</code> and <code>top_p</code> are deprecated and only the default is accepted; the current Python SDK does not even expose them on <code>messages.create</code>. Older models such as Haiku 4.5 accepted them. Know the concepts for interviews; in production, control behaviour with instructions, examples, structured outputs and the <code>effort</code> setting. Also: temperature 0 never guaranteed identical outputs, because of floating-point non-determinism in batched GPU inference.</p>
+  </details>
 
-  <h3>2.8 The KV cache</h3>
+  <h2 id="kv"><span class="n">06</span>KV cache and hallucinations</h2>
+  <div class="stats">
+    <div class="stat"><b>≈ 0.5 MiB</b><span>KV cache per token, 7B-class, fp16</span></div>
+    <div class="stat"><b>2 GiB</b><span>for one 4,096-token sequence</span></div>
+    <div class="stat"><b>O(n²)</b><span>attention compute in sequence length</span></div>
+  </div>
+  <div class="vs">
+    <div><h4>Prefill</h4><ul><li class="pro">Whole prompt in parallel, fills the cache</li><li class="con">Drives time to first token</li></ul></div>
+    <div><h4>Decode</h4><ul><li class="pro">One token per step, reuses the cache</li><li class="con">Memory-bandwidth bound; drives tokens per second</li></ul></div>
+  </div>
+  <h3>Why hallucinations happen</h3>
+  <div class="keys">
+    <div class="key"><h4>Wrong objective</h4><p>"Plausible next token", not "true statement". Fluent and wrong scores well.</p></div>
+    <div class="key"><h4>Lossy memory</h4><p>Rare facts (clause 12.1 of one contract) are stored poorly; the gap is filled with a likely pattern.</p></div>
+    <div class="key"><h4>Cutoff, no private data</h4><p>Unless you put it in the context.</p></div>
+    <div class="key"><h4>Errors compound</h4><p>A wrong sampled token conditions every later one.</p></div>
+    <div class="key"><h4>Helpfulness bias</h4><p>Tuning pushes it to answer instead of "I don't know" unless allowed.</p></div>
+  </div>
+  <div class="callout tip"><b>Mitigations</b><ul><li>Ground in retrieved text; require chunk-id citations.</li><li>Explicitly allow "not found in the document".</li><li>Validate structured outputs; verify with a second pass or tool.</li><li>Measure faithfulness on a golden set. Design so wrong answers are detectable.</li></ul></div>
+  <details class="deep"><summary>Go deeper: KV cache and hallucinations in prose</summary>
   <p>When generating token 501, attention needs the keys and values of tokens 1–500. They do not change, so the server computes them once and keeps them in GPU memory: the KV cache. Each new token then computes only its own Q, K, V and attends to the cached K and V. Without it, every step would recompute the whole prefix and generation would be quadratic per token.</p>
   <p>Two phases follow from this: <b>prefill</b> (process the whole prompt in parallel, fill the cache; this drives time to first token) and <b>decode</b> (one token at a time, memory-bandwidth bound; this drives tokens per second).</p>
   <p>Memory estimate: <code>2 (K and V) × layers × kv_heads × head_dim × bytes per value × tokens</code>. For a 7B-class model with 32 layers, 32 heads of dimension 128, in fp16: 2 × 32 × 32 × 128 × 2 = 524,288 bytes ≈ 0.5 MiB per token, so a 4,096-token sequence needs 2 GiB, per concurrent request. This is why serving long contexts is expensive and why techniques like grouped-query attention (fewer KV heads) exist. Provider-side <b>prompt caching</b> is the same idea exposed as a product: a reused prompt prefix skips prefill, so it is cheaper and faster.</p>
-
-  <h3>2.9 Why hallucinations happen</h3>
   <ul>
     <li>The training objective is "plausible next token", not "true statement". A fluent, confident, wrong answer scores well on that objective.</li>
     <li>Knowledge is compressed into weights. Rare facts (a specific clause number in a specific contract) are stored poorly or not at all, and the model fills the gap with the most likely pattern.</li>
@@ -158,9 +271,25 @@
     <li>Instruction tuning rewards helpfulness, which can push the model to answer rather than say "I don't know" unless told it may.</li>
   </ul>
   <p>Mitigations: ground answers in retrieved text (RAG) and require citations to chunk ids, explicitly allow "not found in the document", validate structured outputs, verify claims with a second pass or tool, and measure faithfulness on a golden set. You cannot drive hallucination to zero; you design so that wrong answers are detectable.</p>
+  </details>
 
-  <h3>2.10 RAG vs fine-tuning vs LoRA</h3>
-  <p>Fine-tuning updates model weights on your examples. Full fine-tuning updates all weights (expensive, a full model copy per variant). <b>LoRA</b> (low-rank adaptation) freezes the base weights and learns small low-rank matrices added to some layers: a weight update ΔW is approximated as B·A, where A and B are thin matrices of rank r (say 8 or 16), so you train well under 1% of the parameters and can swap adapters per task. RAG changes nothing in the model; it puts relevant documents into the prompt at query time.</p>
+  <h2 id="choose"><span class="n">07</span>RAG vs fine-tuning, BERT vs GPT</h2>
+  <div class="vs">
+    <div class="pick"><h4>RAG <span class="tag">usual pick</span></h4><ul><li class="pro">Private, changing docs; citations; per-tenant access</li><li class="pro">Update by re-indexing</li></ul><p class="when">Knowledge.</p></div>
+    <div><h4>Fine-tune / LoRA</h4><ul><li class="pro">Format, tone, narrow high-volume tasks; small model matches big</li><li class="con">Poor, unauditable way to add facts</li></ul><p class="when">Behaviour.</p></div>
+  </div>
+  <p><b>Senior framing:</b> prompt → RAG for knowledge → fine-tune/<dfn title="Low-rank adaptation: freeze base weights, train small rank-r matrices (under 1% of parameters)">LoRA</dfn> only for behaviour, proven by evals.</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>BERT (encoder-only)</th><th>GPT / Claude (decoder-only)</th></tr></thead>
+    <tbody>
+      <tr><td>Attention</td><td>Bidirectional: each token sees left and right context</td><td>Causal: each token sees only earlier tokens</td></tr>
+      <tr><td>Training objective</td><td>Masked language modelling: predict hidden tokens in the middle</td><td>Next-token prediction</td></tr>
+      <tr><td>Output</td><td>Contextual vectors for each token / the whole input</td><td>Generated text, one token at a time</td></tr>
+      <tr><td>Good at</td><td>Classification, named-entity recognition, embeddings, rerankers (cross-encoders)</td><td>Generation, instruction following, reasoning, tool use</td></tr>
+      <tr><td>Size and cost</td><td>Small (around 100M–350M parameters for the classic models), cheap to run on CPU</td><td>Billions of parameters, GPU serving</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep"><summary>Go deeper: fine-tuning, LoRA and encoder–decoder</summary>
   <div class="tbl"><table>
     <thead><tr><th>Need</th><th>Choose</th><th>Why</th></tr></thead>
     <tbody>
@@ -172,26 +301,22 @@
       <tr><td>Using a hosted frontier model via API</td><td>RAG + prompting</td><td>You usually cannot fine-tune it; that is fine for most products</td></tr>
     </tbody>
   </table></div>
+  <p>Fine-tuning updates model weights on your examples. Full fine-tuning updates all weights (expensive, a full model copy per variant). <b>LoRA</b> (low-rank adaptation) freezes the base weights and learns small low-rank matrices added to some layers: a weight update ΔW is approximated as B·A, where A and B are thin matrices of rank r (say 8 or 16), so you train well under 1% of the parameters and can swap adapters per task. RAG changes nothing in the model; it puts relevant documents into the prompt at query time.</p>
   <p>Senior framing: start with prompting, add RAG for knowledge, add fine-tuning only for behaviour you cannot get otherwise, and only once you have an evaluation set to prove it helped. They combine: a LoRA-tuned model can still use RAG.</p>
-
-  <h3>2.11 BERT vs GPT: encoder vs decoder</h3>
-  <div class="tbl"><table>
-    <thead><tr><th></th><th>BERT (encoder-only)</th><th>GPT / Claude (decoder-only)</th></tr></thead>
-    <tbody>
-      <tr><td>Attention</td><td>Bidirectional: each token sees left and right context</td><td>Causal: each token sees only earlier tokens</td></tr>
-      <tr><td>Training objective</td><td>Masked language modelling: predict hidden tokens in the middle</td><td>Next-token prediction</td></tr>
-      <tr><td>Output</td><td>Contextual vectors for each token / the whole input</td><td>Generated text, one token at a time</td></tr>
-      <tr><td>Good at</td><td>Classification, named-entity recognition, embeddings, rerankers (cross-encoders)</td><td>Generation, instruction following, reasoning, tool use</td></tr>
-      <tr><td>Size and cost</td><td>Small (around 100M–350M parameters for the classic models), cheap to run on CPU</td><td>Billions of parameters, GPU serving</td></tr>
-    </tbody>
-  </table></div>
   <p>The original transformer was encoder–decoder (T5 also is), used for translation: the encoder reads the source, the decoder generates the target attending to it. In a RAG system you often use both families: encoder models for embeddings and reranking, a decoder model to write the answer.</p>
+  </details>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>Estimating tokens from characters across model generations instead of counting.</li>
+    <li>"1M context, so skip retrieval."</li>
+    <li>Setting temperature 0 and expecting identical outputs.</li>
+    <li>Fine-tuning to teach facts.</li>
+    <li>Forgetting the √d_k or the causal mask when writing attention.</li>
+  </ul></div>
 
-  <h2 id="handson"><span class="n">03</span>Hands-on: compute it yourself</h2>
-  <p>All scripts below are pure Python standard library and run offline. Create a folder and run each with <code>python3 file.py</code> (or <code>uv run</code>).</p>
-
+  <h2 id="handson"><span class="n">08</span>Hands-on: compute it yourself</h2>
+  <p>Pure standard-library Python, offline. Run each with <code>python3 file.py</code> (or <code>uv run</code>).</p>
   <h3>Cosine similarity</h3>
-  <pre><code>import math
+  <details class="code"><summary>Show cosine.py</summary><pre><code>import math
 
 
 def cosine(a: list[float], b: list[float]) -&gt; float:
@@ -207,13 +332,12 @@ termination = [0.1, 0.9, 0.2] # termination for convenience clause
 print(f"query·liability   = {cosine(query, liability):.3f}")
 print(f"query·termination = {cosine(query, termination):.3f}")
 assert cosine(query, liability) &gt; cosine(query, termination)
-assert abs(cosine(liability, [2 * x for x in liability]) - 1.0) &lt; 1e-12  # length does not matter</code></pre>
+assert abs(cosine(liability, [2 * x for x in liability]) - 1.0) &lt; 1e-12  # length does not matter</code></pre></details>
   <p>Expected output:</p>
   <pre><code>query·liability   = 0.987
 query·termination = 0.256</code></pre>
-
   <h3>Temperature and top-p</h3>
-  <pre><code>import math
+  <details class="code"><summary>Show sampling.py</summary><pre><code>import math
 
 
 def softmax(logits: list[float], temperature: float = 1.0) -&gt; list[float]:
@@ -242,16 +366,15 @@ for t in (0.2, 1.0, 2.0):
 probs = dict(zip(tokens, softmax(logits, 1.0)))
 print("top_p=0.9:", {k: round(v, 3) for k, v in top_p_filter(probs, 0.9).items()})
 assert softmax(logits, 0.2)[0] &gt; softmax(logits, 1.0)[0] &gt; softmax(logits, 2.0)[0]
-assert "banana" not in top_p_filter(probs, 0.9)</code></pre>
+assert "banana" not in top_p_filter(probs, 0.9)</code></pre></details>
   <p>Expected output:</p>
   <pre><code>T=0.2: {'shall': 0.993, 'may': 0.007, 'must': 0.001, 'banana': 0.0}
 T=1.0: {'shall': 0.626, 'may': 0.23, 'must': 0.14, 'banana': 0.004}
 T=2.0: {'shall': 0.463, 'may': 0.281, 'must': 0.219, 'banana': 0.038}
 top_p=0.9: {'shall': 0.629, 'may': 0.231, 'must': 0.14}</code></pre>
   <p>Subtracting the max logit before <code>exp</code> is the standard numerically stable softmax; it does not change the result.</p>
-
   <h3>Attention on three tokens</h3>
-  <pre><code>import math
+  <details class="code"><summary>Show attention.py</summary><pre><code>import math
 
 
 def softmax(xs: list[float]) -&gt; list[float]:
@@ -277,12 +400,11 @@ def attention(Q, K, V):
 K = [[1.0, 0.0], [0.0, 1.0], [0.2, 0.2]]
 V = [[10.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
 Q = [[2.0, 0.1]]
-print("output:", [[round(x, 2) for x in row] for row in attention(Q, K, V)])</code></pre>
+print("output:", [[round(x, 2) for x in row] for row in attention(Q, K, V)])</code></pre></details>
   <p>Expected output:</p>
   <pre><code>weights: [0.63, 0.164, 0.206]
 output: [[6.5, 0.37]]</code></pre>
-  <p>The query aligns with the first key, so 63% of the output comes from the first token's value. Change <code>Q</code> to <code>[[0.1, 2.0]]</code> and watch the weight move to "shall". That is all attention is, repeated across heads, layers and thousands of dimensions.</p>
-
+  <p>The query aligns with the first key, so 63% of the output comes from the first token's value. Change <code>Q</code> to <code>[[0.1, 2.0]]</code> and the weight moves to "shall".</p>
   <h3>Count real tokens (needs an API key; the endpoint is free)</h3>
   <pre><code>import anthropic
 
@@ -292,9 +414,9 @@ clause = "The Supplier's aggregate liability shall not exceed the fees paid in t
 for model in ("claude-sonnet-5-5", "claude-haiku-4-5-20251001"):
     count = client.messages.count_tokens(model=model, messages=[{"role": "user", "content": clause}])
     print(model, count.input_tokens, "tokens for", len(clause), "chars")</code></pre>
-  <p>Run it with <code>ANTHROPIC_API_KEY</code> set. Compare the two counts: Sonnet 5.5 uses the newer tokenizer and should report more tokens for the same clause. Token counting is free but rate limited, and counts are estimates.</p>
+  <p>Sonnet 5.5 uses the newer tokenizer and should report more tokens for the same clause. Counting is free but rate limited, and counts are estimates.</p>
 
-  <h2 id="interview"><span class="n">04</span>How this shows up in interviews</h2>
+  <h2 id="interview"><span class="n">09</span>How this shows up in interviews</h2>
   <details class="qa"><summary>Explain how an LLM generates a response, end to end.</summary><p>Tokenise the input into ids, embed them with positions, pass them through stacked transformer blocks (causal self-attention + MLP with residuals), project the last position to logits over the vocabulary, softmax, sample a token, append, repeat until an end token, stop sequence or max_tokens. Prefill processes the prompt in parallel and fills the KV cache; decode generates one token per step using the cache.</p></details>
   <details class="qa"><summary>Write the attention formula and explain each term.</summary><p><code>softmax(QKᵀ/√d_k)V</code>. Q, K, V are learned projections of token vectors. QKᵀ gives pairwise relevance; dividing by √d_k keeps the variance of scores stable so softmax does not saturate; softmax makes weights per query that sum to 1; multiplying by V mixes the value vectors. Decoders add a causal mask. Multi-head runs several in parallel. Cost is O(n²) in sequence length.</p></details>
   <details class="qa"><summary>What is a token, and why does it matter to you as an engineer?</summary><p>A sub-word unit from the tokenizer vocabulary, roughly 4 characters of English. Cost, rate limits, context limits and latency are all in tokens. Non-English text and code cost more; tokenizers differ across model versions, so measure with a token counter rather than estimating from characters.</p></details>
@@ -308,15 +430,52 @@ for model in ("claude-sonnet-5-5", "claude-haiku-4-5-20251001"):
   <details class="qa"><summary>Estimate the monthly cost of a feature doing 100k requests a day.</summary><p>Tokens per request × price. For 6,000 input and 500 output on Sonnet 5.5: $0.012 + $0.005 = $0.017 per request, $1,700 per day, about $51,000 per 30-day month. Then name the levers: Haiku for easy queries, fewer chunks, prompt caching, batch for offline work, shorter outputs.</p></details>
   <details class="qa"><summary>If the context window is 1M tokens, why not skip RAG and send everything?</summary><p>You pay for every input token on every call, latency grows with input, recall of details in very long inputs degrades, and you still need per-user access control on what goes in. For a small, stable corpus (Anthropic's guidance is under about 200k tokens) putting it all in a cached prompt is a valid design; for many tenants and thousands of contracts, retrieve.</p></details>
 
-  <h2 id="exercise"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Why divide by √d_k in attention?</p>
+    <div class="opts"><button class="opt" type="button">To make the weights sum to 1</button><button class="opt" type="button">So scores don't grow with dimension and saturate softmax</button><button class="opt" type="button">To hide future tokens</button></div>
+    <p class="why">Softmax makes weights sum to 1; the causal mask hides the future. Scaling keeps score variance stable so gradients don't vanish.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Sonnet 5.5, 6,000 input + 500 output tokens. Cost per request?</p>
+    <div class="opts"><button class="opt" type="button">$0.0085</button><button class="opt" type="button">$0.065</button><button class="opt" type="button">$0.017</button></div>
+    <p class="why">6,000 × $2/1M = $0.012, plus 500 × $10/1M = $0.005. $0.0085 is Haiku 4.5.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">What does the KV cache save during decoding?</p>
+    <div class="opts"><button class="opt" type="button">Recomputing keys and values of all earlier tokens each step</button><button class="opt" type="button">Re-tokenising the prompt</button><button class="opt" type="button">Sampling cost</button></div>
+    <p class="why">Earlier K and V don't change, so each step computes only the new token's Q, K, V.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">A contract Q&amp;A product needs per-tenant answers with citations over documents that change daily. Best fit?</p>
+    <div class="opts"><button class="opt" type="button">Fine-tune per tenant</button><button class="opt" type="button">RAG</button><button class="opt" type="button">LoRA adapters</button></div>
+    <p class="why">Re-index instead of retrain, cite chunks, enforce access control at retrieval time.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">At T = 0.2, "shall" has probability 0.993. At T = 2.0 it is…</p>
+    <div class="opts"><button class="opt" type="button">Still 0.993</button><button class="opt" type="button">Higher</button><button class="opt" type="button">Lower (0.463): the distribution flattens</button></div>
+    <p class="why">Higher temperature divides logits by a bigger number, spreading probability to less likely tokens.</p></div>
+
+  <h2 id="exercise"><span class="n">11</span>Exercise / checkpoint for the capstone</h2>
+  <div class="keys">
+    <div class="key"><h4>Measure tokens</h4><p>Three contracts, Sonnet 5.5 vs Haiku 4.5, record the ratio.</p></div>
+    <div class="key"><h4>Cost model</h4><p>2,000 uploads and 20,000 questions a day, with and without caching.</p></div>
+    <div class="key"><h4>Say it aloud</h4><p>Generation, why RAG, how the design limits hallucination.</p></div>
+  </div>
+  <details class="deep"><summary>Exercise steps in full</summary>
   <ol>
     <li>Take three real-looking contracts (public sample agreements are fine). Use <code>count_tokens</code> to measure tokens per page and per contract on Sonnet 5.5 and Haiku 4.5. Record the ratio.</li>
     <li>Using those numbers, write a one-page cost model for the capstone: contract Q&amp;A (retrieve 5 chunks of 500 tokens, 400-token answer) and the clause flagger (one Haiku call per clause). Assume 2,000 contracts uploaded per day and 20,000 questions per day. Show the daily cost per model and the saving from prompt caching the system prompt.</li>
     <li>Write three paragraphs, in your own words, that you could say aloud in an interview: how generation works, why the capstone uses RAG rather than fine-tuning, and how the design limits hallucination (citations, "not found" path, validation).</li>
   </ol>
   <p><b>Done when:</b> you can whiteboard the attention formula and the generation loop from memory in under five minutes, and your cost model's numbers come from measured token counts, not guesses.</p>
+  </details>
 
-  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <h2 id="cheat"><span class="n">12</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Token ≈ 4 English chars; Indic/code cost more; Opus 4.7+ ≈ 30% more tokens. Use <code>count_tokens</code>.</li>
+    <li>$/MTok in/out: Haiku 4.5 1/5, Sonnet 5.5 2/10, Opus 5.5 4/20; cache read 10%; batch 50% off.</li>
+    <li>Loop: tokenise → embed + position → N × (attention + MLP) → logits → softmax → sample → append.</li>
+    <li>Attention = softmax(QKᵀ/√d_k)·V, causal mask, multi-head, O(n²).</li>
+    <li>Cosine = a·b / (‖a‖‖b‖); equals dot product on unit vectors.</li>
+    <li>T sharpens/flattens; top-k fixed count; top-p cumulative mass. Fixed at default on Sonnet/Opus 5.5.</li>
+    <li>KV cache: 2 × layers × kv_heads × head_dim × bytes × tokens. Prefill → TTFT, decode → tokens/s.</li>
+    <li>Hallucination: plausibility objective. Ground, cite, allow "not found", validate, eval.</li>
+    <li>RAG for knowledge, fine-tune/LoRA for behaviour. BERT encodes, GPT generates.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">13</span>Sources / go deeper</h2>
   <ul class="sources">
     <li><a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener">Vaswani et al., "Attention Is All You Need" (2017)</a></li>
     <li><a href="https://arxiv.org/abs/1810.04805" target="_blank" rel="noopener">Devlin et al., "BERT" (2018)</a></li>
@@ -330,5 +489,6 @@ for model in ("claude-sonnet-5-5", "claude-haiku-4-5-20251001"):
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="learn-first-llm-calls.html">First LLM calls</a> · <a href="learn-rag-fundamentals.html">RAG fundamentals</a> · <a href="ai-rag-enterprise-qa.html">Enterprise RAG design</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

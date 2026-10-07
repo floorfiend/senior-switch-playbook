@@ -12,30 +12,48 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
   <h1>Distributed Job Scheduler</h1>
-  <p class="lede">Clients schedule jobs to run at a timestamp or on a cron expression; the system fires each one on time, invokes a callback or worker, retries failures with backoff, and parks poison jobs in a dead-letter queue. The senior answer separates "find due jobs" from "run jobs", explains exactly-once honestly (at-least-once plus idempotent handlers plus fencing), and measures scheduling lag at p99.</p>
+  <p class="lede">Design a scheduler that fires 100M jobs a day on time, retries failures safely, and never loses a job when a machine dies.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> Razorpay ×2, InMobi, Postman, Goldman Sachs, Microsoft, 2025–26</span>
   </div>
   <div class="chips"><span class="chip hot">Razorpay</span><span class="chip">InMobi</span><span class="chip">Postman</span><span class="chip">Goldman Sachs</span><span class="chip">Microsoft</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Separate "find due jobs" (dispatchers) from "run jobs" (workers) with a queue.</li>
+    <li>Claim due rows with an index and <code>SKIP LOCKED</code>; hold the next 60 s in a timing wheel.</li>
+    <li>At-least-once plus leases, fencing tokens and idempotent callbacks.</li>
+    <li>Measure scheduling lag as a p99 histogram, per tenant.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>Mumbai's dabbawalas: sorters at the station (dispatchers) only decide which tiffin goes on which train at what time. Delivery runners (workers) carry them. If a runner falls sick, the tiffin is reassigned; the office checks the code so nobody eats lunch twice.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
     <li><a href="#scope">Clarify and scope</a></li>
-    <li><a href="#capacity">Capacity estimation</a></li>
-    <li><a href="#api">API design</a></li>
-    <li><a href="#data">Data model</a></li>
+    <li><a href="#capacity">Numbers</a></li>
     <li><a href="#arch">Architecture</a></li>
+    <li><a href="#follow">Follow one job</a></li>
     <li><a href="#deep">Deep dives</a></li>
+    <li><a href="#tradeoffs">Design choices</a></li>
     <li><a href="#scale">Scaling and failure</a></li>
-    <li><a href="#tradeoffs">Trade-offs</a></li>
-    <li><a href="#followups">Follow-up questions</a></li>
     <li><a href="#mistakes">Rejection reasons</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#followups">Interview questions</a></li>
     <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources</a></li>
   </ol></nav>
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <div class="keys">
+    <div class="key"><h4>Time-based dispatch</h4><p>Find due jobs without scanning the table every second; survive "everything at 00:00".</p></div>
+    <div class="key"><h4>None twice, none lost</h4><p>Schedulers and workers crash: leases, heartbeats, fencing.</p></div>
+    <div class="key"><h4>Lifecycle and retries</h4><p>Clear state machine, backoff with jitter, max attempts, DLQ, replay.</p></div>
+    <div class="key"><h4>Honest semantics</h4><p>At-least-once, and what the callback must do to make that safe.</p></div>
+    <div class="key"><h4>Observability</h4><p>Scheduling lag and execution latency as p99 histograms, per tenant.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: what the reports said</summary>
   <p>Razorpay's Lead SWE loop (Nov 2025) opened with "Design job scheduler" (Hire). Another Razorpay HLD framed it as a scheduler service where clients schedule tasks at specific timestamps with callbacks and error / retry handling. InMobi's SDE-2 bar raiser (Dec 2025) wanted high availability, durability, "exactly-once processing (or at least retry mechanisms)", job statuses (Queued, Running, Failed, Completed), SQL vs NoSQL, and retries with DLQs. Postman asked a job executor service (Senior, Feb 2026). Goldman Sachs grows it from in-memory to distributed; Microsoft L63 asked a cloud job scheduler with p99 metrics.</p>
   <ul>
     <li><b>Time-based dispatch at scale</b> without scanning the whole table every second, and surviving the "everything at 00:00" spike.</li>
@@ -43,25 +61,36 @@
     <li><b>Lifecycle and retries:</b> a clear state machine, backoff with jitter, max attempts, DLQ, manual replay.</li>
     <li><b>Honest delivery semantics:</b> at-least-once, and what the callback must do to make that safe.</li>
     <li><b>Observability:</b> scheduling lag and execution latency as histograms with p99, per tenant.</li>
-  </ul>
+  </ul></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
-  <h3>Questions to ask</h3>
-  <ul>
+  <div class="grid">
+    <div class="card"><h4>Functional</h4><ul><li>Schedule at timestamp or cron; cancel, update, pause</li><li>Execute via callback or worker; capture result</li><li>Retries with backoff; DLQ; manual replay</li><li>Query status and history</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>Durable once accepted (no lost jobs)</li><li>Scheduling lag p99 &lt; 1 s, p999 &lt; 5 s</li><li>99.99% availability for scheduling API</li><li>Scale to 100M jobs/day, 50k fires/s burst</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Full DAG orchestration (extension)</li><li>Sandboxing untrusted code (mention containers)</li><li>Building a message broker</li></ul></div>
+  </div>
+  <details class="deep"><summary>Go deeper: six questions to ask first</summary><ul>
     <li><b>One-off, recurring (cron), or both?</b> Recurring jobs need "next run" materialisation and catch-up policy after downtime (run once vs run every missed slot).</li>
     <li><b>What does "run" mean?</b> An HTTP callback to the client (Razorpay), a message to a queue, or executing code in our workers (Postman's executor, with containers / resource limits)?</li>
     <li><b>Precision?</b> Second-level ("within 1 s of the scheduled time at p99") vs minute-level. Precision drives the polling design.</li>
     <li><b>Max execution time and payload size?</b> Long jobs need heartbeats; large payloads go to S3 with a reference.</li>
     <li><b>Dependencies (DAGs)?</b> Airflow-style workflows are a big extension; confirm if in scope.</li>
     <li><b>Multi-tenant?</b> Quotas and fairness so one tenant's 10M jobs at midnight do not starve others.</li>
-  </ul>
-  <div class="grid">
-    <div class="card"><h4>Functional</h4><ul><li>Schedule at timestamp or cron; cancel, update, pause</li><li>Execute via callback or worker; capture result</li><li>Retries with backoff; DLQ; manual replay</li><li>Query status and history</li></ul></div>
-    <div class="card"><h4>Non-functional</h4><ul><li>Durable once accepted (no lost jobs)</li><li>Scheduling lag p99 &lt; 1 s, p999 &lt; 5 s</li><li>99.99% availability for scheduling API</li><li>Scale to 100M jobs/day, 50k fires/s burst</li></ul></div>
-    <div class="card"><h4>Out of scope</h4><ul><li>Full DAG orchestration (extension)</li><li>Sandboxing untrusted code (mention containers)</li><li>Building a message broker</li></ul></div>
-  </div>
+  </ul></details>
 
-  <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <h2 id="capacity"><span class="n">03</span>The numbers</h2>
+  <div class="stats">
+    <div class="stat"><b>100M/day</b><span>jobs executed (~1.2k/s avg)</span></div>
+    <div class="stat"><b>~50k/s</b><span>burst at round times</span></div>
+    <div class="stat"><b>~300M</b><span>pending runs (~300 GB)</span></div>
+    <div class="stat"><b>~1.5 TB</b><span>30 days of history</span></div>
+    <div class="stat"><b>~10k</b><span>callbacks in flight at burst</span></div>
+  </div>
+  <ul>
+    <li>Pending set: too big for one process, fine for <b>sharded SQL or wide-column</b>.</li>
+    <li><b>Bursts at round times</b> are the real scaling problem. Workers are cheap with non-blocking I/O.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: full estimation table</summary>
   <div class="tbl"><table>
     <tr><th>Quantity</th><th>Assumption</th><th>Result</th></tr>
     <tr><td>Jobs executed / day</td><td>Payments platform: reminders, settlements, webhooks retries</td><td class="num">100M/day</td></tr>
@@ -72,10 +101,29 @@
     <tr><td>History</td><td>100M × 0.5 KB per execution, keep 30 days</td><td class="num">~1.5 TB</td></tr>
     <tr><td>Workers</td><td>Avg callback 200 ms → 1.2k/s × 0.2 s = 240 in flight avg; 10k at burst</td><td class="num">Async HTTP: a few dozen pods</td></tr>
   </table></div>
-  <p>Conclusions: the pending set is too large to keep in one process's memory but small enough for a sharded SQL or wide-column store; bursts at round times are the scaling problem; worker concurrency is cheap if callbacks use non-blocking I/O.</p>
+  <p>Conclusions: the pending set is too large to keep in one process's memory but small enough for a sharded SQL or wide-column store; bursts at round times are the scaling problem; worker concurrency is cheap if callbacks use non-blocking I/O.</p></details>
 
-  <h2 id="api"><span class="n">04</span>API design</h2>
-  <pre><code>POST /v1/jobs                         Idempotency-Key: settle-merchant-42-2026-10-07
+  <h2 id="arch"><span class="n">04</span>Architecture</h2>
+  <div class="arch">
+    <div class="tier"><small>Schedule</small><span class="node">Clients</span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">Scheduler API<small>validate, idempotency</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node store">Job store<small>jobs + job_runs, 1,024 shards</small></span><span class="node">Coordinator<small>ZooKeeper / etcd / Kafka group</small></span></div>
+    <div class="down">↓ <small>poll due runs</small></div>
+    <div class="tier"><small>Dispatch</small><span class="node hl">Dispatchers<small>one owner per shard</small></span><span class="node hl">Timing wheel<small>next ~60 s in memory</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node store">Ready queue<small>Kafka / SQS</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><small>Execute</small><span class="node hl">Workers<small>lease, heartbeat, execute</small></span><span class="node store">DLQ</span><span class="node">Metrics<small>lag, duration histograms</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">Targets<small>HTTP callback / handler</small></span></div>
+  </div>
+  <ul>
+    <li>The queue decouples finding work from doing it, so <b>slow callbacks never delay dispatch</b>.</li>
+    <li>A retry is just a new <code>due_at</code> on the same run row; it flows back through the dispatcher.</li>
+  </ul>
+  <details class="code"><summary>Show API and callback contract</summary><pre><code>POST /v1/jobs                         Idempotency-Key: settle-merchant-42-2026-10-07
 { "name": "settlement-run",
   "schedule": { "type": "AT", "at": "2026-10-07T18:30:00Z" },     // or { "type": "CRON", "cron": "0 */15 * * * *", "tz": "Asia/Kolkata" }
   "target": { "type": "HTTP", "url": "https://svc/internal/settle", "method": "POST", "timeoutMs": 10000 },
@@ -93,10 +141,10 @@ POST   /v1/dlq/{executionId}/replay
 Callback request to the client:
 POST https://svc/internal/settle
 X-Job-Id: j_01J...   X-Execution-Id: j_01J...:2026-10-07T18:30:00Z   X-Attempt: 2
-→ 2xx success | 4xx permanent failure (no retry) | 5xx / timeout → retry</code></pre>
+→ 2xx success | 4xx permanent failure (no retry) | 5xx / timeout → retry</code></pre></details>
+  <p><code>X-Execution-Id</code> is stable across retries of one run, so the callee can dedupe. That is how you get effectively-once.</p>
+  <details class="deep"><summary>Go deeper: API notes, data model and each component</summary>
   <p>Idempotency on create stops duplicate schedules from client retries. <code>X-Execution-Id</code> is stable across retries of the same run, so the callee can dedupe; that is how you get effectively-once without pretending the network is reliable.</p>
-
-  <h2 id="data"><span class="n">05</span>Data model</h2>
   <div class="tbl"><table>
     <tr><th>Table</th><th>Key fields</th><th>Keys / indexes</th></tr>
     <tr><td><code>jobs</code> (definition)</td><td>job_id, tenant_id, schedule_type, cron, tz, target, payload_ref, retry_policy, status (ACTIVE / PAUSED / CANCELLED), version</td><td>PK job_id; index tenant_id</td></tr>
@@ -106,45 +154,56 @@ X-Job-Id: j_01J...   X-Execution-Id: j_01J...:2026-10-07T18:30:00Z   X-Attempt: 
     <tr><td>Kafka <code>dlq</code></td><td>Dead runs with last error</td><td>Inspect, alert, replay</td></tr>
   </table></div>
   <p><b>Postgres (sharded) is the default.</b> The access pattern "due rows for my shard, oldest first, lock them" maps directly to <code>SELECT ... FOR UPDATE SKIP LOCKED</code> on an index, and status transitions need conditional updates. At larger scale use Cassandra / DynamoDB with partition key <code>(time_bucket_minute, shard)</code> so a poller reads exactly one partition per minute per shard; you then need lightweight transactions or a lease table for claims. Splitting definitions (<code>jobs</code>) from occurrences (<code>job_runs</code>) is what makes cron clean: each recurring job keeps one future run row, created when the previous one is claimed.</p>
-
-  <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
-  <div class="flow">
-    <span class="node">Clients</span><span class="arrow">→</span>
-    <span class="node">Scheduler API<small>validate, idempotency</small></span><span class="arrow">→</span>
-    <span class="node store">Job store<small>jobs + job_runs, sharded</small></span>
-  </div>
-  <div class="flow">
-    <span class="node store">Job store</span><span class="arrow">→</span>
-    <span class="node hl">Dispatchers<small>one owner per shard, poll due runs</small></span><span class="arrow">→</span>
-    <span class="node hl">Timing wheel<small>next ~60 s in memory</small></span><span class="arrow">→</span>
-    <span class="node store">Ready queue<small>Kafka / SQS</small></span>
-  </div>
-  <div class="flow">
-    <span class="node store">Ready queue</span><span class="arrow">→</span>
-    <span class="node hl">Workers<small>lease, heartbeat, execute</small></span><span class="arrow">→</span>
-    <span class="node">Targets<small>HTTP callback / handler</small></span>
-    <span class="arrow">·</span>
-    <span class="node store">DLQ</span>
-    <span class="arrow">·</span>
-    <span class="node">Metrics<small>lag, duration histograms</small></span>
-  </div>
-  <div class="flow">
-    <span class="node">Coordinator<small>ZooKeeper / etcd / Kafka group</small></span><span class="arrow">→</span>
-    <span class="node">Shard → dispatcher assignment</span>
-  </div>
-  <p class="flow-caption">Figure: scheduling (finding due work) is decoupled from execution (doing the work) by a queue, so slow callbacks never delay dispatch.</p>
   <ul>
     <li><b>Scheduler API</b> validates cron and target allow-list, stores the job and its first run row in one transaction, computes the shard as <code>hash(job_id) % N</code> (N = e.g. 1,024 logical shards).</li>
     <li><b>Dispatchers</b> each own a set of shards (assigned by a coordinator; a Kafka consumer group or etcd leases work). Every second, per shard, they claim runs due in the next window and put them on an in-memory timing wheel; at the exact due time they publish to the ready queue.</li>
     <li><b>Ready queue</b> absorbs bursts and lets workers scale independently. SQS visibility timeouts or Kafka with a per-run lease give redelivery when a worker dies.</li>
     <li><b>Workers</b> mark RUNNING with a lease, heartbeat for long jobs, call the target with timeouts, then record SUCCEEDED / RETRY_WAIT / DEAD. Retry is just a new <code>due_at</code> on the same run row, so it flows back through the dispatcher.</li>
     <li><b>Metrics</b>: scheduling lag (<code>dispatched_at − due_at</code>), queue wait, execution duration, success rate, DLQ depth, all per tenant.</li>
-  </ul>
+  </ul></details>
 
-  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+  <h2 id="follow"><span class="n">05</span>Follow one job (and a worker crash)</h2>
+  <div class="stepper"><b class="title">settlement-run for merchant m_42, due 18:30:00</b><div class="frames">
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">Scheduler API<small>job + first run, one txn</small></span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Job store<small>shard = hash(j_01J) % 1024 = 377</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Worker A</span><span class="node dim">Worker B</span></div></div>
+      <figcaption>At 10:02 the client schedules it. The run row sits in shard 377 with status SCHEDULED.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Job store</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Dispatcher<small>owns 377 · claim due ≤ now+60 s</small></span><span class="node hl">Timing wheel<small>slot 18:30:00</small></span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Worker A</span><span class="node dim">Worker B</span></div></div>
+      <figcaption>At 18:29:01 shard 377's owner claims it (status QUEUED, fencing token 7) and parks it on the timing wheel.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Job store</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Ready queue<small>run, attempt 1, token 7</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Worker A</span><span class="node dim">Worker B</span></div></div>
+      <figcaption>At exactly 18:30:00 the wheel publishes to the ready queue. Lag so far: 40 ms.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Job store</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Worker A<small>QUEUED → RUNNING, lease 30 s</small></span><span class="node dim">Worker B</span></div></div>
+      <figcaption>Worker A claims it with a conditional update and starts the HTTP callback.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Job store</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node bad">Worker A<small>long GC pause, no heartbeat</small></span><span class="node dim">Worker B</span></div></div>
+      <figcaption>Worker A freezes in a 40 s GC pause. Its lease expires at 18:30:30.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Job store<small>reaper: attempt 2, token 8</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node bad">Worker A</span><span class="node hl">Worker B<small>RUNNING, token 8</small></span></div></div>
+      <figcaption>The reaper requeues it with fencing token 8. Worker B runs it; the callee dedupes on <code>X-Execution-Id</code>.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Job store<small>write with token 7 → 0 rows</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node bad">Worker A<small>wakes, writes result</small></span><span class="node dim">Worker B</span></div></div>
+      <figcaption>Worker A wakes and tries to record its result with token 7. Rejected: the token is stale.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node dim">Scheduler API</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Job store<small>SUCCEEDED · next cron run inserted</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Dispatcher</span><span class="node dim">Timing wheel</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Ready queue</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Worker A</span><span class="node hl">Worker B<small>2xx</small></span></div></div>
+      <figcaption>Worker B gets 2xx and records SUCCEEDED. Lag and duration go into histograms.</figcaption>
+    </figure>
+  </div></div>
 
-  <h3>7.1 Finding due jobs without a full scan</h3>
-  <pre><code>-- per shard, every second, by that shard's single owner (plus SKIP LOCKED as a safety net)
+  <h2 id="deep"><span class="n">06</span>Deep dives</h2>
+
+  <h3>6.1 Finding due jobs without a full scan</h3>
+  <div class="cells idx"><span class="cell dim" data-i="done">18:28</span><span class="cell hl" data-i="claim">18:29:40</span><span class="cell hl" data-i="claim">18:30:00</span><span class="cell hl" data-i="claim">18:30:00</span><span class="cell hl" data-i="claim">18:30:55</span><span class="cell" data-i="later">18:31:20</span><span class="cell" data-i="later">19:00</span></div>
+  <p>Index <code>(shard, status, due_at)</code>: each poll is a <b>range read of due rows only</b> (now 18:29:01, window +60 s). <code>SKIP LOCKED</code> lets parallel claimers skip rows another claimer holds.</p>
+  <details class="code"><summary>Show the claim query</summary><pre><code>-- per shard, every second, by that shard's single owner (plus SKIP LOCKED as a safety net)
 WITH due AS (
   SELECT run_id FROM job_runs
   WHERE shard = ANY(:myShards) AND status = 'SCHEDULED' AND due_at &lt;= now() + interval '60 seconds'
@@ -153,27 +212,94 @@ WITH due AS (
   FOR UPDATE SKIP LOCKED)
 UPDATE job_runs r SET status = 'QUEUED', lease_owner = :me, fencing_token = fencing_token + 1
 FROM due WHERE r.run_id = due.run_id
-RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
-  <p>The index on <code>(shard, status, due_at)</code> makes this a range read of only due rows. Claiming 60 s ahead and holding runs on a <b>hierarchical timing wheel</b> (Kafka and Netty use them) gives sub-second precision without polling the DB every 100 ms. If the dispatcher dies, runs stuck in QUEUED with an old lease are reclaimed by the new shard owner. Alternatives: Redis sorted set by due time (<code>ZRANGEBYSCORE</code> + Lua claim) for near-term jobs with the DB as source of truth; or Cassandra minute buckets read once per minute. Dropbox's ATF uses the same split: a task store indexed by scheduled time and status, a Store Consumer that polls it every ~2 s and pushes ready tasks onto SQS, and Controller / Executor workers that pull and heartbeat. It runs ~9,000 tasks/s with 95% starting within 5 s of their scheduled time, a useful real SLO to quote.</p>
+RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre></details>
+  <div class="vs">
+    <div class="pick"><h4>Claim 60 s ahead + timing wheel <span class="tag">usual pick</span></h4><ul><li class="pro">Sub-second precision without polling the DB every 100 ms</li><li class="pro"><dfn title="Ring of time slots, like a clock face; each slot holds tasks due then, with coarser wheels for further-out times">Hierarchical timing wheel</dfn>, as in Kafka and Netty</li></ul><p class="when">Default.</p></div>
+    <div><h4>Poll the DB every 100 ms</h4><ul><li class="con">10× the query load</li><li class="con">Still bursty at 00:00</li></ul><p class="when">Small scale only.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: alternatives and Dropbox's real numbers</summary><p>The index on <code>(shard, status, due_at)</code> makes this a range read of only due rows. Claiming 60 s ahead and holding runs on a <b>hierarchical timing wheel</b> (Kafka and Netty use them) gives sub-second precision without polling the DB every 100 ms. If the dispatcher dies, runs stuck in QUEUED with an old lease are reclaimed by the new shard owner. Alternatives: Redis sorted set by due time (<code>ZRANGEBYSCORE</code> + Lua claim) for near-term jobs with the DB as source of truth; or Cassandra minute buckets read once per minute. Dropbox's ATF uses the same split: a task store indexed by scheduled time and status, a Store Consumer that polls it every ~2 s and pushes ready tasks onto SQS, and Controller / Executor workers that pull and heartbeat. It runs ~9,000 tasks/s with 95% starting within 5 s of their scheduled time, a useful real SLO to quote.</p></details>
 
-  <h3>7.2 Exactly-once: what you can actually promise</h3>
+  <h3>6.2 Exactly-once: what you can actually promise</h3>
+  <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker A</th><th>Worker B</th><th>Callee / store</th></tr></thead><tbody>
+    <tr><td>t1</td><td>calls settle, gets 2xx</td><td></td><td class="ok">money settled</td></tr>
+    <tr><td>t2</td><td>crashes before recording</td><td></td><td>run still RUNNING</td></tr>
+    <tr><td>t3</td><td></td><td>lease expired → runs again</td><td class="bad">second settle, unless callee dedupes</td></tr>
+  </tbody></table></div>
+  <p>Exactly-once of an external side effect is <b>impossible</b> here. Deliver at-least-once and make duplicates harmless:</p>
+  <div class="keys">
+    <div class="key"><h4>Single claimant</h4><p><code>QUEUED → RUNNING WHERE fencing_token = :t</code>. A second worker gets 0 rows.</p></div>
+    <div class="key"><h4>Leases + heartbeats</h4><p><code>lease_until</code> extended every 10 s; a reaper requeues expired ones.</p></div>
+    <div class="key"><h4>Fencing tokens</h4><p>Token increments on every claim; writes with an older token are rejected.</p></div>
+    <div class="key"><h4>Idempotent targets</h4><p>Callee dedupes on <code>X-Execution-Id</code>: effectively-once end to end.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: the full exactly-once argument</summary>
   <p>InMobi's interviewer offered "exactly-once (or at least retry mechanisms)". The honest answer: <b>exactly-once execution of an external side effect is impossible</b> when the worker can crash after the callback succeeds but before recording it. Deliver at-least-once and make duplicates harmless:</p>
   <ol>
     <li><b>Single claimant.</b> Conditional update <code>status: QUEUED → RUNNING WHERE fencing_token = :t</code>; a second worker with the same message gets zero rows and drops it.</li>
     <li><b>Leases with heartbeats.</b> RUNNING carries <code>lease_until</code>; the worker extends it every 10 s. A reaper requeues runs whose lease expired.</li>
     <li><b>Fencing tokens.</b> A paused worker (long GC) whose lease expired might wake and write a result. The token increments on every claim; writes with an older token are rejected. Pass the token to downstream systems that support it.</li>
     <li><b>Idempotent targets.</b> The callee dedupes on <code>X-Execution-Id</code>. This is the part that makes it effectively-once end to end.</li>
-  </ol>
+  </ol></details>
 
-  <h3>7.3 Retries, backoff and DLQ</h3>
-  <ul>
+  <h3>6.3 Retries, backoff and DLQ</h3>
+  <div class="stepper"><b class="title">One run that keeps failing (maxAttempts 5, initial 2 s)</b><div class="frames">
+    <figure class="frame">
+      <div class="cells"><span class="cell hl">RUNNING</span><span class="cell bad">503</span></div>
+      <div class="ptrs"><span class="on">attempt 1</span><span>5xx → retry</span></div>
+      <figcaption>5xx, timeouts and connection errors retry. 4xx (except 408 / 429) go straight to DEAD.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">RETRY_WAIT</span><span class="cell win">delay = random(0, 2 s × 2¹) = 2.7 s</span></div>
+      <div class="ptrs"><span class="on">attempt 2</span><span>full jitter</span></div>
+      <figcaption><code>min(maxMs, initialMs × 2^attempt)</code> with full jitter, so 50k failures at 00:00 do not all retry at 00:00:02.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell">RETRY_WAIT</span><span class="cell win">Retry-After: 30 s</span></div>
+      <div class="ptrs"><span class="on">attempt 3</span><span>429</span></div>
+      <figcaption>Honour <code>Retry-After</code>. If the tenant's endpoint is down, a per-target circuit breaker stops hammering it.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell bad">DEAD</span><span class="cell">→ DLQ topic</span><span class="cell">alert owner</span></div>
+      <div class="ptrs"><span class="on">attempt 5 failed</span></div>
+      <figcaption>After maxAttempts: DEAD, published to the DLQ with the last error and payload ref, owning team alerted.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="cells"><span class="cell ok">SCHEDULED</span><span class="cell">attempt = 1</span></div>
+      <div class="ptrs"><span class="on">POST /v1/dlq/{id}/replay</span></div>
+      <figcaption>After the fix, the replay API re-creates the run with attempt reset.</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: retry rules in full</summary><ul>
     <li>Classify: 2xx success; 4xx permanent (except 408 / 429) → DEAD immediately; 5xx, timeouts, connection errors → retry.</li>
     <li>Backoff: <code>delay = min(maxMs, initialMs × 2^attempt)</code> with full jitter (<code>random(0, delay)</code>) so 50k failures at 00:00 do not all retry at 00:00:02. Honour <code>Retry-After</code>.</li>
     <li>After <code>maxAttempts</code>, mark DEAD, publish to the DLQ topic with the last error and payload ref, alert the owning team. Replay API re-creates the run with attempt reset.</li>
     <li>Per-target circuit breaker: if a tenant's callback endpoint is down, stop hammering it; park its runs in RETRY_WAIT and let the breaker probe.</li>
-  </ul>
+  </ul></details>
 
-  <h3>7.4 From in-memory to distributed (Goldman Sachs progression)</h3>
+  <h3>6.4 From in-memory to distributed (Goldman Sachs progression)</h3>
+  <div class="stepper"><b class="title">Each stage fixes the previous stage's failure</b><div class="frames">
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">One JVM<small>DelayQueue / PriorityQueue + pool + ConcurrentHashMap</small></span></div></div>
+      <figcaption>Stage 1: <code>ScheduledThreadPoolExecutor</code> or a <code>DelayQueue</code> ordered by due time. Fails: lost on restart.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">One JVM<small>loads next window on startup</small></span></div><div class="down">↓</div><div class="tier"><span class="node store">DB</span></div></div>
+      <figcaption>Stage 2: persist jobs; load the next window into the queue on startup. Durable, but one node.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">Leader</span><span class="node dim">Standby</span></div><div class="down">↓ <small>DB advisory lock / ZooKeeper / etcd lease</small></div><div class="tier"><span class="node store">DB</span></div></div>
+      <figcaption>Stage 3: two nodes and leader election; the standby takes over. Quartz clustered mode does roughly this with row locks.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">Dispatcher 1<small>shards 0–511</small></span><span class="node hl">Dispatcher 2<small>shards 512–1023</small></span></div><div class="down">↓</div><div class="tier"><span class="node store">Queue</span></div><div class="down">↓</div><div class="tier"><span class="node">Worker fleet</span></div></div>
+      <figcaption>Stage 4: one leader is too slow. Shard the job space, assign shards, move execution onto a queue and worker fleet.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">Tenant quotas</span><span class="node">DAGs</span><span class="node">Multi-region</span></div></div>
+      <figcaption>Stage 5: multi-tenant fairness, per-tenant quotas, DAGs, multi-region. Naming each stage's failure is what is graded.</figcaption>
+    </figure>
+  </div></div>
+  <details class="deep"><summary>Go deeper: the original stage ladder</summary>
   <div class="timeline">
     <div class="step"><span class="t">Stage 1</span><span><code>ScheduledThreadPoolExecutor</code> or a <code>DelayQueue</code> / <code>PriorityQueue</code> ordered by due time, a worker pool, a <code>ConcurrentHashMap</code> of job states. Lost on restart.</span></div>
     <div class="step"><span class="t">Stage 2</span><span>Persist jobs to a DB; on startup load the next window into the priority queue. Single node, durable.</span></div>
@@ -181,13 +307,42 @@ RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
     <div class="step"><span class="t">Stage 4</span><span>Throughput beyond one leader: shard the job space, assign shards to dispatchers, split execution onto a queue and worker fleet.</span></div>
     <div class="step"><span class="t">Stage 5</span><span>Multi-tenant fairness, per-tenant quotas, DAGs, multi-region.</span></div>
   </div>
-  <p>Walking the interviewer through this ladder, naming the failure each stage fixes, is exactly what the "in-memory → distributed" framing is grading.</p>
+  <p>Walking the interviewer through this ladder, naming the failure each stage fixes, is exactly what the "in-memory → distributed" framing is grading.</p></details>
 
-  <h3>7.5 p99 metrics (Microsoft)</h3>
-  <p>Define the SLIs first: <b>scheduling lag</b> = start time − due time; <b>end-to-end latency</b> = completion − due; <b>execution duration</b>; success rate; queue depth. Record them as histograms (Micrometer timers with percentile histograms to Prometheus, or HdrHistogram), not as averages. Percentiles cannot be averaged across hosts; aggregate the histogram buckets and then compute <code>histogram_quantile(0.99, ...)</code>. Alert on SLO burn rate (e.g. lag p99 &gt; 1 s for 5% of the error budget in an hour), and break down by tenant and shard to find the hot one. The main lag driver is the burst at round times, which is why the dispatcher pre-claims ahead and the queue decouples workers.</p>
+  <h3>6.5 p99 metrics (Microsoft)</h3>
+  <div class="stats">
+    <div class="stat"><b>lag</b><span>start − due</span></div>
+    <div class="stat"><b>end-to-end</b><span>completion − due</span></div>
+    <div class="stat"><b>duration</b><span>execution time</span></div>
+    <div class="stat"><b>success %</b><span>and queue / DLQ depth</span></div>
+  </div>
+  <div class="vs">
+    <div class="pick"><h4>Histograms, merged then quantiled <span class="tag">correct</span></h4><ul><li class="pro">Micrometer percentile histograms → Prometheus, or HdrHistogram</li><li class="pro"><code>histogram_quantile(0.99, …)</code> over summed buckets</li></ul><p class="when">Alert on SLO burn rate; break down by tenant and shard.</p></div>
+    <div><h4>Averages, or averaged p99s</h4><ul><li class="con">Averages hide the tail</li><li class="con">Percentiles cannot be averaged across hosts</li></ul><p class="when">Never.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: SLIs and alerting in full</summary><p>Define the SLIs first: <b>scheduling lag</b> = start time − due time; <b>end-to-end latency</b> = completion − due; <b>execution duration</b>; success rate; queue depth. Record them as histograms (Micrometer timers with percentile histograms to Prometheus, or HdrHistogram), not as averages. Percentiles cannot be averaged across hosts; aggregate the histogram buckets and then compute <code>histogram_quantile(0.99, ...)</code>. Alert on SLO burn rate (e.g. lag p99 &gt; 1 s for 5% of the error budget in an hour), and break down by tenant and shard to find the hot one. The main lag driver is the burst at round times, which is why the dispatcher pre-claims ahead and the queue decouples workers.</p></details>
+
+  <h2 id="tradeoffs"><span class="n">07</span>Design choices</h2>
+  <div class="vs">
+    <div class="pick"><h4>Postgres + SKIP LOCKED <span class="tag">usual pick</span></h4><ul><li class="pro">Simple, transactional, easy status queries</li><li class="con">Polling load; vertical limits per shard</li></ul><p class="when">Up to ~10k fires/s with sharding.</p></div>
+    <div><h4>Redis ZSET as the timer</h4><ul><li class="pro">Very fast, precise</li><li class="con">Memory-bound; durability depends on AOF; DB must be truth</li></ul><p class="when">Near-term window cache in front of the DB.</p></div>
+    <div><h4>Cassandra time buckets</h4><ul><li class="pro">Huge scale, cheap writes</li><li class="con">No SKIP LOCKED; claims need LWT or a lease service</li></ul><p class="when">Hundreds of millions of pending runs.</p></div>
+  </div>
+  <div class="vs">
+    <div><h4>Kafka delayed topics</h4><ul><li class="pro">No DB polling for retries</li><li class="con">Fixed delays only; arbitrary timestamps awkward</li></ul><p class="when">Retry tiers (1 m, 10 m, 1 h).</p></div>
+    <div><h4>Quartz clustered</h4><ul><li class="pro">Off the shelf for Spring</li><li class="con">DB lock contention; not for millions/day</li></ul><p class="when">Internal cron in one service.</p></div>
+    <div><h4>Temporal / Cadence</h4><ul><li class="pro">Durable timers, retries, workflows built in</li><li class="con">New platform to run and learn</li></ul><p class="when">Many-step workflows; the "buy" option.</p></div>
+  </div>
 
   <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
-  <ul>
+  <div class="keys">
+    <div class="key"><h4>Midnight spike</h4><p>Pre-claim 60 s ahead, scale workers on queue lag (KEDA / HPA), offer jitter windows ("00:00–00:05").</p></div>
+    <div class="key"><h4>Hot tenant</h4><p>Per-tenant token buckets, weighted fair queuing, premium queues.</p></div>
+    <div class="key"><h4>Dispatcher dies</h4><p>Coordinator reassigns its shards in seconds; new owner reclaims expired QUEUED leases.</p></div>
+    <div class="key"><h4>Clock skew</h4><p>Only the DB clock or the shard owner decides due-ness. Never client clocks.</p></div>
+    <div class="key"><h4>Cron + DST</h4><p>Store timezone; DST skip/double by policy; catch-up policy after downtime.</p></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full scaling notes</summary><ul>
     <li><b>Midnight spike.</b> Pre-claim 60 s ahead, spread with the timing wheel, scale workers on queue depth (KEDA / HPA on lag), and offer jitter windows to clients ("run between 00:00 and 00:05").</li>
     <li><b>Hot tenant.</b> Per-tenant token buckets in the dispatcher; weighted fair queuing across tenants; separate queues for premium tiers.</li>
     <li><b>Dispatcher failure.</b> Coordinator reassigns its shards within seconds; the new owner reclaims QUEUED runs with expired leases. Duplicates are blocked by fencing and idempotency.</li>
@@ -195,28 +350,9 @@ RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
     <li><b>Clock skew.</b> Only the DB clock (<code>now()</code>) or a single dispatcher's clock decides due-ness for a shard; never compare client clocks.</li>
     <li><b>Cron correctness.</b> Store timezone; handle DST (skip or double the 2 a.m. run by policy); after downtime apply the catch-up policy instead of firing hundreds of missed runs.</li>
     <li><b>Multi-region.</b> Active-passive per shard set: the job store replicates; only one region dispatches a shard. Active-active dispatch needs global leases and is rarely worth it.</li>
-  </ul>
+  </ul></details>
 
-  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
-  <div class="tbl"><table>
-    <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
-    <tr><td>Postgres + SKIP LOCKED polling</td><td>Simple, transactional, easy status queries</td><td>Polling load; vertical limits per shard</td><td>Up to ~10k fires/s with sharding</td></tr>
-    <tr><td>Redis ZSET as the timer</td><td>Very fast, precise</td><td>Memory-bound; durability depends on AOF; needs DB as truth</td><td>Near-term window cache in front of the DB</td></tr>
-    <tr><td>Cassandra time buckets</td><td>Huge scale, cheap writes</td><td>No SKIP LOCKED; claims need LWT or a lease service</td><td>Hundreds of millions of pending runs</td></tr>
-    <tr><td>Kafka delayed topics (per-delay tiers)</td><td>No DB polling for retries</td><td>Only fixed delays; arbitrary timestamps awkward</td><td>Retry backoff tiers (1 m, 10 m, 1 h)</td></tr>
-    <tr><td>Quartz clustered</td><td>Off the shelf for Spring</td><td>DB lock contention; not built for millions/day</td><td>Internal cron in one service</td></tr>
-    <tr><td>Temporal / Cadence</td><td>Durable timers, retries, workflows built in</td><td>New platform to run and learn</td><td>Workflows with many steps; mention as the "buy" option</td></tr>
-  </table></div>
-
-  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>How do you guarantee a job is not executed twice?</summary><p>You guarantee it is not <i>claimed</i> twice (conditional update with a fencing token, leases) and that duplicate execution is harmless (stable execution id passed to an idempotent callee). True exactly-once side effects are impossible if the worker can crash between the call and the commit.</p></details>
-  <details class="qa"><summary>SQL or NoSQL for job storage?</summary><p>SQL by default: due-job queries are indexed range scans, claiming needs row locks or conditional updates, and status queries are relational. Move occurrences to a wide-column store with time-bucket partitions only when pending rows reach hundreds of millions and write rates exceed what sharded SQL handles.</p></details>
-  <details class="qa"><summary>A worker picks a job and dies. What happens?</summary><p>Its lease stops being renewed. The reaper (or the queue's visibility timeout) returns the run to SCHEDULED with attempt + 1 and a new fencing token. If the old worker comes back, its result write fails the token check.</p></details>
-  <details class="qa"><summary>Ten million jobs are due at midnight. Walk me through it.</summary><p>Dispatchers pre-claim from 23:59 onwards into timing wheels, publish at 00:00 in batches, the queue buffers, workers autoscale on lag, and per-tenant limits prevent one tenant consuming everything. Lag p99 will rise; we either accept a stated SLO for bursts or ask clients to schedule with a jitter window.</p></details>
-  <details class="qa"><summary>How do you implement recurring jobs?</summary><p>Keep the definition in <code>jobs</code> and exactly one future run in <code>job_runs</code>. When a run is claimed, compute the next fire time from the cron in the job's timezone and insert the next run (unique on job_id + scheduled_for) in the same transaction. Missed slots follow the catch-up policy.</p></details>
-  <details class="qa"><summary>How would you add job dependencies (DAG)?</summary><p>Store edges; a run becomes SCHEDULED only when all parents SUCCEEDED (a counter of pending parents decremented on parent completion). Failure policy per edge: skip, fail downstream, or retry. At that point recommend Airflow or Temporal rather than rebuilding them.</p></details>
-
-  <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
+  <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
       <li>A single cron box polling <code>SELECT * FROM jobs WHERE run_at &lt;= now()</code> with no sharding, no claim, and no answer for what happens when it dies.</li>
@@ -226,6 +362,28 @@ RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
       <li>"We'll monitor average latency" for the Microsoft p99 question; averaging percentiles across hosts.</li>
     </ul>
   </div>
+
+  <h2 id="quiz"><span class="n">10</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">A worker pauses for a long GC, its lease expires, another worker re-runs the job. The first wakes and writes "FAILED". What stops it?</p>
+    <div class="opts"><button class="opt" type="button">The queue's visibility timeout</button><button class="opt" type="button">The fencing token: its write carries an older token and is rejected</button><button class="opt" type="button">The DLQ</button></div>
+    <p class="why">Each claim increments the token. Stale owners cannot write results.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why should dispatchers not execute callbacks themselves?</p>
+    <div class="opts"><button class="opt" type="button">Dispatchers cannot make HTTP calls</button><button class="opt" type="button">It breaks SKIP LOCKED</button><button class="opt" type="button">One slow callback would delay every other due job</button></div>
+    <p class="why">A queue between them lets workers scale on load while dispatch stays on time.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">The interviewer asks for exactly-once execution. Best honest answer?</p>
+    <div class="opts"><button class="opt" type="button">At-least-once delivery with single-claim, leases, fencing and an idempotent callee</button><button class="opt" type="button">Use Kafka exactly-once semantics</button><button class="opt" type="button">Use a distributed lock around the callback</button></div>
+    <p class="why">A worker can crash after the side effect but before recording it. Only callee dedup makes the retry harmless.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">You have p99 lag from 20 hosts. How do you get the fleet p99?</p>
+    <div class="opts"><button class="opt" type="button">Average the 20 p99 values</button><button class="opt" type="button">Sum the histogram buckets, then compute the quantile</button><button class="opt" type="button">Take the max of the 20</button></div>
+    <p class="why">Percentiles do not average. Merge the distributions first.</p></div>
+
+  <h2 id="followups"><span class="n">11</span>Follow-up questions interviewers asked</h2>
+  <details class="qa"><summary>How do you guarantee a job is not executed twice?</summary><p>You guarantee it is not <i>claimed</i> twice (conditional update with a fencing token, leases) and that duplicate execution is harmless (stable execution id passed to an idempotent callee). True exactly-once side effects are impossible if the worker can crash between the call and the commit.</p></details>
+  <details class="qa"><summary>SQL or NoSQL for job storage?</summary><p>SQL by default: due-job queries are indexed range scans, claiming needs row locks or conditional updates, and status queries are relational. Move occurrences to a wide-column store with time-bucket partitions only when pending rows reach hundreds of millions and write rates exceed what sharded SQL handles.</p></details>
+  <details class="qa"><summary>A worker picks a job and dies. What happens?</summary><p>Its lease stops being renewed. The reaper (or the queue's visibility timeout) returns the run to SCHEDULED with attempt + 1 and a new fencing token. If the old worker comes back, its result write fails the token check.</p></details>
+  <details class="qa"><summary>Ten million jobs are due at midnight. Walk me through it.</summary><p>Dispatchers pre-claim from 23:59 onwards into timing wheels, publish at 00:00 in batches, the queue buffers, workers autoscale on lag, and per-tenant limits prevent one tenant consuming everything. Lag p99 will rise; we either accept a stated SLO for bursts or ask clients to schedule with a jitter window.</p></details>
+  <details class="qa"><summary>How do you implement recurring jobs?</summary><p>Keep the definition in <code>jobs</code> and exactly one future run in <code>job_runs</code>. When a run is claimed, compute the next fire time from the cron in the job's timezone and insert the next run (unique on job_id + scheduled_for) in the same transaction. Missed slots follow the catch-up policy.</p></details>
+  <details class="qa"><summary>How would you add job dependencies (DAG)?</summary><p>Store edges; a run becomes SCHEDULED only when all parents SUCCEEDED (a counter of pending parents decremented on parent completion). Failure policy per edge: skip, fail downstream, or retry. At that point recommend Airflow or Temporal rather than rebuilding them.</p></details>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
@@ -238,7 +396,19 @@ RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
     <div class="step"><span class="t">41–45 min</span><span>Metrics with p99 histograms; trade-offs including Temporal as the buy option.</span></div>
   </div>
 
-  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <h2 id="cheat"><span class="n">13</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>jobs (definition) + job_runs (occurrences), sharded by hash(job_id) % 1024.</li>
+    <li>Dispatcher per shard: SKIP LOCKED claim 60 s ahead → timing wheel → ready queue.</li>
+    <li>Workers: QUEUED → RUNNING with lease + heartbeat; reaper requeues expired.</li>
+    <li>Fencing token per claim; callee dedupes on X-Execution-Id.</li>
+    <li>Retry: 4xx dead, 5xx retry, exp backoff + full jitter, maxAttempts → DLQ + replay.</li>
+    <li>Cron: one future run row; timezone, DST, catch-up policy.</li>
+    <li>p99 lag via merged histograms, per tenant; never average percentiles.</li>
+    <li>Ladder: in-memory → DB → leader + standby → shards + queue → tenants / DAGs.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">14</span>Sources</h2>
   <ul class="sources">
     <li><a href="https://leetcode.com/discuss/post/7360702/" target="_blank" rel="noopener">Razorpay Lead SWE, Bangalore, Nov 2025: system design "job scheduler" (LeetCode)</a></li>
     <li><a href="https://leetcode.com/discuss/post/7422653/" target="_blank" rel="noopener">InMobi SDE-2, Dec 2025: distributed job scheduler with retries and DLQ (LeetCode)</a></li>
@@ -251,5 +421,6 @@ RETURNING r.run_id, r.due_at, r.fencing_token;</code></pre>
 
   <div class="foot"><a href="hld-chat-messaging.html">← Chat / messaging</a><a href="../index.html">Playbook</a><a href="ai-rag-enterprise-qa.html">Enterprise RAG Q&amp;A →</a></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>

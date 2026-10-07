@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>Capstone: Contract Q&amp;A with citations + risky-clause flagger</h1>
-  <p class="lede">One project, built in four milestones over eight weeks, that proves you can ship a grounded, measured, multi-tenant AI feature in Java. This page is the end-to-end plan: architecture, repository, milestones with a definition of done, the README, the demo and the interview story.</p>
+  <p class="lede">Ship a grounded, measured, multi-tenant AI feature in Java in eight weeks, and tell its story in an interview.</p>
   <div class="facts">
     <span class="fact"><b>Effort:</b> ~6–8 h/week, weeks 4–11</span>
     <span class="fact"><b>Stack:</b> Java 21 · Spring Boot 4.1.1 · Spring AI 2.0.1 · Postgres + pgvector · Python evals</span>
@@ -20,16 +20,60 @@
   </div>
   <div class="chips"><span class="chip hot">RAG + citations</span><span class="chip">Structured output</span><span class="chip">Evals in CI</span><span class="chip">Tenant isolation</span><span class="chip">Agentic review</span></div>
 
+  <div class="tldr"><b>In 30 seconds</b><ul>
+    <li>Three paths on one Postgres: ingest, ask with citations, flag risky clauses.</li>
+    <li>Four milestones, each tagged and demoable: RAG, flagger, evals, production.</li>
+    <li>Numbers from a held-out set are your strongest interview artefact.</li>
+    <li>Public contracts only: no employer code or data, ever.</li>
+  </ul></div>
+
+  <div class="analogy"><b>Picture it</b><p>A new metro line opens station by station. Each stretch carries real passengers before the next is built, so if someone asks for a ride in week 5, you already have a working line to show.</p></div>
+
   <nav class="toc"><b>On this page</b><ol>
-    <li><a href="#outcomes">What you'll be able to do</a></li>
-    <li><a href="#architecture">Architecture explained</a></li>
+    <li><a href="#architecture">Architecture: three paths</a></li>
+    <li><a href="#follow">Follow one question</a></li>
+    <li><a href="#milestones">Milestones</a></li>
     <li><a href="#build">Step-by-step build guide</a></li>
-    <li><a href="#interviews">How it shows up in interviews</a></li>
+    <li><a href="#quiz">Quick check</a></li>
+    <li><a href="#interviews">Interview questions</a></li>
     <li><a href="#checkpoint">Checkpoint</a></li>
+    <li><a href="#cheat">Cheat sheet</a></li>
     <li><a href="#sources">Sources / go deeper</a></li>
   </ol></nav>
 
-  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <h2 id="architecture"><span class="n">01</span>Architecture: three paths</h2>
+  <div class="arch">
+    <div class="tier"><small>Clients</small><span class="node">POST /contracts<small>PDF upload</small></span><span class="node">POST /ask<small>question</small></span><span class="node">GET /contracts/{id}/risks</span></div>
+    <div class="down">↓ <small>JWT → tenant</small></div>
+    <div class="tier"><span class="node">Ingest<small>async, idempotent</small></span><span class="node hl">Ask<small>sync, cited, refuses</small></span><span class="node">Flag<small>batch, structured</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node">EmbeddingModel</span><span class="node">claude-sonnet-5-5<small>answers</small></span><span class="node">claude-haiku-4-5<small>flags</small></span></div>
+    <div class="down">↓</div>
+    <div class="tier"><span class="node store">Postgres + pgvector<small>chunks · contracts · risk_flags</small></span></div>
+  </div>
+  <div class="keys">
+    <div class="key"><h4>Ingest</h4><p>One <code>Document</code> per page → ~500-token chunks keep <code>page_number</code> → add <code>tenant_id</code>, <code>contract_id</code>. SHA-256 of the PDF makes re-upload a no-op.</p></div>
+    <div class="key"><h4>Ask</h4><p>Tenant filter inside the vector query, topK 6. No chunk ≥ 0.55 → refuse without a model call. Citations come from metadata, not prose.</p></div>
+    <div class="key"><h4>Flag</h4><p>Haiku classifies each clause against a closed six-type rubric into a typed <code>RiskFlag</code> record. Drop flags whose quote isn't verbatim in the clause.</p></div>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>Risk type</th><th>What triggers it</th><th>Default severity</th></tr>
+    <tr><td>UNCAPPED_LIABILITY</td><td>No aggregate cap, or carve-outs that swallow the cap</td><td>HIGH</td></tr>
+    <tr><td>UNILATERAL_TERMINATION</td><td>Only the counterparty may terminate for convenience, or notice under 30 days</td><td>MEDIUM</td></tr>
+    <tr><td>AUTO_RENEWAL</td><td>Renews automatically with a short or no opt-out window</td><td>MEDIUM</td></tr>
+    <tr><td>BROAD_INDEMNITY</td><td>One-way indemnity covering third-party claims "of any kind", or including the counterparty's own negligence</td><td>HIGH</td></tr>
+    <tr><td>GOVERNING_LAW_JURISDICTION</td><td>Foreign law or exclusive foreign courts / seat of arbitration</td><td>MEDIUM</td></tr>
+    <tr><td>IP_ASSIGNMENT</td><td>Assignment of pre-existing IP or of everything "developed in connection with" the agreement</td><td>HIGH</td></tr>
+  </table></div>
+  <div class="tbl"><table>
+    <tr><th>Piece</th><th>Why</th></tr>
+    <tr><td>Java 21 + Spring Boot 4.1.1</td><td>Your strongest stack; records, virtual threads</td></tr>
+    <tr><td>Spring AI 2.0.1</td><td>ChatClient, QuestionAnswerAdvisor, PgVectorStore, <code>entity()</code>, metrics</td></tr>
+    <tr><td>Postgres + pgvector</td><td>One database for rows and vectors; no second datastore</td></tr>
+    <tr><td>Python eval harness</td><td>Calls your real HTTP API with Ragas</td></tr>
+  </table></div>
+  <div class="callout warn"><b>Do not use your employer's data or code</b><p>Own laptop, own accounts, public contracts only. "Is this your work's code?" must be an easy no.</p></div>
+  <details class="deep"><summary>Go deeper: outcomes and per-path detail</summary>
   <ul>
     <li>Explain, draw and defend a three-path architecture (ingest, ask, flag) for a legal-document AI product in under five minutes.</li>
     <li>Ship it in four milestones, each with a definition of done you can demo, so you always have something presentable if an interview arrives early.</li>
@@ -37,8 +81,6 @@
     <li>Tell the story in 30 seconds, 2 minutes or 20 minutes, with real numbers from your own eval runs.</li>
   </ul>
   <div class="callout warn"><b>Do not use your employer's data or code</b><p>Build this on your own laptop, your own accounts and public contracts only. No customer documents, no internal repositories, no copied service code, no screenshots of internal tools. You can say "I work on e-signing infrastructure, so I chose a domain I understand", but the code and data must be clean-room. Interviewers ask "is this your work's code?" more often than you would expect; the answer must be an easy no.</p></div>
-
-  <h2 id="architecture"><span class="n">02</span>Architecture explained for a Java backend engineer</h2>
   <p>Think of the system as three ordinary Spring services sharing one Postgres. The only unusual parts are a vector column and two calls to a model. Everything else is the backend work you already do: authentication, tenancy, idempotent ingestion, metrics, tests.</p>
 
   <h3>Path 1 — Ingest (async, idempotent)</h3>
@@ -74,16 +116,6 @@
   </div>
   <p class="flow-caption">Figure 3: Flagger. A cheap, fast model classifies each clause against a fixed rubric; the result is a typed Java record, persisted like any other row.</p>
   <p>The rubric is closed and explicit. A closed list is easier to evaluate (precision and recall per type) than "find anything risky".</p>
-  <div class="tbl"><table>
-    <tr><th>Risk type</th><th>What triggers it</th><th>Default severity</th></tr>
-    <tr><td>UNCAPPED_LIABILITY</td><td>No aggregate cap, or carve-outs that swallow the cap</td><td>HIGH</td></tr>
-    <tr><td>UNILATERAL_TERMINATION</td><td>Only the counterparty may terminate for convenience, or notice under 30 days</td><td>MEDIUM</td></tr>
-    <tr><td>AUTO_RENEWAL</td><td>Renews automatically with a short or no opt-out window</td><td>MEDIUM</td></tr>
-    <tr><td>BROAD_INDEMNITY</td><td>One-way indemnity covering third-party claims "of any kind", or including the counterparty's own negligence</td><td>HIGH</td></tr>
-    <tr><td>GOVERNING_LAW_JURISDICTION</td><td>Foreign law or exclusive foreign courts / seat of arbitration</td><td>MEDIUM</td></tr>
-    <tr><td>IP_ASSIGNMENT</td><td>Assignment of pre-existing IP or of everything "developed in connection with" the agreement</td><td>HIGH</td></tr>
-  </table></div>
-
   <h3>Tech stack and why each piece</h3>
   <div class="grid">
     <div class="card"><h4>Java 21 + Spring Boot 4.1.1</h4><p>Your strongest stack; records for DTOs, virtual threads for blocking model calls. Spring AI 2.0.x supports Boot 4.0.x and 4.1.x.</p></div>
@@ -91,18 +123,74 @@
     <div class="card"><h4>Postgres + pgvector</h4><p>One database for relational data and vectors; tenant filter and joins in SQL; HNSW index. No second datastore to operate.</p></div>
     <div class="card"><h4>Python eval harness</h4><p>Ragas and plotting live in Python. The harness calls your HTTP API, so it tests the real system, not a notebook copy of it.</p></div>
   </div>
+  </details>
 
-  <h2 id="build"><span class="n">03</span>Step-by-step build guide</h2>
+  <h2 id="follow"><span class="n">02</span>Follow one question</h2>
+  <div class="stepper"><b class="title">"What is the liability cap?" asked by tenant A</b><div class="frames">
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">JWT filter<small>tenant_id = acme</small></span><span class="node">Vector search</span><span class="node">Threshold gate</span><span class="node">Sonnet 5.5</span><span class="node">Response</span></div></div>
+      <figcaption>The tenant comes from the verified JWT claim, never from the request body.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">JWT filter</span><span class="node store hl">Vector search<small>tenant_id == 'acme', topK 6</small></span><span class="node">Threshold gate</span><span class="node">Sonnet 5.5</span><span class="node">Response</span></div></div>
+      <figcaption>The filter runs inside the database query, so tenant B's chunks are never even loaded.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">JWT filter</span><span class="node store">Vector search</span><span class="node hl">Threshold gate<small>top score 0.81 ≥ 0.55</small></span><span class="node">Sonnet 5.5</span><span class="node">Response</span></div></div>
+      <figcaption>The best chunk clears 0.55, so we go on to the model.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">JWT filter</span><span class="node store">Vector search</span><span class="node">Threshold gate</span><span class="node hl">Sonnet 5.5<small>answer from context only</small></span><span class="node">Response</span></div></div>
+      <figcaption>About 3,550 input and 300 output tokens: roughly one cent.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">JWT filter</span><span class="node store">Vector search</span><span class="node">Threshold gate</span><span class="node">Sonnet 5.5</span><span class="node hl">Response<small>answer + [contract, page 12]</small></span></div></div>
+      <figcaption>Citations are built from retrieved chunk metadata, so the model can never invent a page.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node">JWT filter</span><span class="node store">Vector search</span><span class="node bad hl">Threshold gate<small>top score 0.31</small></span><span class="node dim">Sonnet 5.5</span><span class="node hl">Refusal</span></div></div>
+      <figcaption>"What is the CEO's salary?" No chunk clears 0.55: fixed refusal, zero model tokens.</figcaption>
+    </figure>
+    <figure class="frame">
+      <div class="arch"><div class="tier"><span class="node hl">JWT filter<small>tenant_id = globex</small></span><span class="node store">Vector search<small>0 acme chunks</small></span><span class="node">Threshold gate</span><span class="node dim">Sonnet 5.5</span><span class="node">Refusal</span></div></div>
+      <figcaption>Tenant B asks the same question: nothing from tenant A comes back. A Testcontainers test proves it.</figcaption>
+    </figure>
+  </div></div>
 
+  <h2 id="milestones"><span class="n">03</span>Milestones</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">Week 4</span><span><b>RAG endpoint</b>: upload → cited answers, threshold refusal, tenant test. Tag <code>v0.4-rag</code>.</span></div>
+    <div class="step"><span class="t">Week 5–6</span><span><b>Flagger v1</b>: clause segmentation, <code>RiskFlag</code>, quote check, 60–100 labelled clauses.</span></div>
+    <div class="step"><span class="t">Week 7</span><span><b>Evals</b>: 50+ golden Q&amp;A, retrieval + generation + flag metrics, CI gate. Tag <code>v0.7-evals</code>.</span></div>
+    <div class="step"><span class="t">Week 8</span><span><b>Production</b>: tenant metrics, cost, SSE, prompt caching, rate limit, PII redaction. Tag <code>v0.8-prod</code>.</span></div>
+    <div class="step"><span class="t">Week 9–10</span><span><b>Hardening</b>: hybrid search or re-ranker; record the before/after delta.</span></div>
+    <div class="step"><span class="t">Week 11</span><span><b>Agent</b>: playbook review with <code>@Tool</code>s, 10-step cap, human approval. Tag <code>v1.1-agent</code>.</span></div>
+  </div>
+  <details class="deep"><summary>Go deeper: full definition of done per milestone</summary>
+  <div class="timeline">
+    <div class="step"><span class="t">Week 4</span><span><b>RAG endpoint.</b> Upload PDF → chunks with page numbers in pgvector; <code>POST /ask</code> returns answer + citations; refuses below threshold; tenant filter enforced; one Testcontainers test proving tenant A cannot retrieve tenant B's chunk; <code>docker compose up</code> works from a clean clone.</span></div>
+    <div class="step"><span class="t">Week 5–6</span><span><b>Flagger v1.</b> Clause segmentation, <code>RiskFlag</code> via <code>entity()</code>, quote verification, <code>GET /contracts/{id}/risks</code>. Hand-label 60–100 clauses (use CUAD labels as a starting point).</span></div>
+    <div class="step"><span class="t">Week 7</span><span><b>Evals.</b> Golden set of 50+ Q&amp;A items (including 10 unanswerable ones) and the labelled clauses. <code>run_evals.py</code> reports recall@6 and MRR for retrieval, faithfulness and answer relevancy (Ragas), refusal accuracy on unanswerables, citation accuracy (cited page contains the answer), and per-type precision/recall for flags. Results committed per git SHA; GitHub Action runs on prompt changes and fails on regressions beyond a set tolerance. See <a href="learn-evals.html">the evals lesson</a>.</span></div>
+    <div class="step"><span class="t">Week 8</span><span><b>Production features.</b> Micrometer metrics (<code>gen_ai.client.token.usage</code>, <code>gen_ai.client.operation.duration</code>) tagged by tenant; cost per request logged; streaming answers over SSE; prompt caching of the system prompt; per-tenant rate limit; PII redaction before logging; prompt-injection test cases added to the golden set; a Grafana dashboard screenshot in the README.</span></div>
+    <div class="step"><span class="t">Week 9–10</span><span><b>Hardening.</b> Hybrid retrieval (keyword + vector) or a re-ranker if retrieval recall is your weakest metric; re-run evals and record the before/after delta. Write the trade-offs section.</span></div>
+    <div class="step"><span class="t">Week 11</span><span><b>Agentic feature.</b> "Review this contract against our playbook": an agent with <code>@Tool</code> methods <code>searchClauses</code>, <code>getClause</code>, <code>compareToPlaybook</code>, a 10-step cap, a token budget, and a human approval step before anything is written. Eval it on 10 contracts: task success and tool-call count. Optionally expose the same tools over MCP.</span></div>
+  </div>
+  <div class="callout tip"><b>Always be demoable</b><p>Tag a release at the end of each milestone (<code>v0.4-rag</code>, <code>v0.7-evals</code>, <code>v0.8-prod</code>, <code>v1.1-agent</code>). If an interview lands in week 5, you demo <code>v0.4</code> confidently rather than a half-finished <code>main</code>.</p></div>
+  </details>
+
+  <h2 id="build"><span class="n">04</span>Step-by-step build guide</h2>
   <h3>Step 0 — Get a public corpus</h3>
+  <div class="stats"><div class="stat"><b>510</b><span>CUAD contracts, 41 clause types, CC BY 4.0</span></div><div class="stat"><b>30–50</b><span>contracts for development</span></div><div class="stat"><b>10</b><span>held out: quote numbers only on these</span></div></div>
+  <details class="deep"><summary>Go deeper: CUAD and SEC EDGAR</summary>
   <ul>
     <li><b>CUAD</b> (Contract Understanding Atticus Dataset): 510 commercial contracts, 41 clause categories, 13,000+ lawyer-supervised annotations, CC BY 4.0. Its labels (for example "Cap On Liability", "Renewal Term", "Governing Law", "IP Ownership Assignment") map almost directly onto your rubric, so it doubles as ground truth for the flagger.</li>
     <li><b>SEC EDGAR full-text search</b>: filter by form type and search for material contracts (exhibit 10 attachments to 10-K / 8-K filings). Use these for fresh, unseen documents in the demo.</li>
     <li>Pick 30–50 contracts for development and keep 10 aside that you never look at while tuning. That held-out set is what you quote numbers on.</li>
   </ul>
+  </details>
 
   <h3>Step 1 — Repository structure</h3>
-<pre><code>contract-copilot/
+  <details class="code"><summary>Show repository tree</summary><pre><code>contract-copilot/
 ├── README.md
 ├── docker-compose.yml            # pgvector/pgvector:pg17 + the app
 ├── build.gradle.kts              # Boot 4.1.1, spring-ai-bom 2.0.1
@@ -127,11 +215,11 @@
 │   └── results/                  # committed: one JSON per run, keyed by git SHA
 └── .github/workflows/
     ├── ci.yml                    # build + tests
-    └── evals.yml                 # runs on changes to prompts/** or retrieval config</code></pre>
+    └── evals.yml                 # runs on changes to prompts/** or retrieval config</code></pre></details>
 
   <h3>Step 2 — The core types</h3>
   <p>Keep the contract between layers boring and typed. These records are the whole public surface.</p>
-<pre><code>public record Citation(String contractId, String fileName, int page, double score) {}
+  <details class="code"><summary>Show Java: records and enums</summary><pre><code>public record Citation(String contractId, String fileName, int page, double score) {}
 
 public record AskResponse(String answer, List&lt;Citation&gt; citations, boolean refused) {}
 
@@ -143,10 +231,10 @@ public enum RiskType {
 public enum Severity { LOW, MEDIUM, HIGH }
 
 // What the model must return for one clause. Spring AI derives a JSON schema from it.
-public record RiskFlag(RiskType type, Severity severity, String quote, String reason) {}</code></pre>
+public record RiskFlag(RiskType type, Severity severity, String quote, String reason) {}</code></pre></details>
 
   <h3>Step 3 — Ask path in one service</h3>
-<pre><code>@Service
+  <details class="code"><summary>Show Java: AskService</summary><pre><code>@Service
 public class AskService {
 
     private static final String REFUSAL = "I could not find this in your contracts.";
@@ -181,11 +269,17 @@ public class AskService {
             .toList();
         return new AskResponse(response.getResult().getOutput().getText(), citations, false);
     }
-}</code></pre>
+}</code></pre></details>
+  <ul>
+    <li><code>QuestionAnswerAdvisor</code> still calls the model below threshold; in milestone 3 search first and refuse yourself.</li>
+    <li>The concatenated filter is safe only because <code>tenantId</code> comes from the JWT. Comment it.</li>
+  </ul>
+  <details class="deep"><summary>Go deeper: two honest caveats for your README</summary>
   <div class="callout info"><b>Two honest caveats to put in your README</b><p>First, <code>QuestionAnswerAdvisor</code> still calls the model when nothing passes the threshold (its default prompt then tells the model to say it does not know). In milestone 3, move the search in front of the call yourself (<code>vectorStore.similaritySearch(...)</code>, then refuse without a model call) to save the latency and tokens; the full version is in <a href="learn-spring-rag-endpoint.html">the Spring RAG endpoint lesson</a>. Second, <code>tenantId</code> comes from the validated JWT, never from user input, so the string concatenation is safe; say so in a comment, because a reviewer will ask.</p></div>
+  </details>
 
   <h3>Step 4 — Flagger with structured output</h3>
-<pre><code>@Service
+  <details class="code"><summary>Show Java: FlaggerService</summary><pre><code>@Service
 public class FlaggerService {
 
     private final ChatClient haiku;
@@ -203,23 +297,15 @@ public class FlaggerService {
             .call()
             .entity(RiskFlag.class);
     }
-}</code></pre>
+}</code></pre></details>
+  <p>Verify <code>clauseText.contains(flag.quote())</code> server-side and drop flags that fail. It catches most hallucinated flags.</p>
+  <details class="deep"><summary>Go deeper: the flagger system prompt</summary>
   <p>The system prompt holds the rubric table above, one short example per type, and the rule "return type NONE if no rubric item applies; quote must be copied verbatim from the clause". Verify the quote server-side with <code>clauseText.contains(flag.quote())</code>; drop flags whose quote does not appear. That one line catches most hallucinated flags and is a great interview detail.</p>
+  </details>
 
-  <h3>Step 5 — Milestones with a definition of done</h3>
-  <div class="timeline">
-    <div class="step"><span class="t">Week 4</span><span><b>RAG endpoint.</b> Upload PDF → chunks with page numbers in pgvector; <code>POST /ask</code> returns answer + citations; refuses below threshold; tenant filter enforced; one Testcontainers test proving tenant A cannot retrieve tenant B's chunk; <code>docker compose up</code> works from a clean clone.</span></div>
-    <div class="step"><span class="t">Week 5–6</span><span><b>Flagger v1.</b> Clause segmentation, <code>RiskFlag</code> via <code>entity()</code>, quote verification, <code>GET /contracts/{id}/risks</code>. Hand-label 60–100 clauses (use CUAD labels as a starting point).</span></div>
-    <div class="step"><span class="t">Week 7</span><span><b>Evals.</b> Golden set of 50+ Q&amp;A items (including 10 unanswerable ones) and the labelled clauses. <code>run_evals.py</code> reports recall@6 and MRR for retrieval, faithfulness and answer relevancy (Ragas), refusal accuracy on unanswerables, citation accuracy (cited page contains the answer), and per-type precision/recall for flags. Results committed per git SHA; GitHub Action runs on prompt changes and fails on regressions beyond a set tolerance. See <a href="learn-evals.html">the evals lesson</a>.</span></div>
-    <div class="step"><span class="t">Week 8</span><span><b>Production features.</b> Micrometer metrics (<code>gen_ai.client.token.usage</code>, <code>gen_ai.client.operation.duration</code>) tagged by tenant; cost per request logged; streaming answers over SSE; prompt caching of the system prompt; per-tenant rate limit; PII redaction before logging; prompt-injection test cases added to the golden set; a Grafana dashboard screenshot in the README.</span></div>
-    <div class="step"><span class="t">Week 9–10</span><span><b>Hardening.</b> Hybrid retrieval (keyword + vector) or a re-ranker if retrieval recall is your weakest metric; re-run evals and record the before/after delta. Write the trade-offs section.</span></div>
-    <div class="step"><span class="t">Week 11</span><span><b>Agentic feature.</b> "Review this contract against our playbook": an agent with <code>@Tool</code> methods <code>searchClauses</code>, <code>getClause</code>, <code>compareToPlaybook</code>, a 10-step cap, a token budget, and a human approval step before anything is written. Eval it on 10 contracts: task success and tool-call count. Optionally expose the same tools over MCP.</span></div>
-  </div>
-  <div class="callout tip"><b>Always be demoable</b><p>Tag a release at the end of each milestone (<code>v0.4-rag</code>, <code>v0.7-evals</code>, <code>v0.8-prod</code>, <code>v1.1-agent</code>). If an interview lands in week 5, you demo <code>v0.4</code> confidently rather than a half-finished <code>main</code>.</p></div>
-
-  <h3>Step 6 — The README template</h3>
-  <p>Copy this skeleton and replace every bracketed instruction with your own content. Never ship it with the brackets left in.</p>
-<pre><code># Contract Copilot — cited Q&amp;A and risky-clause flagging over contracts
+  <h3>Step 5 — The README template</h3>
+  <p>Replace every bracketed instruction; never ship it with brackets left in.</p>
+  <details class="code"><summary>Show README skeleton</summary><pre><code># Contract Copilot — cited Q&amp;A and risky-clause flagging over contracts
 
 [One sentence: what it does, for whom. One sentence: the headline result,
  e.g. "Answers with page-level citations; refuses X% of unanswerable questions."]
@@ -263,9 +349,11 @@ public class FlaggerService {
 [3–5 bullets, each "chose A over B because C; revisit when D".]
 
 ## Data and licence
-[Public contracts only: CUAD (CC BY 4.0) and SEC EDGAR filings. No employer data.]</code></pre>
+[Public contracts only: CUAD (CC BY 4.0) and SEC EDGAR filings. No employer data.]</code></pre></details>
 
-  <h3>Step 7 — Cost per query: do the arithmetic once</h3>
+  <h3>Step 6 — Cost per query</h3>
+  <div class="stats"><div class="stat"><b>≈ $0.010</b><span>one answer on Sonnet 5.5, before caching</span></div><div class="stat"><b>≈ $0.0016</b><span>flag one clause on Haiku 4.5</span></div><div class="stat"><b>≈ $0.06</b><span>flag a 40-clause contract</span></div><div class="stat"><b>$0</b><span>a refusal gated before the call</span></div></div>
+  <details class="deep"><summary>Go deeper: the cost arithmetic</summary>
   <div class="tbl"><table>
     <tr><th>Item</th><th>Assumption</th><th>Cost</th></tr>
     <tr><td>Ask, input</td><td>6 chunks × 500 + 500 system + 50 question ≈ 3,550 tokens at $2/MTok (Sonnet 5.5)</td><td class="num">≈ $0.0071</td></tr>
@@ -275,8 +363,11 @@ public class FlaggerService {
     <tr><td><b>Flag a 40-clause contract</b></td><td>40 × $0.0016</td><td class="num"><b>≈ $0.06</b></td></tr>
   </table></div>
   <p>Refusals cost zero model tokens once you gate before the call. Replace these estimates with measured averages from your token metrics; quoting your own measured numbers is far more convincing than list prices. Embedding cost is small next to generation; take the figure from your provider's pricing page rather than guessing.</p>
+  </details>
 
-  <h3>Step 8 — The 3-minute demo script</h3>
+  <h3>Step 7 — The 3-minute demo script</h3>
+  <p>Seven beats: problem, upload, cited answer, refusal with no model call, tenant isolation, risk flags, eval table and the CI run that blocked a bad prompt.</p>
+  <details class="deep"><summary>Show the timed demo script</summary>
   <div class="timeline">
     <div class="step"><span class="t">0:00–0:20</span><span>The problem in one line: "Lawyers and ops teams ask the same questions of hundreds of contracts. They need answers they can verify, and early warning on bad clauses."</span></div>
     <div class="step"><span class="t">0:20–0:50</span><span>Upload an EDGAR contract as tenant A. Show the ingest log: pages read, chunks written, duplicate upload is a no-op.</span></div>
@@ -286,8 +377,30 @@ public class FlaggerService {
     <div class="step"><span class="t">2:10–2:40</span><span>Open the risks view: an uncapped indemnity flagged HIGH with the verbatim quote and page.</span></div>
     <div class="step"><span class="t">2:40–3:00</span><span>Show the eval table in the README and the CI run that blocked a prompt change which dropped faithfulness. End there.</span></div>
   </div>
+  </details>
 
-  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <div class="callout warn"><b>Common mistakes</b><ul>
+    <li>No numbers, or numbers measured on the examples you tuned on.</li>
+    <li>Describing the framework instead of the decisions (threshold, isolation, citations).</li>
+    <li>Claiming "production-ready" without metrics, limits or failure handling.</li>
+    <li>Not knowing what happens when retrieval returns nothing.</li>
+  </ul></div>
+
+  <h2 id="quiz"><span class="n">05</span>Quick check</h2>
+  <div class="quiz" data-answer="1"><p class="q">Where must the tenant filter live?</p>
+    <div class="opts"><button class="opt" type="button">In the system prompt</button><button class="opt" type="button">Inside the vector-search database query</button><button class="opt" type="button">Applied to results after retrieval</button></div>
+    <p class="why">Prompt or post-filters can leak through bugs or injection. Filtering in the query means other tenants' chunks never load.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why build citations from chunk metadata instead of parsing the answer?</p>
+    <div class="opts"><button class="opt" type="button">It's faster</button><button class="opt" type="button">The model can't produce page numbers</button><button class="opt" type="button">The model never writes a page number, so it can't invent one</button></div>
+    <p class="why">Metadata always points to a real document and page; eval citation accuracy checks that the page supports the answer.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Recall@6 is low and faithfulness is high. What do you fix first?</p>
+    <div class="opts"><button class="opt" type="button">Retrieval: chunking, hybrid search or re-ranking</button><button class="opt" type="button">The answer prompt</button><button class="opt" type="button">Switch to a bigger model</button></div>
+    <p class="why">If the right chunk isn't in the top k, no prompt change can fix the answer.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why Haiku for the flagger and Sonnet for answers?</p>
+    <div class="opts"><button class="opt" type="button">Haiku is more accurate</button><button class="opt" type="button">Flagging is narrow and high-volume (40 calls per contract) and Haiku measured good enough</button><button class="opt" type="button">Sonnet doesn't support structured output</button></div>
+    <p class="why">The choice is data-driven (per-type precision/recall) and reversible, because the model id is config.</p></div>
+
+  <h2 id="interviews"><span class="n">06</span>Interview questions</h2>
   <h3>30-second pitch</h3>
   <div class="callout"><b>Say it like this</b><p>"I built a contract assistant in Spring Boot and Spring AI. It answers questions over a tenant's contracts with page-level citations, refuses when retrieval confidence is low, and flags six kinds of risky clauses using typed structured output. I measure it: on a held-out set it gets [X] retrieval recall and [Y] faithfulness, and a GitHub Action blocks prompt changes that regress those numbers. An answer costs about a cent."</p></div>
   <h3>2-minute deep dive (the order to walk through)</h3>
@@ -301,7 +414,6 @@ public class FlaggerService {
   </ol>
   <h3>Numbers to have ready</h3>
   <p>Corpus size (contracts, pages, chunks), chunk size and overlap, topK and threshold and why, recall@k and MRR, faithfulness, refusal accuracy, flag precision/recall per type, p50/p95 latency, cost per answer and per contract, and one before/after delta (for example "hybrid search took recall@6 from A to B").</p>
-
   <details class="qa"><summary>Why pgvector and not a dedicated vector database?</summary><p>At this scale (thousands of contracts, low millions of chunks) Postgres with an HNSW index is fast enough, and I get the tenant filter, joins to contract metadata, transactions and backups from a database the team already runs. I would revisit when vector count or QPS pushes index memory beyond one node, or when I need features like built-in hybrid ranking at scale.</p></details>
   <details class="qa"><summary>How do you know the citations are correct?</summary><p>They are built from the retrieved chunks' metadata, so the document and page always exist. Whether the page actually supports the answer is measured: citation accuracy in the eval set checks that the cited page contains the expected answer span. The model cannot invent a page number because it never writes one.</p></details>
   <details class="qa"><summary>How did you choose the similarity threshold?</summary><p>Empirically. I plotted the top-1 score for answerable versus unanswerable golden questions and picked the value that maximised refusal accuracy while keeping false refusals on answerable questions under about 5%. It is a config property, re-tuned whenever the embedding model or chunking changes.</p></details>
@@ -311,14 +423,7 @@ public class FlaggerService {
   <details class="qa"><summary>Is the agentic feature actually needed?</summary><p>Honestly, most of it is a workflow: search, fetch, compare. I built it as an agent only for open-ended reviews where the number of steps is unknown, with a step cap, a token budget and human approval before writes. On my eval set the fixed workflow was cheaper for the common case, so the agent is opt-in. Showing you know when not to use an agent is a senior signal.</p></details>
   <details class="qa"><summary>Is this your company's code or data?</summary><p>No. It is built from scratch on public contracts (CUAD and SEC EDGAR filings) on personal accounts. My day job is in e-signing infrastructure, which is why I chose the domain.</p></details>
 
-  <div class="callout warn"><b>Ways candidates undersell a project like this</b><ul>
-    <li>No numbers, or numbers measured on the same examples they tuned on.</li>
-    <li>Describing the framework ("I used Spring AI") instead of the decisions (threshold, isolation, citations).</li>
-    <li>Claiming it is "production-ready" without metrics, limits or failure handling.</li>
-    <li>Not being able to explain what happens when retrieval returns nothing.</li>
-  </ul></div>
-
-  <h2 id="checkpoint"><span class="n">05</span>Checkpoint</h2>
+  <h2 id="checkpoint"><span class="n">07</span>Checkpoint</h2>
   <p>You are done with the capstone when every box is true:</p>
   <ul>
     <li>A clean clone runs with <code>docker compose up</code> and three documented curl commands.</li>
@@ -332,7 +437,18 @@ public class FlaggerService {
   <details class="qa"><summary>Self-check: which metric tells you whether to fix retrieval or the prompt first?</summary><p>Retrieval recall@k. If the right chunk is not in the top k, no prompt change can fix the answer; improve chunking, hybrid search or re-ranking first. If recall is high but faithfulness is low, work on the prompt and context formatting.</p></details>
   <details class="qa"><summary>Self-check: where must the tenant filter live, and why?</summary><p>In the database query that does the similarity search, using the tenant from the validated JWT. A filter applied after retrieval or requested in the prompt can leak data through bugs or injection.</p></details>
 
-  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <h2 id="cheat"><span class="n">08</span>Cheat sheet</h2>
+  <div class="cheat"><b>Cheat sheet</b><ul>
+    <li>Ingest: page-aware chunks, metadata copied, SHA-256 idempotency.</li>
+    <li>Ask: tenant from JWT, filter in the query, topK 6, refuse below 0.55 without a model call.</li>
+    <li>Citations from metadata; citation accuracy measured in evals.</li>
+    <li>Flag: closed 6-type rubric, Haiku, <code>entity(RiskFlag.class)</code>, verbatim-quote check.</li>
+    <li>Milestones: v0.4-rag → v0.7-evals → v0.8-prod → v1.1-agent.</li>
+    <li>Cost: ~$0.01 per answer, ~$0.06 per contract flagged.</li>
+    <li>Pitch in 30 s; deep dive in 2 min with your own numbers.</li>
+  </ul></div>
+
+  <h2 id="sources"><span class="n">09</span>Sources / go deeper</h2>
   <ul class="sources">
     <li><a href="https://www.atticusprojectai.org/cuad" target="_blank" rel="noopener">CUAD dataset — The Atticus Project (510 contracts, 41 clause types, CC BY 4.0)</a></li>
     <li><a href="https://arxiv.org/abs/2103.06268" target="_blank" rel="noopener">Hendrycks et al., CUAD: An Expert-Annotated NLP Dataset for Legal Contract Review (NeurIPS 2021)</a></li>
@@ -347,5 +463,7 @@ public class FlaggerService {
 
   <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-spring-rag-endpoint.html">Spring RAG endpoint</a> · <a href="learn-evals.html">Evals</a> · <a href="career-whiteboard-your-system.html">Whiteboard your system</a></span></div>
 </div>
+<script src="guide.js" defer></script>
 </body>
 </html>
+
