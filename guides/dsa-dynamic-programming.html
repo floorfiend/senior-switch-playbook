@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Dynamic Programming Core</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · DSA</span></div>
+  <h1>Dynamic Programming Core</h1>
+  <p class="lede">Every DP answer is three things said out loud: the state, the transition and the base case. Then you move from memoised recursion to a table to O(1) or O(n) space. This lesson covers the five shapes that came up in interviews: 1D, unbounded knapsack, partition, subsequence, and LIS in O(n log n).</p>
+  <div class="facts">
+    <span class="fact"><b>Study time:</b> ~6 h including the 7 problems</span>
+    <span class="fact"><b>Seen:</b> ~9 reports, 2025–26</span>
+  </div>
+  <div class="chips"><span class="chip hot">PhonePe</span><span class="chip">Amazon</span><span class="chip">Walmart</span><span class="chip">Zeta</span><span class="chip">Flipkart</span><span class="chip">Kotak</span><span class="chip">Angel One</span><span class="chip">Paytm</span><span class="chip">LinkedIn</span><span class="chip">Visa</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#when">When to use DP</a></li>
+    <li><a href="#model">The mental model, with traces</a></li>
+    <li><a href="#templates">Java templates</a></li>
+    <li><a href="#problems">Worked problems (7)</a></li>
+    <li><a href="#mistakes">Mistakes and follow-ups</a></li>
+    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="when"><span class="n">01</span>When to use DP</h2>
+  <p>DP applies when a problem has <b>overlapping subproblems</b> (plain recursion would solve the same smaller question many times) and <b>optimal substructure</b> (the best answer is built from best answers to smaller questions). Recognition cues:</p>
+  <ul>
+    <li>The question asks for a count ("number of ways"), a minimum/maximum ("fewest coins", "max money"), or a yes/no ("can you partition").</li>
+    <li>Each step is a choice: take or skip, which coin next, where to cut, match or skip a character.</li>
+    <li>Greedy fails on a small counter-example (coins <code>[1, 3, 4]</code>, amount 6: greedy takes 4+1+1, optimal is 3+3).</li>
+    <li>Constraints are around n ≤ 10<sup>3</sup> to 10<sup>4</sup> for O(n²), or amounts ≤ 10<sup>4</sup> for O(n × amount).</li>
+  </ul>
+  <div class="tbl"><table>
+    <tr><th>Shape</th><th>State</th><th>Typical transition</th><th>Problems here</th></tr>
+    <tr><td>1D linear</td><td><code>dp[i]</code> = answer for prefix of length i</td><td>from <code>dp[i-1]</code>, <code>dp[i-2]</code></td><td>house robber, decode ways</td></tr>
+    <tr><td>Unbounded knapsack</td><td><code>dp[a]</code> = answer for amount a</td><td>min/sum over items of <code>dp[a - item]</code></td><td>coin change</td></tr>
+    <tr><td>Partition</td><td><code>dp[j]</code> = best for prefix ending at j</td><td>try every last piece <code>s[i..j]</code></td><td>palindrome partitioning II</td></tr>
+    <tr><td>Subsequence / interval</td><td><code>dp[i][j]</code> on a range or two strings</td><td>match ends or drop one side</td><td>longest palindromic subsequence</td></tr>
+    <tr><td>LIS</td><td><code>dp[i]</code> = best ending at i, or <code>tails[]</code></td><td>O(n²) scan or binary search</td><td>longest increasing subsequence</td></tr>
+  </table></div>
+
+  <h2 id="model"><span class="n">02</span>The mental model, with traces</h2>
+  <h3>State, transition, base case</h3>
+  <p>Take House Robber: houses in a row, no two adjacent can be robbed, maximise loot.</p>
+  <ul>
+    <li><b>State</b>: <code>dp[i]</code> = most money from the first <code>i</code> houses. Write the definition in a comment before coding; most DP bugs come from a vague state.</li>
+    <li><b>Transition</b>: for house <code>i</code>, skip it (<code>dp[i-1]</code>) or rob it (<code>dp[i-2] + nums[i-1]</code>). Take the max.</li>
+    <li><b>Base case</b>: <code>dp[0] = 0</code> (no houses), <code>dp[1] = nums[0]</code>.</li>
+    <li><b>Answer</b>: <code>dp[n]</code>.</li>
+  </ul>
+  <div class="flow">
+    <span class="node">Recursion<small>exponential</small></span><span class="arrow">→</span>
+    <span class="node">Memoisation<small>top-down, cache by state</small></span><span class="arrow">→</span>
+    <span class="node">Tabulation<small>bottom-up loop</small></span><span class="arrow">→</span>
+    <span class="node hl">Space optimised<small>keep only rows you read</small></span>
+  </div>
+  <p class="flow-caption">Figure: the four-step progression interviewers expect you to narrate. Memoisation is the safest start under pressure; tabulation removes recursion depth risk; the last step drops memory.</p>
+  <p>Space optimisation works whenever the transition reads a fixed window of previous states. House Robber reads only <code>dp[i-1]</code> and <code>dp[i-2]</code>, so two variables suffice. Trace on <code>[2, 7, 9, 3, 1]</code>:</p>
+  <div class="tbl"><table>
+    <tr><th>House value</th><th>skip = prev1</th><th>rob = prev2 + value</th><th>cur</th><th>prev2, prev1 after</th></tr>
+    <tr><td class="num">2</td><td class="num">0</td><td class="num">0 + 2 = 2</td><td class="num">2</td><td>0, 2</td></tr>
+    <tr><td class="num">7</td><td class="num">2</td><td class="num">0 + 7 = 7</td><td class="num">7</td><td>2, 7</td></tr>
+    <tr><td class="num">9</td><td class="num">7</td><td class="num">2 + 9 = 11</td><td class="num">11</td><td>7, 11</td></tr>
+    <tr><td class="num">3</td><td class="num">11</td><td class="num">7 + 3 = 10</td><td class="num">11</td><td>11, 11</td></tr>
+    <tr><td class="num">1</td><td class="num">11</td><td class="num">11 + 1 = 12</td><td class="num">12</td><td>11, 12</td></tr>
+  </table></div>
+  <p>Answer 12 (houses 2, 9, 1).</p>
+
+  <h3>Unbounded knapsack</h3>
+  <p>Items can be reused. For the fewest coins, <code>dp[a] = min over coins c ≤ a of dp[a − c] + 1</code>. With coins <code>[1, 2, 5]</code> and amount 11, <code>dp[0..11]</code> = 0, 1, 1, 2, 2, 1, 2, 2, 3, 3, 2, 3. For counting combinations, loop coins on the outside so each combination is counted once in a fixed coin order; loop amounts on the outside and you count permutations instead.</p>
+
+  <h3>LIS in O(n log n): patience sorting</h3>
+  <p>Keep <code>tails[k]</code> = the smallest possible last value of an increasing subsequence of length <code>k + 1</code>. <code>tails</code> is always sorted, so for each new value binary search the first tail ≥ it and overwrite it (or append). The length of <code>tails</code> is the LIS length; its contents are not necessarily a valid subsequence.</p>
+  <div class="tbl"><table>
+    <tr><th>x</th><th>Action</th><th>tails</th></tr>
+    <tr><td class="num">10</td><td>append</td><td>[10]</td></tr>
+    <tr><td class="num">9</td><td>replace 10</td><td>[9]</td></tr>
+    <tr><td class="num">2</td><td>replace 9</td><td>[2]</td></tr>
+    <tr><td class="num">5</td><td>append</td><td>[2, 5]</td></tr>
+    <tr><td class="num">3</td><td>replace 5</td><td>[2, 3]</td></tr>
+    <tr><td class="num">7</td><td>append</td><td>[2, 3, 7]</td></tr>
+    <tr><td class="num">101</td><td>append</td><td>[2, 3, 7, 101]</td></tr>
+    <tr><td class="num">18</td><td>replace 101</td><td>[2, 3, 7, 18]</td></tr>
+  </table></div>
+  <p>Length 4.</p>
+
+  <h2 id="templates"><span class="n">03</span>Java templates</h2>
+  <p>Memoised and tabulated House Robber (O(n) time, O(n) space; the space-optimised version is in problem 4.1), unbounded-knapsack counting (O(coins × amount) time, O(amount) space) and two-string subsequence DP (O(m × n) time and space).</p>
+  <pre><code>import java.util.*;
+
+class DpTemplates {
+    // Step 1: memoised recursion. best(i) = max loot from houses i..n-1.
+    static int robMemo(int[] nums) {
+        Integer[] memo = new Integer[nums.length];
+        return best(nums, 0, memo);
+    }
+
+    private static int best(int[] nums, int i, Integer[] memo) {
+        if (i &gt;= nums.length) {
+            return 0;                                           // base case: no houses left
+        }
+        if (memo[i] != null) {
+            return memo[i];
+        }
+        int skip = best(nums, i + 1, memo);
+        int take = nums[i] + best(nums, i + 2, memo);
+        return memo[i] = Math.max(skip, take);
+    }
+
+    // Step 2: tabulation. dp[i] = max loot from the first i houses.
+    static int robTable(int[] nums) {
+        int n = nums.length;
+        int[] dp = new int[n + 1];
+        dp[1] = n &gt; 0 ? nums[0] : 0;
+        for (int i = 2; i &lt;= n; i++) {
+            dp[i] = Math.max(dp[i - 1], dp[i - 2] + nums[i - 1]);
+        }
+        return dp[n];
+    }
+
+    // Unbounded knapsack: number of ways to make amount (coin order does not matter).
+    static int countWays(int[] coins, int amount) {
+        int[] ways = new int[amount + 1];
+        ways[0] = 1;
+        for (int c : coins) {                                   // coins outer: combinations, not permutations
+            for (int a = c; a &lt;= amount; a++) {                 // ascending a: coin c reusable
+                ways[a] += ways[a - c];
+            }
+        }
+        return ways[amount];
+    }
+
+    // Subsequence DP on two strings: longest common subsequence.
+    static int lcs(String x, String y) {
+        int[][] dp = new int[x.length() + 1][y.length() + 1];
+        for (int i = 1; i &lt;= x.length(); i++) {
+            for (int j = 1; j &lt;= y.length(); j++) {
+                dp[i][j] = x.charAt(i - 1) == y.charAt(j - 1)
+                    ? dp[i - 1][j - 1] + 1
+                    : Math.max(dp[i - 1][j], dp[i][j - 1]);
+            }
+        }
+        return dp[x.length()][y.length()];
+    }
+}</code></pre>
+  <div class="callout tip"><b>Use <code>Integer[]</code> for memo, not <code>int[]</code></b><p><code>null</code> means "not computed", so a real answer of 0 is not confused with "missing". With <code>int[]</code> you need <code>Arrays.fill(memo, -1)</code> and must be sure −1 is never a valid answer.</p></div>
+  <div class="callout info"><b>Partition DP shape</b><p><code>dp[j]</code> = best answer for the prefix ending at <code>j</code>. Try every possible last piece <code>s[i..j]</code>; if it is valid, combine with <code>dp[i-1]</code>. That is O(n²) transitions, so validity must be O(1), usually via a precomputed table. Word Break and Palindrome Partitioning II both follow it.</p></div>
+
+  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+
+  <h3>4.1 House Robber</h3>
+  <p><a href="https://leetcode.com/problems/house-robber/" target="_blank" rel="noopener">LeetCode 198: house-robber</a> · Medium</p>
+  <p><b>Problem.</b> Houses in a line, each with some money. You cannot rob two adjacent houses. Return the maximum you can take.</p>
+  <p><b>Key insight.</b> <code>best(i) = max(best(i-1), best(i-2) + nums[i])</code>, needing only the last two values.</p>
+  <pre><code>class Solution {
+    public int rob(int[] nums) {
+        int prev2 = 0;                 // best up to house i-2
+        int prev1 = 0;                 // best up to house i-1
+        for (int x : nums) {
+            int cur = Math.max(prev1, prev2 + x);
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return prev1;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time, O(1) space.</p>
+  <p><b>Edge cases.</b> One house; two houses (take the larger); all zeros.</p>
+
+  <h3>4.2 House Robber II <span class="chip hot">PhonePe</span> <span class="chip">Amazon</span> <span class="chip">Walmart</span> <span class="chip">Zeta</span> <span class="chip">Flipkart</span></h3>
+  <p><a href="https://leetcode.com/problems/house-robber-ii/" target="_blank" rel="noopener">LeetCode 213: house-robber-ii</a> · Medium</p>
+  <p><b>Problem.</b> Same rule, but the houses form a circle, so the first and last are neighbours.</p>
+  <p><b>Key insight.</b> In any valid plan, at least one of house 0 or house n−1 is skipped. So run the linear robber twice, on <code>[0, n−2]</code> and on <code>[1, n−1]</code>, and take the max. This was the most-reported DP problem in the set; interviewers then ask for House Robber III (tree) as the follow-up.</p>
+  <pre><code>class Solution {
+    public int rob(int[] nums) {
+        int n = nums.length;
+        if (n == 1) {
+            return nums[0];
+        }
+        // the first and last house are neighbours, so never take both
+        return Math.max(robLine(nums, 0, n - 2), robLine(nums, 1, n - 1));
+    }
+
+    private int robLine(int[] nums, int from, int to) {
+        int prev2 = 0;
+        int prev1 = 0;
+        for (int i = from; i &lt;= to; i++) {
+            int cur = Math.max(prev1, prev2 + nums[i]);
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return prev1;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time, O(1) space.</p>
+  <p><b>Edge cases.</b> n = 1 must return <code>nums[0]</code> (both ranges would otherwise be empty); n = 2 returns the larger value; <code>[1, 2, 3]</code> → 3, not 4.</p>
+  <p><b>Follow-up: House Robber III (binary tree).</b> Post-order DFS returning a pair <code>{robThis, skipThis}</code>: <code>robThis = node.val + left.skip + right.skip</code>, <code>skipThis = max(left) + max(right)</code>. O(n) time, O(h) stack.</p>
+
+  <h3>4.3 Coin Change <span class="chip">Kotak</span></h3>
+  <p><a href="https://leetcode.com/problems/coin-change/" target="_blank" rel="noopener">LeetCode 322: coin-change</a> · Medium</p>
+  <p><b>Problem.</b> Unlimited coins of given denominations. Return the fewest coins that sum to <code>amount</code>, or −1 if impossible.</p>
+  <p><b>Key insight.</b> Unbounded knapsack minimum: <code>dp[a] = min(dp[a − c] + 1)</code>. Use <code>amount + 1</code> as infinity so <code>+ 1</code> never overflows.</p>
+  <pre><code>import java.util.*;
+
+class Solution {
+    public int coinChange(int[] coins, int amount) {
+        int[] dp = new int[amount + 1];              // dp[a] = fewest coins to make a
+        Arrays.fill(dp, amount + 1);                 // amount + 1 acts as infinity
+        dp[0] = 0;
+        for (int a = 1; a &lt;= amount; a++) {
+            for (int c : coins) {
+                if (c &lt;= a) {
+                    dp[a] = Math.min(dp[a], dp[a - c] + 1);
+                }
+            }
+        }
+        return dp[amount] &gt; amount ? -1 : dp[amount];
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(amount × coins) time, O(amount) space.</p>
+  <p><b>Edge cases.</b> <code>amount = 0</code> → 0; unreachable amount (<code>[2]</code>, 3) → −1; using <code>Integer.MAX_VALUE</code> as infinity overflows on <code>+ 1</code>. Follow-up: Coin Change II (number of combinations) uses the <code>countWays</code> template with coins in the outer loop.</p>
+
+  <h3>4.4 Decode Ways <span class="chip">Angel One</span></h3>
+  <p><a href="https://leetcode.com/problems/decode-ways/" target="_blank" rel="noopener">LeetCode 91: decode-ways</a> · Medium</p>
+  <p><b>Problem.</b> Letters map to "1".."26". Given a digit string, count how many ways it can be decoded.</p>
+  <p><b>Key insight.</b> Like climbing stairs with conditions: the last letter used either one digit (valid if not '0') or two digits (valid if 10..26). <code>dp[i] = (one-digit ok ? dp[i-1] : 0) + (two-digit ok ? dp[i-2] : 0)</code>.</p>
+  <pre><code>class Solution {
+    public int numDecodings(String s) {
+        int prev2 = 1;                                    // ways to decode s[0..i-2) (empty prefix = 1)
+        int prev1 = s.charAt(0) == '0' ? 0 : 1;           // ways to decode s[0..i-1)
+        for (int i = 2; i &lt;= s.length(); i++) {
+            int cur = 0;
+            if (s.charAt(i - 1) != '0') {
+                cur += prev1;                             // last char as a single letter
+            }
+            int two = (s.charAt(i - 2) - '0') * 10 + (s.charAt(i - 1) - '0');
+            if (two &gt;= 10 &amp;&amp; two &lt;= 26) {
+                cur += prev2;                             // last two chars as one letter
+            }
+            prev2 = prev1;
+            prev1 = cur;
+        }
+        return prev1;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time, O(1) space.</p>
+  <p><b>Trace</b> on "226": start (1, 1); i = 2: "2" ok → 1, "22" ok → +1 = 2; i = 3: "6" ok → 2, "26" ok → +1 = 3. Answer 3 (2-2-6, 22-6, 2-26).</p>
+  <p><b>Edge cases.</b> Leading '0' → 0; "10" → 1; "100" → 0 (the second '0' cannot stand alone and "00" is not valid); "27" → 1. Follow-up: Decode Ways II with '*' wildcards multiplies counts per case and needs mod 10<sup>9</sup>+7.</p>
+
+  <h3>4.5 Palindrome Partitioning II <span class="chip">Zeta</span></h3>
+  <p><a href="https://leetcode.com/problems/palindrome-partitioning-ii/" target="_blank" rel="noopener">LeetCode 132: palindrome-partitioning-ii</a> · Hard</p>
+  <p><b>Problem.</b> Cut a string into pieces that are all palindromes. Return the minimum number of cuts.</p>
+  <p><b>Key insight.</b> Partition DP: <code>cuts[j]</code> = min cuts for <code>s[0..j]</code>. Try every last piece <code>s[i..j]</code>; if it is a palindrome, <code>cuts[j] = min(cuts[i−1] + 1)</code>, or 0 when <code>i = 0</code>. Fill the palindrome table in the same loop: <code>s[i..j]</code> is a palindrome if the end characters match and the inside is one (or the length is ≤ 2).</p>
+  <pre><code>class Solution {
+    public int minCut(String s) {
+        int n = s.length();
+        boolean[][] pal = new boolean[n][n];             // pal[i][j]: s[i..j] is a palindrome
+        int[] cuts = new int[n];                         // cuts[j]: min cuts for s[0..j]
+        for (int j = 0; j &lt; n; j++) {
+            cuts[j] = j;                                 // worst case: every char alone
+            for (int i = 0; i &lt;= j; i++) {
+                if (s.charAt(i) == s.charAt(j) &amp;&amp; (j - i &lt; 2 || pal[i + 1][j - 1])) {
+                    pal[i][j] = true;
+                    cuts[j] = i == 0 ? 0 : Math.min(cuts[j], cuts[i - 1] + 1);
+                }
+            }
+        }
+        return cuts[n - 1];
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n²) time, O(n²) space for the table. An O(n) space variant expands around each centre and updates <code>cuts</code> as it goes.</p>
+  <p><b>Edge cases.</b> Single character → 0; whole string already a palindrome → 0; all distinct characters → n − 1. Order of loops matters: <code>pal[i+1][j-1]</code> must be filled before <code>pal[i][j]</code>, which holds because column <code>j−1</code> is complete when you reach column <code>j</code>.</p>
+
+  <h3>4.6 Longest Palindromic Subsequence <span class="chip">Paytm OA</span> <span class="chip">LinkedIn</span></h3>
+  <p><a href="https://leetcode.com/problems/longest-palindromic-subsequence/" target="_blank" rel="noopener">LeetCode 516: longest-palindromic-subsequence</a> · Medium</p>
+  <p><b>Problem.</b> Return the length of the longest subsequence (not necessarily contiguous) of <code>s</code> that reads the same both ways.</p>
+  <p><b>Key insight.</b> Interval DP on <code>s[i..j]</code>: if the ends match, both join the palindrome (<code>dp[i+1][j−1] + 2</code>); otherwise drop one end (<code>max(dp[i+1][j], dp[i][j−1])</code>). Fill <code>i</code> from right to left so the shorter ranges are ready. Equivalent view: LPS(s) = LCS(s, reverse(s)), using the template.</p>
+  <pre><code>class Solution {
+    public int longestPalindromeSubseq(String s) {
+        int n = s.length();
+        int[][] dp = new int[n][n];                      // dp[i][j]: LPS length inside s[i..j]
+        for (int i = n - 1; i &gt;= 0; i--) {
+            dp[i][i] = 1;
+            for (int j = i + 1; j &lt; n; j++) {
+                if (s.charAt(i) == s.charAt(j)) {
+                    dp[i][j] = dp[i + 1][j - 1] + 2;     // both ends join the palindrome
+                } else {
+                    dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]);
+                }
+            }
+        }
+        return dp[0][n - 1];
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n²) time, O(n²) space; reducible to O(n) with two rows since row <code>i</code> reads only row <code>i+1</code>.</p>
+  <p><b>Edge cases.</b> Length 1 → 1; all same characters → n; "cbbd" → 2. Related follow-ups: minimum insertions to make a palindrome = n − LPS; longest palindromic <em>substring</em> is a different problem (expand around centre).</p>
+
+  <h3>4.7 Longest Increasing Subsequence <span class="chip">Visa Staff</span></h3>
+  <p><a href="https://leetcode.com/problems/longest-increasing-subsequence/" target="_blank" rel="noopener">LeetCode 300: longest-increasing-subsequence</a> · Medium</p>
+  <p><b>Problem.</b> Return the length of the longest strictly increasing subsequence.</p>
+  <p><b>Key insight (baseline).</b> <code>dp[i]</code> = LIS ending at <code>i</code> = 1 + max <code>dp[j]</code> over <code>j &lt; i</code> with <code>nums[j] &lt; nums[i]</code>. O(n²). Say this first, then offer the faster version.</p>
+  <pre><code>class Solution {
+    public int lengthOfLIS(int[] nums) {
+        int n = nums.length;
+        int[] dp = new int[n];                           // dp[i]: longest increasing run ending at i
+        int best = 0;
+        for (int i = 0; i &lt; n; i++) {
+            dp[i] = 1;
+            for (int j = 0; j &lt; i; j++) {
+                if (nums[j] &lt; nums[i]) {
+                    dp[i] = Math.max(dp[i], dp[j] + 1);
+                }
+            }
+            best = Math.max(best, dp[i]);
+        }
+        return best;
+    }
+}</code></pre>
+  <p><b>Follow-up asked at Visa: O(n log n).</b> The patience-sorting <code>tails</code> array from section 02 with a lower-bound binary search.</p>
+  <pre><code>class Solution {
+    public int lengthOfLIS(int[] nums) {
+        int[] tails = new int[nums.length];              // tails[k]: smallest tail of an increasing run of length k+1
+        int size = 0;
+        for (int x : nums) {
+            int lo = 0;
+            int hi = size;
+            while (lo &lt; hi) {                            // first tail &gt;= x (lower bound)
+                int mid = (lo + hi) &gt;&gt;&gt; 1;
+                if (tails[mid] &lt; x) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            tails[lo] = x;
+            if (lo == size) {
+                size++;
+            }
+        }
+        return size;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n log n) time, O(n) space.</p>
+  <p><b>Edge cases.</b> Strictly increasing means duplicates do not extend: lower bound (first tail <code>&gt;= x</code>) replaces an equal tail, so <code>[7,7,7,7]</code> → 1. For non-decreasing, use upper bound (first tail <code>&gt; x</code>). To reconstruct the actual subsequence, store for each element the index that sits before it (the tail at position <code>lo − 1</code>) and walk back from the last tail.</p>
+
+  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
+  <div class="callout warn"><b>Mistakes that cost the round</b><ul>
+    <li>Jumping to a table without saying what <code>dp[i]</code> means. The interviewer cannot follow, and you lose the chance to catch an off-by-one.</li>
+    <li>Off-by-one between "first i items" (size n + 1) and "ending at index i" (size n) states.</li>
+    <li>Using <code>Integer.MAX_VALUE</code> as infinity and adding 1.</li>
+    <li>House Robber II without the n = 1 guard.</li>
+    <li>Claiming the <code>tails</code> array is the LIS itself.</li>
+    <li>Deep recursion in Java memoisation for n around 10<sup>5</sup>: the default thread stack overflows; convert to tabulation.</li>
+  </ul></div>
+  <details class="qa"><summary>Memoisation or tabulation: which do you choose?</summary><p>Memoisation is quicker to get right and only computes reachable states. Tabulation avoids recursion overhead and stack overflow, and makes space optimisation possible because you control the fill order. In an interview, start with whichever you can write correctly, then convert if asked.</p></details>
+  <details class="qa"><summary>How do you know a greedy will not work?</summary><p>Find a small counter-example. For coin change, <code>[1, 3, 4]</code> with amount 6 breaks largest-coin-first. For house robber, <code>[2, 1, 1, 2]</code> breaks "take every other house".</p></details>
+  <details class="qa"><summary>Coin change: combinations versus permutations?</summary><p>Coins in the outer loop and amounts inner counts combinations (1+2 equals 2+1). Amounts outer, coins inner counts ordered sequences, which is Combination Sum IV.</p></details>
+  <details class="qa"><summary>Can LIS be done with a <code>TreeSet</code>?</summary><p>Yes for strictly increasing: for each x, remove <code>ceiling(x)</code> if present and add x; the set size is the answer. Same O(n log n), but the array version has lower constants and handles reconstruction more easily.</p></details>
+  <details class="qa"><summary>Russian Doll Envelopes is a common LIS follow-up. What is the trick?</summary><p>Sort by width ascending and, for equal widths, height descending; then run LIS on heights. The descending tie-break stops two envelopes of the same width from nesting.</p></details>
+
+  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
+  <details class="qa"><summary>1. State, transition and base case for Decode Ways?</summary><p>State: <code>dp[i]</code> = number of decodings of the first <code>i</code> characters. Transition: add <code>dp[i−1]</code> if <code>s[i−1] ≠ '0'</code>, add <code>dp[i−2]</code> if <code>s[i−2..i−1]</code> is 10..26. Base: <code>dp[0] = 1</code>, <code>dp[1] = s[0] == '0' ? 0 : 1</code>.</p></details>
+  <details class="qa"><summary>2. Why does House Robber II split into two linear runs?</summary><p>House 0 and house n−1 are adjacent, so at least one of them is never robbed. Excluding each in turn covers every valid plan.</p></details>
+  <details class="qa"><summary>3. What does <code>tails</code> look like after processing <code>[3, 1, 4, 1, 5]</code>?</summary><p>[3] → [1] → [1, 4] → [1, 4] (1 replaces 1) → [1, 4, 5]. LIS length 3.</p></details>
+  <details class="qa"><summary>4. Longest palindromic subsequence of "bbbab"?</summary><p>4 ("bbbb").</p></details>
+  <details class="qa"><summary>5. When can a 2D DP drop to one row?</summary><p>When row <code>i</code> reads only row <code>i</code> and row <code>i ± 1</code>. Keep two arrays, or one array if you choose the inner loop direction so you never overwrite a value you still need.</p></details>
+
+  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li>Company tags come from the ~9 DP interview reports (2025–26) collected for this playbook: house-robber-ii (PhonePe, Amazon, Walmart, Zeta, Flipkart), coin-change (Kotak), decode-ways (Angel One), palindrome-partitioning-ii (Zeta), longest-palindromic-subsequence (Paytm OA, LinkedIn), longest-increasing-subsequence (Visa Staff, with the O(n log n) follow-up).</li>
+    <li><a href="https://cp-algorithms.com/dynamic_programming/longest_increasing_subsequence.html" target="_blank" rel="noopener">cp-algorithms: Longest increasing subsequence</a> (O(n²), O(n log n) and reconstruction)</li>
+    <li>Problems: <a href="https://leetcode.com/problems/house-robber/" target="_blank" rel="noopener">198</a>, <a href="https://leetcode.com/problems/house-robber-ii/" target="_blank" rel="noopener">213</a>, <a href="https://leetcode.com/problems/coin-change/" target="_blank" rel="noopener">322</a>, <a href="https://leetcode.com/problems/decode-ways/" target="_blank" rel="noopener">91</a>, <a href="https://leetcode.com/problems/palindrome-partitioning-ii/" target="_blank" rel="noopener">132</a>, <a href="https://leetcode.com/problems/longest-palindromic-subsequence/" target="_blank" rel="noopener">516</a>, <a href="https://leetcode.com/problems/longest-increasing-subsequence/" target="_blank" rel="noopener">300</a></li>
+    <li>Extra practice: <a href="https://leetcode.com/problems/house-robber-iii/" target="_blank" rel="noopener">house-robber-iii</a>, <a href="https://leetcode.com/problems/coin-change-ii/" target="_blank" rel="noopener">coin-change-ii</a>, <a href="https://leetcode.com/problems/word-break/" target="_blank" rel="noopener">word-break</a>, <a href="https://leetcode.com/problems/longest-common-subsequence/" target="_blank" rel="noopener">longest-common-subsequence</a>, <a href="https://leetcode.com/problems/russian-doll-envelopes/" target="_blank" rel="noopener">russian-doll-envelopes</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-binary-search-on-answer.html">Binary search on answer</a> · <a href="dsa-heaps-intervals.html">Heaps and intervals</a> · <a href="dsa-mixed-set.html">Mixed set</a></span></div>
+</div>
+</body>
+</html>

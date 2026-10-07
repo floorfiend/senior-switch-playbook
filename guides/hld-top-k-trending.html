@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Top-K Trending HLD</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">System design · HLD</span></div>
+  <h1>Top-K / Trending Over Time Windows</h1>
+  <p class="lede">Count events (shares, views, error logs, searches) from a high-volume stream and serve the top N per rolling window: last 5 minutes, 1 hour, 24 hours. A senior answer separates counting from ranking, knows exactly when merging partition-local top-Ks is correct, and can say when approximate counting is acceptable.</p>
+  <div class="facts">
+    <span class="fact"><b>Time-box:</b> 45–60 min</span>
+    <span class="fact"><b>Seen:</b> LinkedIn, eBay, Oracle (3 variants), Uber, Amazon, 2025–26</span>
+  </div>
+  <div class="chips"><span class="chip hot">LinkedIn</span><span class="chip hot">Oracle</span><span class="chip">eBay</span><span class="chip">Uber</span><span class="chip">Amazon</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#graded">What's graded</a></li>
+    <li><a href="#scope">Clarify and scope</a></li>
+    <li><a href="#capacity">Capacity estimation</a></li>
+    <li><a href="#api">API design</a></li>
+    <li><a href="#data">Data model</a></li>
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#deep">Deep dives</a></li>
+    <li><a href="#scale">Scaling and failure</a></li>
+    <li><a href="#tradeoffs">Trade-offs</a></li>
+    <li><a href="#followups">Follow-up questions</a></li>
+    <li><a href="#mistakes">Rejection reasons</a></li>
+    <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <p>The variants share one skeleton. LinkedIn Senior (Aug 2026): "maintain a Top-N leaderboard of the most-shared articles over rolling windows of 5 minutes, 1 hour and 24 hours". eBay SDE-3: a top-10 items / categories dashboard built on Kafka with RocksDB state and a partition merge step. Oracle asked three cuts: top-K URLs overall and in the last 24 h with limited RAM, top-100 users per hour (Flink vs Spark), and top-K services by error logs in 5 minutes. Uber asked a trending items page; Amazon asked personalised autosuggest with trending top-K.</p>
+  <ul>
+    <li><b>Windowing.</b> How a rolling 24 h window is maintained without recounting 24 h of events every minute.</li>
+    <li><b>Two-stage aggregation and its correctness.</b> Local top-K per partition, global merge, and the one condition under which that merge is exact.</li>
+    <li><b>Memory discipline.</b> Exact counts for millions of keys vs Count-Min Sketch / Space-Saving, with stated error bounds.</li>
+    <li><b>Read path.</b> Precompute top-K and serve from cache; never sort at request time.</li>
+    <li><b>Hot keys and late events.</b> One viral article; mobile clients that report shares 3 minutes late.</li>
+  </ul>
+
+  <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
+  <h3>Questions to ask</h3>
+  <ul>
+    <li><b>Exact or approximate?</b> A leaderboard tolerates ±0.1% count error; a billing report does not. This single answer picks the algorithm.</li>
+    <li><b>Rolling (sliding) or tumbling?</b> "Last 1 hour, refreshed every minute" is a sliding window with 1-minute slide. Tumbling ("each clock hour") is cheaper.</li>
+    <li><b>Freshness?</b> Seconds-fresh is a streaming job; "hourly report" can be batch (the Oracle Flink vs Spark question).</li>
+    <li><b>Global or segmented?</b> Per country, per category, per user segment multiplies the number of top-K lists.</li>
+    <li><b>Popular or trending?</b> Most shares in absolute terms vs fastest growth relative to its baseline. Trending needs a velocity score.</li>
+    <li><b>Dedup and abuse?</b> Count one share per user per article; filter bots.</li>
+  </ul>
+  <div class="grid">
+    <div class="card"><h4>Functional</h4><ul><li>Ingest share events</li><li>Top N (N ≤ 100) per window: 5 m, 1 h, 24 h</li><li>Optional dimensions: country, category</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>Read p99 &lt; 50 ms; 20k reads/s</li><li>Freshness ≤ 1 min (5 m window), ≤ 5 min (24 h)</li><li>Ingest 50k events/s peak, lossless</li><li>Approximate counts acceptable (state the bound)</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Personalised ranking (discuss as extension)</li><li>Spam ML models (hook only)</li><li>All-time historical analytics</li></ul></div>
+  </div>
+
+  <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <div class="tbl"><table>
+    <tr><th>Quantity</th><th>Assumption</th><th>Result</th></tr>
+    <tr><td>Share events</td><td>200M DAU × 1 share/day avg</td><td class="num">200M/day ≈ 2.3k/s avg</td></tr>
+    <tr><td>Peak ingest</td><td>~20× avg on news spikes</td><td class="num">~50k/s</td></tr>
+    <tr><td>Event size</td><td>article_id, user_id, ts, country (~100 B)</td><td class="num">20 GB/day raw in Kafka</td></tr>
+    <tr><td>Distinct articles in 24 h</td><td>Long tail</td><td class="num">~10M</td></tr>
+    <tr><td>Exact 24 h counts</td><td>10M keys × ~50 B (id + count + map overhead)</td><td class="num">~500 MB per window per segment</td></tr>
+    <tr><td>Minute buckets for 24 h</td><td>1,440 buckets; most keys absent in most buckets</td><td class="num">Sparse; store hourly buckets for 24 h</td></tr>
+    <tr><td>Count-Min Sketch</td><td>ε = 0.01%, δ = 0.1% → width ⌈e/ε⌉ ≈ 27k, depth ⌈ln 1/δ⌉ ≈ 7</td><td class="num">~190k counters ≈ 760 KB</td></tr>
+    <tr><td>Segments</td><td>3 windows × 200 countries × 30 categories</td><td class="num">18k lists × 100 entries — fine in Redis</td></tr>
+  </table></div>
+  <p>Exact counting fits for one global leaderboard (hundreds of MB). It stops fitting when you multiply by thousands of segments or by billions of distinct keys (Oracle's URLs), which is when sketches earn their place. Say this explicitly; it shows you choose approximation because the numbers demand it, not by reflex.</p>
+
+  <h2 id="api"><span class="n">04</span>API design</h2>
+  <pre><code>POST /v1/events/share     (internal, usually a Kafka produce, not HTTP)
+{ "eventId": "e_7f2...", "articleId": "a_123", "userId": "u_9", "ts": 1759823400123, "country": "IN" }
+
+GET /v1/trending?window=1h&amp;limit=10&amp;country=IN&amp;category=tech
+→ 200 { "window": "1h", "asOf": "2026-10-07T10:31:00Z",
+        "items": [ { "articleId": "a_123", "count": 48211, "rank": 1 }, ... ] }
+Cache-Control: max-age=30</code></pre>
+  <p><code>eventId</code> lets the pipeline drop duplicate client retries. Return <code>asOf</code> so clients and caches know the snapshot time; leaderboards are snapshots, not live queries.</p>
+
+  <h2 id="data"><span class="n">05</span>Data model</h2>
+  <div class="tbl"><table>
+    <tr><th>Store</th><th>Contents</th><th>Key</th><th>Why</th></tr>
+    <tr><td>Kafka <code>share-events</code></td><td>Raw events, 3–7 day retention</td><td>Key = article_id (see 7.2)</td><td>Replay, multiple consumers, partition-by-key correctness</td></tr>
+    <tr><td>Stream job state (RocksDB in Flink / Kafka Streams)</td><td>Per article: ring of minute counts (last 60), ring of hourly counts (last 24), running sums</td><td>article_id (keyed state)</td><td>Incremental window sums; spills to disk, checkpoints to S3 / changelog topic</td></tr>
+    <tr><td>Redis</td><td><code>topk:{window}:{segment}</code> as a ZSET or a serialised list of 100</td><td>window + segment</td><td>Read path; O(log n) updates, O(K) reads</td></tr>
+    <tr><td>OLAP (Pinot / Druid / ClickHouse) or S3 + Spark</td><td>Per-minute aggregates</td><td>time, article_id</td><td>Exact recomputation, audits, backfills, ad-hoc windows</td></tr>
+  </table></div>
+
+  <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
+  <div class="flow">
+    <span class="node">Clients<small>share button</small></span><span class="arrow">→</span>
+    <span class="node">Ingest API<small>validate, dedup id</small></span><span class="arrow">→</span>
+    <span class="node store">Kafka share-events<small>key = articleId, 64 partitions</small></span>
+  </div>
+  <div class="flow">
+    <span class="node store">Kafka</span><span class="arrow">→</span>
+    <span class="node hl">Count stage<small>keyed state: minute + hour rings</small></span><span class="arrow">→</span>
+    <span class="node hl">Local top-K<small>per partition, per window</small></span><span class="arrow">→</span>
+    <span class="node">Merge stage<small>global top-K every 10–60 s</small></span><span class="arrow">→</span>
+    <span class="node store">Redis<small>topk:window:segment</small></span>
+  </div>
+  <div class="flow">
+    <span class="node">Clients</span><span class="arrow">→</span>
+    <span class="node">CDN / API cache<small>30 s TTL</small></span><span class="arrow">→</span>
+    <span class="node">Trending API</span><span class="arrow">→</span>
+    <span class="node store">Redis</span>
+    <span class="arrow">·</span>
+    <span class="node store">S3 + Spark<small>hourly exact batch</small></span>
+  </div>
+  <p class="flow-caption">Figure: write-time ranking. Counting is partitioned by key; ranking is a cheap merge of small lists; reads hit a precomputed snapshot.</p>
+  <ul>
+    <li><b>Ingest</b> validates, attaches server time, and produces to Kafka keyed by article_id. Dedup of exact retries uses eventId in a short-TTL Redis set or Flink keyed state.</li>
+    <li><b>Count stage</b> keeps per-article bucket rings. Each event increments the current minute bucket and the window running sums.</li>
+    <li><b>Local top-K</b> keeps a min-heap of size K per window per partition, refreshed from the running sums of keys touched since the last emit.</li>
+    <li><b>Merge stage</b> (parallelism 1, or one per segment) receives 64 lists of K, merges into the global top-K and writes Redis. 64 × 100 entries is trivial.</li>
+    <li><b>Batch path</b> recomputes exact hourly / daily top-K from S3 for reports and to correct drift (Lambda-style). Optional if streaming state is exact.</li>
+  </ul>
+
+  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+
+  <h3>7.1 Rolling windows without recounting</h3>
+  <p>A sliding 1 h window with a 1-minute slide naively means 60 overlapping windows, each holding every event. Instead hold <b>buckets</b> and a running sum per key:</p>
+  <pre><code>// per article, owned by one task thread (keyed state)
+long[] minute = new long[60];   // ring buffer
+long[] hour   = new long[24];
+long sum5m, sum1h, sum24h;
+
+void onEvent(long tsMinute) {
+    minute[(int) (tsMinute % 60)]++; sum5m++; sum1h++;
+    hour[(int) ((tsMinute / 60) % 24)]++; sum24h++;
+}
+void onMinuteTick(long nowMinute) {      // timer: subtract buckets leaving each window
+    sum5m  -= minute[(int) ((nowMinute - 5) % 60)];
+    sum1h  -= minute[(int) ((nowMinute - 60) % 60)];
+    minute[(int) ((nowMinute - 60) % 60)] = 0;     // slot reused for the new minute
+    if (nowMinute % 60 == 0) { int h = (int) ((nowMinute / 60 - 24) % 24); sum24h -= hour[h]; hour[h] = 0; }
+}</code></pre>
+  <p>Each event is O(1); each tick is O(1) per active key. The 24 h window has hourly granularity, so it slides in 1-hour steps; if the interviewer wants a minute-accurate 24 h window, use minute buckets for the newest hour and hourly buckets for the rest (a two-level ring). Keys with all-zero buckets are evicted, which keeps state proportional to recently active articles, not all articles ever.</p>
+  <p>The same structure in Flink is <code>SlidingEventTimeWindows.of(Time.hours(1), Time.minutes(1))</code> with an incremental <code>AggregateFunction</code>, but Flink assigns each event to 60 window panes. For many overlapping windows the hand-rolled bucket ring (a <code>KeyedProcessFunction</code> with timers) is cheaper. Knowing that is a senior signal.</p>
+
+  <h3>7.2 When is merging local top-Ks correct?</h3>
+  <p>This is the question that separates candidates. If events are spread across partitions <b>randomly</b>, article A might be #101 on every partition but #1 globally; merging local top-100 lists loses it. The merge is <b>exact only if each key's full count lives in exactly one partition</b>, i.e. Kafka is keyed by article_id. Then the global top-K is a subset of the union of the local top-Ks, and a K-way merge over 64 lists of K is exact.</p>
+  <p>If you must pre-aggregate on random partitions (to spread a hot key), send <b>(key, partial count)</b> to a second stage keyed by article_id, never local top-K lists. The eBay discussion of "partition merge" is testing exactly this.</p>
+
+  <h3>7.3 Exact vs approximate counting</h3>
+  <div class="tbl"><table>
+    <tr><th>Technique</th><th>Memory</th><th>Error</th><th>Use</th></tr>
+    <tr><td>HashMap of exact counts + min-heap of K</td><td>O(distinct keys)</td><td>None</td><td>Up to tens of millions of keys per job; LinkedIn articles</td></tr>
+    <tr><td>Count-Min Sketch + heap of K candidates</td><td>O(w × d), fixed</td><td>Overestimates by ≤ εN with probability 1 − δ; never underestimates</td><td>Billions of distinct keys (URLs, search queries), many segments</td></tr>
+    <tr><td>Space-Saving / Misra-Gries</td><td>O(K / ε) counters</td><td>Guaranteed to contain every key with frequency &gt; N/m</td><td>Heavy hitters with a hard memory budget</td></tr>
+    <tr><td>Offline MapReduce / Spark</td><td>Disk</td><td>None</td><td>Daily or hourly exact reports; backfills</td></tr>
+  </table></div>
+  <p>Sketches are mergeable (add the matrices), so they fit the partition-then-merge pattern, and sliding windows are a ring of per-minute sketches. The catch: a sketch answers "how many for key X" but cannot list keys, so you still keep a heap of candidate keys alongside it.</p>
+
+  <h3>7.4 Oracle's limited-RAM variant</h3>
+  <p>"Top-K URLs across logs bigger than memory." Classic answer: stream the logs once, write each URL to one of M files by <code>hash(url) % M</code> so each file fits in RAM; count each file with a HashMap and keep a global min-heap of size K. Two passes over disk, exact, works with 1 GB of RAM for 1 TB of logs (M ≈ 2,000). For "last 24 h" add time buckets; for "top-100 users per hour" a tumbling window of 1 h is enough, so Spark on hourly partitions is fine if freshness of ~1 hour is acceptable. Choose Flink if the answer must be live within seconds, Spark if the window closes hourly and exactness and simplicity matter. "Top-K services by error logs in 5 min" is a tumbling 5-minute window with a small key space (services), so exact counting in one Flink job is enough; the hard part is ingest volume, solved by pre-aggregating at the log agent.</p>
+
+  <h3>7.5 Trending, not just popular</h3>
+  <p>Uber's trending items and Amazon's trending suggestions should not just show the always-popular items. Score by velocity against baseline: <code>score = (count_1h − expected_1h) / sqrt(expected_1h + 1)</code> where expected comes from the same hour last week, or apply exponential decay <code>score = Σ e^(−λ·age)</code> to buckets. For Amazon personalised autosuggest, compute global and per-segment trending candidates offline / streaming, then re-rank the top ~100 per user at request time with the user's features. Do not compute a top-K per user in the stream.</p>
+
+  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
+  <ul>
+    <li><b>Hot key.</b> One viral article sends 30% of events to one partition. Pre-aggregate in the ingest tier (count per article per second in memory, emit partial counts) or salt the key (<code>a_123#0..7</code>) for the count stage and sum partials in a keyed second stage.</li>
+    <li><b>Late and out-of-order events.</b> Use event time with watermarks (allowed lateness e.g. 2 min). Late events still update the bucket; the next emit corrects the snapshot. Events older than the window are dropped and counted in a metric.</li>
+    <li><b>Failure.</b> Flink checkpoints RocksDB state to S3 every 30–60 s with Kafka offsets; on restart it rewinds to the checkpoint and replays, giving exactly-once state. Kafka Streams restores from a changelog topic; use standby replicas so failover is seconds.</li>
+    <li><b>Read path.</b> 20k reads/s on ~18k small keys: Redis plus a 30 s CDN cache absorbs it. The merge stage writes a whole new list atomically (<code>SET</code> of a serialised list or <code>RENAME</code> a staged ZSET) so readers never see half-updated rankings.</li>
+    <li><b>10× growth.</b> Add Kafka partitions (plan the count up front; repartitioning moves keys), scale count tasks; merge stays tiny. At 100× with segments, move to sketches and sample low-value events.</li>
+    <li><b>Multi-region.</b> Count per region, ship per-region partial counts (not top-K lists) to a global aggregator for a global board.</li>
+  </ul>
+
+  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
+  <div class="tbl"><table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
+    <tr><td>Redis <code>ZINCRBY</code> per event, one ZSET per window</td><td>Simplest; live</td><td>Expiry of old events is hard (needs per-bucket ZSETs and <code>ZUNIONSTORE</code>); 50k writes/s on hot keys</td><td>Low volume, small key space</td></tr>
+    <tr><td>Stream processor (Flink / Kafka Streams) with RocksDB state</td><td>Exact, scalable, checkpointed, event time</td><td>Operational complexity</td><td>Default at LinkedIn / eBay scale</td></tr>
+    <tr><td>Count-Min Sketch + heap</td><td>Fixed tiny memory, mergeable</td><td>Approximate; needs candidate tracking</td><td>Billions of keys, many segments</td></tr>
+    <tr><td>Batch (Spark hourly)</td><td>Exact, cheap, simple</td><td>Freshness ≥ window</td><td>Reports, Oracle hourly top-100 users</td></tr>
+    <tr><td>Lambda (stream approx + batch exact)</td><td>Fresh and eventually exact</td><td>Two code paths</td><td>When counts drive money (ads, payouts)</td></tr>
+  </table></div>
+
+  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
+  <details class="qa"><summary>Why not just run SELECT ... GROUP BY ... ORDER BY count LIMIT 10 on the events table?</summary><p>At 200M events/day the query scans tens of millions of rows per window, every refresh, for every segment. It works on an OLAP store like Pinot with pre-aggregation for low QPS, but for a public leaderboard you precompute at write time and serve a cached snapshot.</p></details>
+  <details class="qa"><summary>Can you merge top-K lists from different partitions?</summary><p>Only if the data is partitioned by the ranking key, so each key's count is complete in one partition. Otherwise you must merge counts, not lists. A key that is #101 everywhere can be #1 globally.</p></details>
+  <details class="qa"><summary>How do you expire events from the 24 h window?</summary><p>You do not expire events; you expire buckets. Each key holds hourly buckets in a ring and a running sum; when an hour leaves the window, subtract that bucket and zero it. Cost is per active key per bucket boundary, not per event.</p></details>
+  <details class="qa"><summary>What error does Count-Min Sketch give and in which direction?</summary><p>It only overestimates, by at most εN with probability 1 − δ, where width = e/ε and depth = ln(1/δ). With N = 200M and ε = 0.01%, error ≤ 20k shares, fine for a top-10 of viral items, wrong for the long tail.</p></details>
+  <details class="qa"><summary>Flink or Spark for top-100 users per hour?</summary><p>If the result is needed when the hour closes and nobody looks before that, Spark batch on hourly-partitioned data is simpler and exact. If you need a live view during the hour, or several windows at once, Flink with keyed state. Spark Structured Streaming sits between: micro-batches of seconds.</p></details>
+  <details class="qa"><summary>How do you stop bots gaming the leaderboard?</summary><p>Count distinct users per article (HyperLogLog per article per bucket, or dedup by (user, article) with TTL), rate-limit per user, and apply a spam score from a separate model before counting.</p></details>
+
+  <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
+  <div class="callout warn"><b>Rejected for this</b>
+    <ul>
+      <li>Merging local top-K lists from randomly partitioned data and calling it exact.</li>
+      <li>Sorting at read time, or a single Redis ZSET with no story for removing old events from the window.</li>
+      <li>Jumping to Count-Min Sketch without numbers, then not being able to explain its error or why it cannot list keys.</li>
+      <li>Ignoring hot keys and late events.</li>
+      <li>Treating 5 m, 1 h and 24 h as three separate pipelines instead of one counting stage with multiple bucket granularities.</li>
+    </ul>
+  </div>
+
+  <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">0–5 min</span><span>Exact vs approximate, windows, freshness, segments, popular vs trending.</span></div>
+    <div class="step"><span class="t">5–10 min</span><span>Capacity: 50k events/s, 10M keys, memory per window; decide exact for global, sketch for segments.</span></div>
+    <div class="step"><span class="t">10–15 min</span><span>APIs, Kafka keyed by item, Redis snapshot read model.</span></div>
+    <div class="step"><span class="t">15–25 min</span><span>Architecture: count stage → local top-K → merge → Redis; batch path.</span></div>
+    <div class="step"><span class="t">25–37 min</span><span>Deep dives: bucket rings, merge correctness, sketch vs exact.</span></div>
+    <div class="step"><span class="t">37–43 min</span><span>Hot keys, late events, checkpoints, multi-region.</span></div>
+    <div class="step"><span class="t">43–45 min</span><span>Trade-offs; extension to trending score and personalisation.</span></div>
+  </div>
+
+  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/8475477/" target="_blank" rel="noopener">LinkedIn Senior SWE, Bangalore, 2026: Top-N most-shared articles over 5 min / 1 h / 24 h (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/8401857/" target="_blank" rel="noopener">eBay SDE-3, Bengaluru, 2026: e-commerce system design round (LeetCode)</a></li>
+    <li><a href="https://dev.to/zeeshanali0704/designing-the-spotify-top-k-ef6" target="_blank" rel="noopener">Designing a global top-K heavy hitters system with Kafka, stream processing and Redis sorted sets</a></li>
+    <li><a href="https://www.techinterview.org/post/3233468386/lld-trending-topics/" target="_blank" rel="noopener">Trending topics: sliding window counts, time decay and top-K</a></li>
+    <li><a href="https://algomaster.io/practice/system-design/find-count-min-sketch-heavy-hitters" target="_blank" rel="noopener">AlgoMaster: Count-Min Sketch heavy hitters</a></li>
+    <li><a href="https://github.com/donnemartin/system-design-primer" target="_blank" rel="noopener">System Design Primer</a></li>
+  </ul>
+
+  <div class="foot"><a href="hld-stock-price-alerts.html">← Stock price alerts</a><a href="../index.html">Playbook</a><a href="hld-payment-service.html">Payment service →</a></div>
+</div>
+</body>
+</html>

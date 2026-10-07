@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>First LLM Calls</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · AI engineering</span></div>
+  <h1>Your first LLM calls: Python and Spring AI</h1>
+  <p class="lede">Call Claude from a Python script and from a Spring Boot service, stream tokens to a client, get typed output into a Pydantic model or a Java record, log tokens and latency, and survive 429 and 529 errors without hammering the API.</p>
+  <div class="facts">
+    <span class="fact"><b>Time:</b> 3–4 hours</span>
+    <span class="fact"><b>Stack:</b> Python 3.12+, anthropic SDK 1.x; Spring Boot 4 + Spring AI 2.0</span>
+    <span class="fact"><b>Cost:</b> a few cents on Haiku 4.5</span>
+  </div>
+  <div class="chips"><span class="chip hot">Messages API</span><span class="chip">Streaming</span><span class="chip">Structured output</span><span class="chip">Retries</span><span class="chip">ChatClient</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#outcomes">What you'll be able to do</a></li>
+    <li><a href="#concepts">Concepts for a Java engineer</a></li>
+    <li><a href="#handson">Hands-on: Python, then Spring AI</a></li>
+    <li><a href="#interview">How this shows up in interviews</a></li>
+    <li><a href="#exercise">Capstone checkpoint</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <ul>
+    <li>Make a Messages API call from Python with a system prompt, read the content blocks, and explain every field in the response (<code>stop_reason</code>, <code>usage</code>, request id).</li>
+    <li>Stream a response token by token, and measure time to first token (TTFT) separately from total latency.</li>
+    <li>Get structured output that is validated before your code touches it: a Pydantic model in Python, a Java record in Spring AI.</li>
+    <li>Build the same thing as a Spring Boot endpoint with <code>ChatClient</code>, including a <code>Flux&lt;String&gt;</code> streaming endpoint.</li>
+    <li>Use prompt templates safely (parameters, never string concatenation).</li>
+    <li>Explain and configure retries for <code>429 rate_limit_error</code> and <code>529 overloaded_error</code> and say why naive retries make outages worse.</li>
+  </ul>
+
+  <h2 id="concepts"><span class="n">02</span>Concepts explained for a Java backend engineer</h2>
+
+  <h3>The Messages API is a stateless REST call</h3>
+  <p>Think of it as calling a downstream microservice that has no session. Every request carries the whole conversation: an optional <code>system</code> prompt and a list of <code>messages</code> that alternate <code>user</code> and <code>assistant</code>. The server keeps nothing between calls. If you want a chat, you append the assistant's reply and the next user turn to the list and send everything again. That is why long chats get slower and more expensive: input tokens grow on every turn.</p>
+
+  <div class="flow">
+    <span class="node">Your service<small>builds request</small></span><span class="arrow">→</span>
+    <span class="node hl">POST /v1/messages<small>model, max_tokens, system, messages</small></span><span class="arrow">→</span>
+    <span class="node">Claude<small>generates tokens</small></span><span class="arrow">→</span>
+    <span class="node">Response<small>content[], stop_reason, usage</small></span>
+  </div>
+  <p class="flow-caption">Figure: one request, one response. No server-side session; you resend history each time.</p>
+
+  <div class="tbl"><table>
+    <thead><tr><th>Request field</th><th>What it is</th><th>Java analogy</th></tr></thead>
+    <tbody>
+      <tr><td><code>model</code></td><td>Which model serves the call, e.g. <code>claude-sonnet-5-5</code> or <code>claude-haiku-4-5-20251001</code></td><td>Choosing a downstream service version</td></tr>
+      <tr><td><code>max_tokens</code></td><td>Hard cap on output tokens (including any thinking). Required.</td><td>A response size limit / circuit on runaway work</td></tr>
+      <tr><td><code>system</code></td><td>Instructions and role that apply to the whole conversation</td><td>Configuration injected into every call</td></tr>
+      <tr><td><code>messages</code></td><td>The turns, each with <code>role</code> and <code>content</code> (a string or a list of blocks)</td><td>The request body</td></tr>
+      <tr><td><code>output_config</code></td><td>Structured output (<code>format</code> with a JSON schema) and <code>effort</code></td><td>Content negotiation plus a quality/cost knob</td></tr>
+      <tr><td><code>stop_sequences</code>, <code>tools</code>, <code>thinking</code></td><td>Covered in later lessons</td><td></td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The response has <code>id</code>, <code>model</code>, a <code>content</code> array of blocks (for now only <code>type: "text"</code>; later you will see <code>tool_use</code> and <code>thinking</code>), a <code>stop_reason</code> and <code>usage</code>.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>stop_reason</th><th>Meaning</th><th>What your code should do</th></tr></thead>
+    <tbody>
+      <tr><td><code>end_turn</code></td><td>Model finished naturally</td><td>Use the answer</td></tr>
+      <tr><td><code>max_tokens</code></td><td>Cut off at your cap</td><td>Treat as truncated: never parse it as complete JSON; raise the cap or ask for less</td></tr>
+      <tr><td><code>stop_sequence</code></td><td>Hit one of your stop strings</td><td>Expected if you set them</td></tr>
+      <tr><td><code>tool_use</code></td><td>Model wants you to run a tool</td><td>Run it and send a <code>tool_result</code> (tool-use lesson)</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Tokens are your unit of cost and latency</h3>
+  <p><code>usage</code> reports <code>input_tokens</code>, <code>output_tokens</code>, and with prompt caching <code>cache_creation_input_tokens</code> and <code>cache_read_input_tokens</code>. Pricing is per million tokens (MTok): Claude Sonnet 5.5 is $2 input / $10 output, Haiku 4.5 is $1 / $5, Opus 5.5 is $4 / $20. Output tokens cost five times input and are also what you wait for, because the model produces them one at a time. A classification that returns 60 tokens is fast; a 2,000-token explanation is not.</p>
+
+  <h3>Streaming is server-sent events, like a reactive Flux</h3>
+  <p>With streaming the API sends SSE events as tokens are produced: <code>message_start</code>, then per content block a <code>content_block_start</code>, many <code>content_block_delta</code> events (each with a <code>text_delta</code>), <code>content_block_stop</code>, then <code>message_delta</code> (final <code>stop_reason</code> and usage) and <code>message_stop</code>. There are also <code>ping</code> events. In Java terms, it is a <code>Flux&lt;String&gt;</code> where each element is a chunk of text. The user sees the first words in well under a second instead of waiting for the full answer, which is why every chat UI streams.</p>
+  <div class="callout warn"><b>Errors can arrive after HTTP 200</b><p>Once a stream has started, an overload shows up as an SSE <code>error</code> event with <code>{"type": "overloaded_error"}</code>, not as an HTTP 529. Your streaming code must handle an error mid-stream, and a retry after the first token would duplicate text on the client.</p></div>
+
+  <h3>Structured output: from "please reply in JSON" to a schema</h3>
+  <p>The old approach was to ask for JSON in the prompt and hope. The API now supports structured outputs: you pass a JSON schema in <code>output_config.format</code> and the model's reply is constrained to it. The Python SDK wraps this as <code>client.messages.parse(..., output_format=MyPydanticModel)</code> and gives you <code>response.parsed_output</code>. Spring AI's <code>.entity(MyRecord.class)</code> derives a JSON schema from your record (via <code>BeanOutputConverter</code>) and maps the reply back with Jackson. It is the same idea as <code>@RequestBody</code> binding, but on the model's output.</p>
+  <p>Schema limits matter: objects need <code>additionalProperties: false</code>, and numeric or string-length constraints like <code>minimum</code> or <code>maxLength</code> are not enforced by the API (the SDK moves them into descriptions and validates locally). Enums are supported, which is what you want for labels such as risk levels.</p>
+
+  <h3>Errors you must plan for</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>HTTP</th><th>type</th><th>Retry?</th></tr></thead>
+    <tbody>
+      <tr><td>400</td><td><code>invalid_request_error</code></td><td>No. Fix the request (bad schema, unsupported parameter, conversation not ending with a user turn).</td></tr>
+      <tr><td>401 / 403</td><td><code>authentication_error</code> / <code>permission_error</code></td><td>No. Page someone.</td></tr>
+      <tr><td>413</td><td><code>request_too_large</code></td><td>No. The Messages API limit is 32 MB.</td></tr>
+      <tr><td>429</td><td><code>rate_limit_error</code></td><td>Yes, with backoff, honouring <code>retry-after</code>. A spend-cap 429 has no <code>retry-after</code> and will keep failing.</td></tr>
+      <tr><td>500</td><td><code>api_error</code></td><td>Yes, with exponential backoff</td></tr>
+      <tr><td>504</td><td><code>timeout_error</code></td><td>Yes, but prefer streaming for long outputs</td></tr>
+      <tr><td>529</td><td><code>overloaded_error</code></td><td>Yes, with backoff and jitter; consider falling back to another model</td></tr>
+    </tbody>
+  </table></div>
+  <p>The official SDKs already retry connection errors, 429 and 5xx twice by default with exponential backoff and honour <code>retry-after</code>. You tune that with <code>max_retries</code> (Python) or <code>spring.ai.anthropic.max-retries</code> (Spring AI). Every response also carries a <code>request-id</code> header; in Python it is <code>message._request_id</code>. Log it: it is what support asks for.</p>
+
+  <h3>One modern-model gotcha</h3>
+  <p>On the newest Claude models (Sonnet 5.5, Opus 5.5), <code>temperature</code> and <code>top_p</code> are deprecated and only the default is accepted, assistant-message prefill returns a 400, and forced tool choice (<code>any</code>/<code>tool</code>) is not supported. Older tutorials that set <code>temperature=0</code> or prefill <code>{</code> to force JSON will fail. Use structured outputs instead, and control depth and cost with <code>output_config.effort</code> (<code>low</code>, <code>medium</code>, <code>high</code>, …).</p>
+
+  <h2 id="handson"><span class="n">03</span>Step-by-step hands-on</h2>
+
+  <h3>Step 1: set up a Python project with uv</h3>
+  <pre><code>uv init clause-llm &amp;&amp; cd clause-llm
+uv add anthropic pydantic
+export ANTHROPIC_API_KEY=sk-ant-...   # never commit this; in prod use a secret manager</code></pre>
+  <p><code>uv</code> plays the role of Gradle here: it creates a virtual environment, pins versions in <code>uv.lock</code>, and <code>uv run file.py</code> runs inside it.</p>
+
+  <h3>Step 2: first call, with latency and token logging</h3>
+  <pre><code>import logging
+import time
+
+import anthropic
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("llm")
+
+client = anthropic.Anthropic(max_retries=3, timeout=60.0)  # reads ANTHROPIC_API_KEY
+
+SYSTEM = "You are a contracts analyst at an e-signing company. Answer in at most three sentences."
+
+start = time.perf_counter()
+message = client.messages.create(
+    model="claude-sonnet-5-5",
+    max_tokens=512,
+    system=SYSTEM,
+    messages=[{"role": "user", "content": "What does a limitation of liability clause do?"}],
+)
+latency_ms = (time.perf_counter() - start) * 1000
+
+text = "".join(block.text for block in message.content if block.type == "text")
+print(text)
+u = message.usage
+log.info(
+    "request_id=%s model=%s stop=%s in=%d out=%d cache_read=%s latency_ms=%.0f",
+    message._request_id, message.model, message.stop_reason,
+    u.input_tokens, u.output_tokens, u.cache_read_input_tokens, latency_ms,
+)</code></pre>
+  <p>Run <code>uv run first_call.py</code>. Expected output (wording will differ):</p>
+  <pre><code>A limitation of liability clause caps how much one party can recover from the other ...
+2026-10-07 10:15:02 INFO request_id=req_011C... model=claude-sonnet-5-5 stop=end_turn in=38 out=71 cache_read=0 latency_ms=2140</code></pre>
+  <p>Notes: <code>max_retries=3</code> and <code>timeout=60.0</code> are client-level, like configuring a <code>RestClient</code> bean once. Concatenate every <code>text</code> block rather than assuming <code>content[0]</code> is text; later the first block may be <code>thinking</code> or <code>tool_use</code>.</p>
+
+  <h3>Step 3: streaming, with time to first token</h3>
+  <pre><code>import time
+
+import anthropic
+
+client = anthropic.Anthropic()
+
+start = time.perf_counter()
+first_token_ms = None
+with client.messages.stream(
+    model="claude-sonnet-5-5",
+    max_tokens=1024,
+    system="You explain contract clauses to non-lawyers.",
+    messages=[{"role": "user", "content": "Explain an indemnity clause with one example."}],
+) as stream:
+    for text in stream.text_stream:
+        if first_token_ms is None:
+            first_token_ms = (time.perf_counter() - start) * 1000
+        print(text, end="", flush=True)
+    final = stream.get_final_message()
+
+total_ms = (time.perf_counter() - start) * 1000
+print(f"\n\nttft_ms={first_token_ms:.0f} total_ms={total_ms:.0f} "
+      f"in={final.usage.input_tokens} out={final.usage.output_tokens} stop={final.stop_reason}")</code></pre>
+  <p>Expected: text appears progressively, then a line like <code>ttft_ms=610 total_ms=5480 in=31 out=290 stop=end_turn</code>. <code>get_final_message()</code> returns the same <code>Message</code> object a non-streaming call would, so you still get usage. TTFT is the number users feel; total latency is what your thread pool feels.</p>
+
+  <h3>Step 4: prompt templates</h3>
+  <p>Keep prompts as named, versioned constants, and fill them through a function that fails if a variable is missing. Wrap user content in XML-style tags so the model can tell instructions from data.</p>
+  <pre><code>from string import Template
+
+CLASSIFY_V2 = Template("""Classify the contract clause below.
+
+&lt;clause id="$clause_id"&gt;
+$clause_text
+&lt;/clause&gt;
+
+Return the clause type and a risk level for the party "$party".""")
+
+
+def render_classify(clause_id: str, clause_text: str, party: str) -&gt; str:
+    # substitute() raises KeyError on a missing variable: fail loudly, never send a half-filled prompt
+    return CLASSIFY_V2.substitute(clause_id=clause_id, clause_text=clause_text.strip(), party=party)
+
+
+if __name__ == "__main__":
+    out = render_classify("c-17", "  The Supplier's total liability shall not exceed fees paid in 12 months. ", "Customer")
+    assert '&lt;clause id="c-17"&gt;' in out and "$" not in out
+    try:
+        CLASSIFY_V2.substitute(clause_id="x")
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass
+    print(out)</code></pre>
+  <p><code>uv run templates.py</code> prints the rendered prompt and the self-check passes. In real projects, store the template id (<code>CLASSIFY_V2</code>) in your logs so you can correlate quality regressions with prompt changes.</p>
+
+  <h3>Step 5: structured output into a Pydantic model</h3>
+  <pre><code>from typing import Literal
+
+import anthropic
+from pydantic import BaseModel, Field
+
+
+class ClauseRisk(BaseModel):
+    clause_type: Literal["limitation_of_liability", "indemnity", "termination",
+                         "confidentiality", "governing_law", "other"]
+    risk: Literal["low", "medium", "high"]
+    reason: str = Field(description="One sentence citing the words that drive the risk")
+
+
+client = anthropic.Anthropic()
+
+clause = ("The Customer shall indemnify the Supplier against all losses, without limit, "
+          "arising from any use of the Service.")
+
+response = client.messages.parse(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=512,
+    system="You classify contract clauses for the Customer's legal team.",
+    messages=[{"role": "user", "content": f"&lt;clause&gt;{clause}&lt;/clause&gt;"}],
+    output_format=ClauseRisk,
+)
+result: ClauseRisk = response.parsed_output
+print(result.model_dump_json(indent=2))
+print(response.usage.input_tokens, response.usage.output_tokens)</code></pre>
+  <p>Expected output:</p>
+  <pre><code>{
+  "clause_type": "indemnity",
+  "risk": "high",
+  "reason": "The Customer gives an uncapped indemnity ('without limit') for any use of the Service."
+}
+212 48</code></pre>
+  <p>Using <code>Literal[...]</code> becomes a JSON-schema <code>enum</code>, so the model cannot invent a label like <code>"very high"</code>. Pydantic still validates on the way in; think of it as Bean Validation on the model's reply. Haiku 4.5 is plenty for classification and costs half of Sonnet 5.5.</p>
+
+  <h3>Step 6: retries beyond the SDK</h3>
+  <p>For an interactive request, the SDK's built-in retries are enough: raise <code>max_retries</code> a little and set a timeout. For a batch job that classifies 50,000 clauses overnight, wrap calls in an outer backoff with full jitter so that, after an overload, thousands of workers do not retry in lockstep:</p>
+  <pre><code>import logging
+import random
+import time
+from typing import Callable, TypeVar
+
+import anthropic
+import httpx
+
+T = TypeVar("T")
+log = logging.getLogger("llm.retry")
+
+RETRYABLE = (anthropic.RateLimitError, anthropic.OverloadedError,
+             anthropic.InternalServerError, anthropic.APIConnectionError)
+
+
+def with_backoff(call: Callable[[], T], attempts: int = 5, base: float = 1.0, cap: float = 30.0,
+                 sleep: Callable[[float], None] = time.sleep) -&gt; T:
+    """Outer retry for batch jobs, on top of the SDK's own retries. Full jitter, honours retry-after."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except RETRYABLE as e:
+            if attempt == attempts:
+                raise
+            delay = random.uniform(0, min(cap, base * 2 ** (attempt - 1)))
+            response = getattr(e, "response", None)
+            retry_after = response.headers.get("retry-after") if response is not None else None
+            if retry_after and retry_after.isdigit():
+                delay = max(delay, float(retry_after))
+            log.warning("attempt=%d error=%s sleeping=%.2fs", attempt, type(e).__name__, delay)
+            sleep(delay)
+    raise AssertionError("unreachable")
+
+
+if __name__ == "__main__":
+    # Offline self-check: fake a 529 twice, then succeed. No API key, no network.
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = httpx.Response(529, request=req, headers={"retry-after": "2"})
+    calls, slept = [], []
+
+    def flaky() -&gt; str:
+        calls.append(1)
+        if len(calls) &lt; 3:
+            raise anthropic.OverloadedError("Overloaded", response=overloaded, body=None)
+        return "ok"
+
+    assert with_backoff(flaky, sleep=slept.append) == "ok"
+    assert len(calls) == 3 and all(s &gt;= 2 for s in slept), slept
+    print("calls:", len(calls), "sleeps:", slept)</code></pre>
+  <p><code>uv run backoff.py</code> runs an offline self-check (no key needed): two fake 529s, then success, with sleeps of at least the <code>retry-after</code> value.</p>
+  <pre><code>attempt=1 error=OverloadedError sleeping=2.00s
+attempt=2 error=OverloadedError sleeping=2.00s
+calls: 3 sleeps: [2.0, 2.0]</code></pre>
+  <div class="callout warn"><b>Retry amplification</b><p>SDK retries (3) inside an outer loop (5) inside a caller that also retries (3) means up to 4 × 5 × 3 = 60 requests for one user action during an outage. Retry at one layer only, cap total time, and add a concurrency limit for batch jobs. This is the same rule you apply to Feign or WebClient chains between microservices.</p></div>
+
+  <h3>Step 7: the same service in Spring Boot with Spring AI</h3>
+  <p>Spring AI 2.0 targets Spring Boot 4.0/4.1 and talks to Claude through the official Anthropic Java SDK. Dependencies (Gradle Kotlin DSL):</p>
+  <pre><code>dependencies {
+    implementation(platform("org.springframework.ai:spring-ai-bom:2.0.1"))
+    implementation("org.springframework.boot:spring-boot-starter-web")
+    implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.springframework.ai:spring-ai-starter-model-anthropic")
+}</code></pre>
+  <p>Configuration:</p>
+  <pre><code>spring:
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      timeout: 60s
+      max-retries: 3            # SDK-level retries: 429, 5xx, 529, connection errors; honours retry-after
+      chat:
+        model: claude-sonnet-5-5
+        max-tokens: 1024
+logging:
+  level:
+    org.springframework.ai.chat.client.advisor: DEBUG   # only if you add SimpleLoggerAdvisor</code></pre>
+  <p>The output type, a plain record with enums:</p>
+  <pre><code>package com.example.clauses;
+
+public record ClauseRisk(ClauseType clauseType, Risk risk, String reason) {
+
+    public enum ClauseType { LIMITATION_OF_LIABILITY, INDEMNITY, TERMINATION, CONFIDENTIALITY, GOVERNING_LAW, OTHER }
+
+    public enum Risk { LOW, MEDIUM, HIGH }
+}</code></pre>
+  <p>The service. <code>ChatClient.Builder</code> is auto-configured; you build one <code>ChatClient</code> with a default system prompt and reuse it (it is thread-safe, like <code>RestClient</code>).</p>
+  <pre><code>package com.example.clauses;
+
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import com.anthropic.errors.AnthropicIoException;
+import com.anthropic.errors.AnthropicServiceException;
+import com.anthropic.errors.InternalServerException;
+import com.anthropic.errors.RateLimitException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.resilience.annotation.Retryable;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.util.retry.Retry;
+
+@Service
+public class ClauseAiService {
+
+    private static final Logger log = LoggerFactory.getLogger(ClauseAiService.class);
+
+    // Prompt template, versioned in code. {placeholders} are filled with .param(): never concatenate user text in.
+    static final String CLASSIFY_V2 = """
+            Classify the contract clause below for the party {party}.
+            &lt;clause id="{clauseId}"&gt;
+            {clauseText}
+            &lt;/clause&gt;
+            """;
+
+    private final ChatClient chatClient;
+
+    public ClauseAiService(ChatClient.Builder builder) {
+        this.chatClient = builder
+                .defaultSystem("You are a contracts analyst at an e-signing company. Be precise and brief.")
+                .build();
+    }
+
+    // Structured output: Spring AI derives a JSON schema from the record and maps the reply onto it.
+    // Outer retry for longer outages; SDK retries (max-retries) already run inside each attempt.
+    @Retryable(includes = {RateLimitException.class, InternalServerException.class},
+            maxRetries = 2, delay = 2000, multiplier = 2, maxDelay = 10000, jitter = 500)
+    public ClauseRisk classify(String clauseId, String clauseText, String party) {
+        long start = System.nanoTime();
+        ClauseRisk risk = chatClient.prompt()
+                .user(u -&gt; u.text(CLASSIFY_V2)
+                        .param("clauseId", clauseId)
+                        .param("clauseText", clauseText)
+                        .param("party", party))
+                .call()
+                .entity(ClauseRisk.class);
+        log.info("llm.classify prompt=CLASSIFY_V2 clauseId={} latencyMs={}", clauseId, (System.nanoTime() - start) / 1_000_000);
+        return risk;
+    }
+
+    // chatResponse() keeps the metadata: model, token usage, rate-limit info.
+    public String summarise(String clauseText) {
+        long start = System.nanoTime();
+        ChatResponse response = chatClient.prompt()
+                .user(u -&gt; u.text("Summarise this clause for a non-lawyer in two sentences:\n{text}").param("text", clauseText))
+                .call()
+                .chatResponse();
+        Usage usage = response.getMetadata().getUsage();
+        log.info("llm.summarise model={} inTokens={} outTokens={} latencyMs={}", response.getMetadata().getModel(),
+                usage.getPromptTokens(), usage.getCompletionTokens(), (System.nanoTime() - start) / 1_000_000);
+        return response.getResult().getOutput().getText();
+    }
+
+    // Streaming: a Flux of text chunks. Retry only if nothing was sent yet, or the client sees duplicated text.
+    public Flux&lt;String&gt; explain(String clauseText) {
+        AtomicBoolean started = new AtomicBoolean();
+        return chatClient.prompt()
+                .user(u -&gt; u.text("Explain this clause to a non-lawyer, with one example:\n{text}").param("text", clauseText))
+                .stream()
+                .content()
+                .doOnNext(chunk -&gt; started.set(true))
+                .retryWhen(Retry.backoff(2, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(8))
+                        .filter(e -&gt; !started.get() &amp;&amp; isTransient(e)));
+    }
+
+    static boolean isTransient(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof AnthropicServiceException ase) {
+                int status = ase.statusCode();
+                return status == 429 || status &gt;= 500;   // 529 overloaded is &gt;= 500
+            }
+            if (t instanceof AnthropicIoException) {
+                return true;
+            }
+        }
+        return false;
+    }
+}</code></pre>
+  <p>What each method shows:</p>
+  <ul>
+    <li><b>classify</b>: a template with <code>{placeholders}</code> filled by <code>.param()</code>, and <code>.entity(ClauseRisk.class)</code> for typed output. Spring Framework 7's <code>@Retryable</code> adds an outer retry with exponential backoff and jitter. <code>includes</code> matches the thrown exception type; if your Spring AI version wraps SDK exceptions, list the wrapper type, or simply rely on <code>max-retries</code>.</li>
+    <li><b>summarise</b>: <code>.chatResponse()</code> instead of <code>.content()</code> keeps the metadata, so you can log <code>getPromptTokens()</code> and <code>getCompletionTokens()</code> along with the model and latency.</li>
+    <li><b>explain</b>: <code>.stream().content()</code> returns <code>Flux&lt;String&gt;</code>. Reactor's <code>retryWhen</code> retries only if no chunk has been emitted yet.</li>
+  </ul>
+  <p>The controller, with Bean Validation at the trust boundary (cap clause length so one request cannot send a 32 MB prompt), and the configuration that switches on <code>@Retryable</code>:</p>
+  <pre><code>package com.example.clauses;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
+import org.springframework.resilience.annotation.EnableResilientMethods;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+
+@RestController
+@RequestMapping("/api/clauses")
+public class ClauseController {
+
+    public record ClauseRequest(@NotBlank String clauseId, @NotBlank @Size(max = 20_000) String clauseText,
+                                @NotBlank String party) { }
+
+    private final ClauseAiService ai;
+
+    public ClauseController(ClauseAiService ai) {
+        this.ai = ai;
+    }
+
+    @PostMapping("/classify")
+    public ClauseRisk classify(@Valid @RequestBody ClauseRequest req) {
+        return ai.classify(req.clauseId(), req.clauseText(), req.party());
+    }
+
+    @PostMapping(value = "/explain", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux&lt;String&gt; explain(@Valid @RequestBody ClauseRequest req) {
+        return ai.explain(req.clauseText());
+    }
+
+    @Configuration
+    @EnableResilientMethods
+    static class ResilienceConfig { }
+}</code></pre>
+  <p>Run and test:</p>
+  <pre><code>./gradlew bootRun
+
+curl -s localhost:8080/api/clauses/classify -H 'content-type: application/json' \
+  -d '{"clauseId":"c-9","party":"Customer","clauseText":"Either party may terminate on 7 days notice without cause."}'
+# {"clauseType":"TERMINATION","risk":"MEDIUM","reason":"Seven days' notice without cause gives the Customer little time to transition."}
+
+curl -N localhost:8080/api/clauses/explain -H 'content-type: application/json' \
+  -d '{"clauseId":"c-9","party":"Customer","clauseText":"Either party may terminate on 7 days notice without cause."}'
+# data:This clause means ...
+# data: either side can end ...</code></pre>
+  <div class="callout tip"><b>Production logging checklist</b><ul>
+    <li>Log: request id, model, prompt template id and version, input/output/cache tokens, TTFT, total latency, <code>stop_reason</code>, retry count, tenant id (from the JWT, never from the request body).</li>
+    <li>Do not log raw contract text or personal data by default; log a hash or the document id instead.</li>
+    <li>Export tokens and latency as Micrometer metrics with model and template tags; alert on the rate of <code>max_tokens</code> stops and 429s.</li>
+  </ul></div>
+
+  <h2 id="interview"><span class="n">04</span>How this shows up in interviews</h2>
+  <details class="qa"><summary>Why stream, and what do you measure?</summary><p>Streaming cuts perceived latency: the user reads the first words after TTFT (often under a second) instead of waiting for the whole generation. Measure TTFT, total latency, and output tokens per second separately. Streaming also avoids idle-connection timeouts on long outputs, which is why the docs recommend it for large <code>max_tokens</code>.</p></details>
+  <details class="qa"><summary>What is the difference between 429 and 529, and how do you handle each?</summary><p>429 <code>rate_limit_error</code> means your organisation hit its own limit (requests, tokens, or spend). Back off honouring <code>retry-after</code>, smooth traffic with a client-side limiter, and if it is a spend cap, stop retrying. 529 <code>overloaded_error</code> means the API is overloaded for everyone. Back off with jitter and, for user-facing paths, consider a fallback model. Both are retried by the SDK by default.</p></details>
+  <details class="qa"><summary>Is retrying an LLM call safe? Is it idempotent?</summary><p>A plain generation has no side effects, so retrying is safe for correctness, but it is not idempotent in output (you may get different text) and you pay for every attempt that produced tokens. If the call drives side effects (tool calls that write data), make those tools idempotent with keys. Never retry a stream after tokens have reached the client.</p></details>
+  <details class="qa"><summary>How do you get reliable JSON out of a model?</summary><p>Use structured outputs with a JSON schema (<code>output_config.format</code>, or <code>messages.parse</code> with a Pydantic model; <code>.entity()</code> in Spring AI), use enums for labels, still validate on receipt, and check <code>stop_reason</code> is not <code>max_tokens</code>. Prompt-only "reply in JSON" is a fallback, not a design.</p></details>
+  <details class="qa"><summary>Your LLM endpoint p99 is 12 seconds. What do you look at?</summary><p>Output token count first (latency scales with output), then model choice (Haiku for classification), effort level, prompt size (input tokens add prefill time; use prompt caching for a large stable prefix), retries hidden inside the SDK (log retry count), and whether the client could stream. Then set a timeout and a fallback.</p></details>
+  <details class="qa"><summary>What would you log for every LLM call?</summary><p>Request id, model, prompt template version, tenant, input/output/cache tokens, TTFT and total latency, stop reason, retry count, and the outcome of validation. That lets you compute cost per tenant and per feature, and debug regressions after a prompt change.</p></details>
+  <details class="qa"><summary>Why does a multi-turn chat get more expensive per turn?</summary><p>The API is stateless, so every turn resends all earlier turns as input tokens. Cost per turn grows roughly linearly with conversation length. Mitigate with prompt caching of the stable prefix, summarising old turns, or trimming history.</p></details>
+  <details class="qa"><summary>How is ChatClient different from calling the SDK directly?</summary><p>ChatClient is a portable, fluent API on top of a provider's <code>ChatModel</code>: templates with params, advisors (logging, memory, RAG), tools, structured output via converters, and Micrometer observations. The cost is an abstraction layer that may lag new provider features; for those, provider-specific options (for example <code>AnthropicChatOptions</code> with effort or output schema) or the raw SDK are available.</p></details>
+  <details class="qa"><summary>A teammate sets temperature=0 for deterministic output and gets a 400. Why?</summary><p>On the newest Claude models, temperature and top_p are deprecated and only the default value is accepted. Even where temperature works, 0 does not guarantee identical outputs. For consistency, use structured outputs, clear instructions with examples, and evaluation on a fixed test set.</p></details>
+
+  <h2 id="exercise"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <p>The capstone is a contract Q&amp;A service plus a risky-clause flagger. This lesson gives you its first two endpoints.</p>
+  <ol>
+    <li>In your capstone Spring Boot service, add <code>POST /api/clauses/classify</code> returning <code>ClauseRisk</code>, and <code>POST /api/clauses/explain</code> streaming text.</li>
+    <li>Write 10 sample clauses (two each of liability cap, uncapped indemnity, termination for convenience, auto-renewal, governing law) with the label you expect. Write a Python script that calls your endpoint for each and prints accuracy. This is your first golden set; the evals lesson builds on it.</li>
+    <li>Log the fields in the checklist above, and compute cost per 1,000 classifications from the logged tokens for both Haiku 4.5 and Sonnet 5.5.</li>
+    <li>Kill your network for a few seconds mid-batch and confirm the batch completes without duplicate writes and without more than one retry layer firing.</li>
+  </ol>
+  <p><b>Done when:</b> both endpoints work, accuracy is at least 9/10 on your golden set, and you can state the cost per 1,000 calls and your p95 TTFT from your own logs.</p>
+
+  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://platform.claude.com/docs/en/api/messages" target="_blank" rel="noopener">Claude API reference: Messages</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/streaming" target="_blank" rel="noopener">Streaming messages (SSE event types, error events)</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/structured-outputs" target="_blank" rel="noopener">Structured outputs (output_config.format, messages.parse)</a></li>
+    <li><a href="https://platform.claude.com/docs/en/api/errors" target="_blank" rel="noopener">API errors, request ids and SDK retries</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/effort" target="_blank" rel="noopener">Effort parameter</a></li>
+    <li><a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Pricing</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/chatclient.html" target="_blank" rel="noopener">Spring AI ChatClient</a> and <a href="https://docs.spring.io/spring-ai/reference/api/chat/anthropic-chat.html" target="_blank" rel="noopener">Anthropic chat</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/structured-output/converters.html" target="_blank" rel="noopener">Spring AI structured output converters</a></li>
+    <li><a href="https://docs.spring.io/spring-framework/reference/core/resilience.html" target="_blank" rel="noopener">Spring Framework resilience: @Retryable, @ConcurrencyLimit</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="learn-prompt-engineering.html">Prompt engineering</a> · <a href="learn-llm-fundamentals.html">LLM fundamentals</a> · <a href="learn-tool-use.html">Tool use</a></span></div>
+</div>
+</body>
+</html>

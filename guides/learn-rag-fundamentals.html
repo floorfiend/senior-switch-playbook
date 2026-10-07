@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>RAG Fundamentals</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · AI engineering</span></div>
+  <h1>RAG fundamentals, end to end</h1>
+  <p class="lede">Retrieval-augmented generation (RAG) is a search engine whose results go into the prompt. You will build the whole pipeline (load, chunk, embed, store, retrieve, assemble, generate) in about 100 lines of Python that run offline. On the way you learn the chunking, similarity and top-k decisions that interviewers ask you to defend.</p>
+  <div class="facts">
+    <span class="fact"><b>Time:</b> 4 hours</span>
+    <span class="fact"><b>Stack:</b> Python + numpy (offline), Voyage AI embeddings, Claude</span>
+    <span class="fact"><b>Asked at:</b> 5 companies in the reports</span>
+  </div>
+  <div class="chips"><span class="chip hot">Adobe</span><span class="chip hot">Mastercard</span><span class="chip">Teradata</span><span class="chip">Avaamo</span><span class="chip">Equinix</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#outcomes">What you'll be able to do</a></li>
+    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#handson">Hands-on: an offline pipeline</a></li>
+    <li><a href="#interviews">How it shows up in interviews</a></li>
+    <li><a href="#exercise">Capstone checkpoint</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <ul>
+    <li>Draw the seven-stage RAG pipeline and say what can go wrong at each stage.</li>
+    <li>Choose a chunking strategy (fixed, recursive, semantic, structure-aware) and defend the chunk size and overlap you picked.</li>
+    <li>Explain embeddings and cosine similarity well enough to compute them with numpy, and say why <code>input_type</code> matters.</li>
+    <li>Pick top-k and a score threshold, and assemble a prompt that makes the model cite its sources.</li>
+    <li>Split contracts by clause number (structure-aware chunking) so each chunk keeps its clause id and section.</li>
+    <li>Recognise when you do not need RAG at all.</li>
+  </ul>
+
+  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
+
+  <h3>Why RAG exists</h3>
+  <p>Claude knows nothing about your tenants' contracts. You have three options. Paste everything into the prompt, which works until the corpus is too large or too expensive. Fine-tune, which teaches style, not facts, and is stale the day after. Or <b>retrieve</b> the few relevant passages per question and paste only those. RAG is the third option. Think of it as an Elasticsearch query whose hits go into the prompt instead of being rendered on a results page.</p>
+
+  <div class="callout info"><b>First question to ask: is RAG needed at all?</b><p>Anthropic's own guidance in its contextual retrieval write-up: if the knowledge base is under about 200,000 tokens (roughly 500 pages), put the whole thing in the prompt and use prompt caching. One 80-page master services agreement (MSA) does not need a vector DB. Ten thousand tenants' contract libraries do.</p></div>
+
+  <h3>The pipeline</h3>
+  <div class="flow">
+    <span class="node">Load<small>PDF → text</small></span><span class="arrow">→</span>
+    <span class="node">Chunk<small>clauses</small></span><span class="arrow">→</span>
+    <span class="node">Embed<small>input_type=document</small></span><span class="arrow">→</span>
+    <span class="node store">Store<small>vector + metadata</small></span>
+  </div>
+  <div class="flow">
+    <span class="node">Question</span><span class="arrow">→</span>
+    <span class="node">Embed<small>input_type=query</small></span><span class="arrow">→</span>
+    <span class="node hl">Retrieve<small>top-k, tenant filter</small></span><span class="arrow">→</span>
+    <span class="node">Assemble<small>XML + citations</small></span><span class="arrow">→</span>
+    <span class="node hl">Generate<small>Claude</small></span>
+  </div>
+  <p class="flow-caption">Figure: the ingestion path (top) runs offline, like a Kafka consumer reacting to "document uploaded". The query path (bottom) runs per request and is bound by latency.</p>
+  <div class="tbl"><table>
+    <tr><th>Stage</th><th>What it does</th><th>Java analogy</th></tr>
+    <tr><td>Load</td><td>Extract text and metadata (page, title, tenant) from PDF/DOCX</td><td>Apache Tika / PDFBox in an ingestion consumer</td></tr>
+    <tr><td>Chunk</td><td>Split into retrievable units</td><td>Deciding the granularity of an index document</td></tr>
+    <tr><td>Embed</td><td>Text → fixed-length float vector</td><td>A hash function where similar inputs land close together</td></tr>
+    <tr><td>Store</td><td>Vector + text + metadata, with an approximate-nearest-neighbour (ANN) index</td><td>A Postgres table with a special index (pgvector)</td></tr>
+    <tr><td>Retrieve</td><td>Nearest neighbours to the query vector, filtered</td><td><code>ORDER BY distance LIMIT k</code> with a <code>WHERE tenant_id = ?</code></td></tr>
+    <tr><td>Assemble</td><td>Build the prompt from the hits, with ids for citation</td><td>A template engine (Thymeleaf for prompts)</td></tr>
+    <tr><td>Generate</td><td>LLM answers from the context only</td><td>The downstream service call</td></tr>
+  </table></div>
+
+  <h3>Embeddings and similarity</h3>
+  <p>An embedding model maps text to a vector, for example 1,024 floats, so that texts with similar meaning point in similar directions. "Liability cap" and "aggregate liability shall not exceed" share almost no words, yet their vectors end up close together. That is the advantage over keyword search. The cost is that exact identifiers ("clause 12.2", "C-1042") are often matched <em>worse</em> than by keyword search, which is why <a href="learn-better-retrieval.html">hybrid search</a> exists.</p>
+  <p>Cosine similarity measures the angle between two vectors: <code>cos(a, b) = (a · b) / (|a| |b|)</code>. It ranges from −1 to 1, and higher means more similar. When vectors are normalised to length 1, as Voyage embeddings are, cosine similarity equals the dot product, and Euclidean distance gives the same ranking. So the choice of metric matters less than people think, <em>provided</em> you use the one the model was trained for and you build your index with the matching operator class.</p>
+  <div class="tbl"><table>
+    <tr><th>Metric</th><th>Formula</th><th>pgvector operator</th><th>Use when</th></tr>
+    <tr><td>Cosine distance</td><td>1 − cos(a, b)</td><td><code>&lt;=&gt;</code></td><td>Default for text embeddings</td></tr>
+    <tr><td>Inner product</td><td>a · b (pgvector returns the negative)</td><td><code>&lt;#&gt;</code></td><td>Normalised vectors; slightly cheaper</td></tr>
+    <tr><td>Euclidean (L2)</td><td>|a − b|</td><td><code>&lt;-&gt;</code></td><td>Model trained for L2; same ranking as cosine on unit vectors</td></tr>
+  </table></div>
+
+  <h3>Choosing an embedding model</h3>
+  <p>Anthropic does not offer an embedding model. Its docs point to Voyage AI. Current Voyage text models: <code>voyage-4-large</code> (best quality), <code>voyage-4</code> (balanced), <code>voyage-4-lite</code> (cheapest, lowest latency), each with 32k context and 1,024 dimensions by default (256/512/2048 also available). There is also the domain model <code>voyage-law-2</code> (16k context, 1,024 dimensions), which is the natural one to benchmark for contracts. Things that matter in practice:</p>
+  <ul>
+    <li><b>Same model for documents and queries.</b> Vectors from different models are not comparable. Changing model means re-embedding the corpus, so store <code>embedding_model</code> as a column.</li>
+    <li><b><code>input_type</code>.</b> Pass <code>"document"</code> at ingestion and <code>"query"</code> at search time. Voyage prepends a different instruction for each, which improves retrieval. Never omit it.</li>
+    <li><b>Dimensions vs cost.</b> 1,024 float32 values take 4 KB per chunk. 10M chunks is about 40 GB before the index. Smaller output dimensions or quantisation trade a little recall for a lot of RAM.</li>
+    <li><b>Language and domain.</b> Indian contracts mix English with Hindi terms and statute references. Evaluate on <em>your</em> golden set, not on a public leaderboard.</li>
+  </ul>
+
+  <h3>Chunking strategies</h3>
+  <div class="grid">
+    <div class="card"><h4>Fixed-size</h4><p>Every N tokens with M overlap. Simple and predictable. It cuts clauses mid-sentence, so "shall not exceed" ends up in one chunk and the amount in the next.</p></div>
+    <div class="card"><h4>Recursive</h4><p>Try to split on paragraphs, then on lines, then on sentences, then on characters, until each chunk fits. A good default for prose (LangChain's RecursiveCharacterTextSplitter; Spring AI's <code>TokenTextSplitter</code>, which defaults to 800 tokens, is a simpler token-based relative).</p></div>
+    <div class="card"><h4>Semantic</h4><p>Embed each sentence and start a new chunk where similarity to the previous sentence drops. Better topic boundaries, but ingestion costs more and the results are harder to debug.</p></div>
+    <div class="card"><h4>Structure-aware</h4><p>Split on the document's own structure: headings, numbered clauses, table rows. For contracts this is the clear winner. One clause per chunk, with clause number and section heading as metadata.</p></div>
+  </div>
+
+  <h3>Chunk size and overlap trade-offs</h3>
+  <div class="tbl"><table>
+    <tr><th>Smaller chunks (100–300 tokens)</th><th>Larger chunks (800–1,500 tokens)</th></tr>
+    <tr><td>Precise vectors: one idea per chunk, so it matches sharply</td><td>Vectors average several ideas, so matches are blurrier</td></tr>
+    <tr><td>Lose context: "the cap in 12.1" without 12.1</td><td>Keep context: definitions and carve-outs travel together</td></tr>
+    <tr><td>Need a larger k to cover an answer</td><td>Fewer chunks fill the context budget faster</td></tr>
+    <tr><td>More rows and a bigger index</td><td>Fewer rows, more tokens per prompt</td></tr>
+  </table></div>
+  <p>A sensible starting point is 300–800 tokens with 10–20% overlap for prose, or one clause per chunk for contracts with no overlap. Overlap patches over boundary cuts. Structure-aware splitting removes most of those cuts, so you rarely need overlap there. Then <em>measure</em> recall@k on a golden set and tune. Chunk size is a hyperparameter, not a belief.</p>
+
+  <h3>Top-k and thresholds</h3>
+  <p>k is how many chunks you pass to the model. Too small and you miss the carve-out in 12.2 that changes the answer. Too large and you pay for tokens, add latency, and bury the answer in noise ("lost in the middle"). Typical values are k = 3–8 straight from the vector search, or retrieve 20–50 and <a href="learn-better-retrieval.html">rerank</a> down to 5. Add a minimum similarity score so an out-of-domain question returns <em>nothing</em> and the model says "not in the documents" instead of answering from loosely related clauses.</p>
+
+  <h2 id="handson"><span class="n">03</span>Step-by-step hands-on</h2>
+
+  <h3>Step 1: set up</h3>
+  <pre><code>uv venv &amp;&amp; source .venv/bin/activate
+uv pip install numpy anthropic voyageai
+# Everything below runs offline. API keys are only needed for the last step.</code></pre>
+
+  <h3>Step 2: structure-aware chunking for contracts</h3>
+  <p>Contracts number their clauses. Use that numbering. The regex matches headings like <code>12</code>, <code>12.1</code> or <code>12.1.3</code> at the start of a line. Each match runs until the next heading. Bare section headings ("12. Limitation of Liability") are not stored as chunks; they become <code>section</code> metadata on their sub-clauses. Oversized clauses fall back to splitting on paragraphs.</p>
+  <pre><code>import re
+
+# A clause heading: line start, number like 12 or 12.1 or 12.1.3, then a title or text.
+HEADING = re.compile(r"^(?P&lt;no&gt;\d+(?:\.\d+)*)\.?\s+(?P&lt;title&gt;[^\n]+)$", re.MULTILINE)
+
+
+def split_clauses(doc_id: str, text: str, max_chars: int = 1500) -&gt; list[dict]:
+    matches = list(HEADING.finditer(text))
+    chunks = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 &lt; len(matches) else len(text)
+        body = text[m.start():end].strip()
+        if "\n" not in body and "." not in m.group("no"):
+            continue  # bare section heading like "12. Limitation of Liability": kept as metadata only
+        top = m.group("no").split(".")[0]
+        parent = next((x.group("title") for x in matches if x.group("no") == top), "")
+        # ponytail: oversize clauses are cut on blank lines only; add sentence split if clauses run long
+        parts = [body] if len(body) &lt;= max_chars else [p for p in body.split("\n\n") if p.strip()]
+        for j, part in enumerate(parts):
+            chunks.append({
+                "id": f"{doc_id}#{m.group('no')}" + (f"-{j}" if len(parts) &gt; 1 else ""),
+                "clause_no": m.group("no"),
+                "section": parent,
+                "text": part,
+            })
+    return chunks
+
+
+MSA = """1. Definitions
+"Services" means the e-signing services described in Schedule A.
+12. Limitation of Liability
+12.1 Neither party's aggregate liability shall exceed the fees paid in the twelve months preceding the claim.
+12.2 The cap in 12.1 does not apply to breach of confidentiality or indemnity obligations.
+14. Termination
+14.1 Either party may terminate for convenience on ninety (90) days' written notice.
+"""
+
+if __name__ == "__main__":
+    for c in split_clauses("MSA-acme", MSA):
+        print(f"{c['id']:&lt;16} section={c['section']!r:&lt;28} {c['text'][:48]!r}")</code></pre>
+  <pre><code>$ python clause_splitter.py
+MSA-acme#1       section='Definitions'                '1. Definitions\n"Services" means the e-signing se'
+MSA-acme#12.1    section='Limitation of Liability'    "12.1 Neither party's aggregate liability shall e"
+MSA-acme#12.2    section='Limitation of Liability'    '12.2 The cap in 12.1 does not apply to breach of'
+MSA-acme#14.1    section='Termination'                '14.1 Either party may terminate for convenience '</code></pre>
+  <p>Each chunk carries a stable id (<code>doc#clause</code>) for citations and idempotent re-ingestion (upsert on id), plus metadata to filter and display. In production you also add <code>tenant_id</code>, <code>contract_id</code>, <code>page</code>, <code>effective_date</code> and <code>embedding_model</code>.</p>
+
+  <h3>Step 3: the whole pipeline, offline</h3>
+  <p>To run without any API, <code>fake_embed</code> hashes words into a 256-dimensional bag-of-words vector and normalises it. It is a stand-in that shows the mechanics: normalise, then dot product equals cosine similarity, then argsort, then top-k. It is not semantic. The in-memory store is a list of vectors; pgvector replaces it in the <a href="learn-pgvector.html">next lesson</a>. The section heading is embedded together with the clause text, a small form of "contextual" chunk enrichment.</p>
+  <pre><code>"""Offline RAG pipeline: load -&gt; chunk -&gt; embed -&gt; store -&gt; retrieve -&gt; assemble -&gt; generate."""
+import hashlib
+import os
+import re
+
+import numpy as np
+
+from clause_splitter import MSA, split_clauses
+
+DIM = 256
+
+
+def fake_embed(text: str) -&gt; np.ndarray:
+    # ponytail: hashed bag-of-words stands in for a real model; swap for Voyage in production
+    v = np.zeros(DIM)
+    for word in re.findall(r"[a-z]+", text.lower()):
+        v[int(hashlib.md5(word.encode()).hexdigest(), 16) % DIM] += 1.0
+    n = np.linalg.norm(v)
+    return v / n if n else v
+
+
+class InMemoryStore:
+    def __init__(self):
+        self.vectors, self.chunks = [], []
+
+    def add(self, chunks):
+        for c in chunks:
+            self.vectors.append(fake_embed(c["section"] + " " + c["text"]))
+            self.chunks.append(c)
+
+    def search(self, query: str, k: int = 3, min_score: float = 0.1):
+        q = fake_embed(query)
+        scores = np.array(self.vectors) @ q  # unit vectors: dot product == cosine similarity
+        top = np.argsort(-scores)[:k]
+        return [(float(scores[i]), self.chunks[i]) for i in top if scores[i] &gt;= min_score]
+
+
+def assemble_prompt(question: str, hits) -&gt; str:
+    docs = "\n".join(
+        f'&lt;source id="{c["id"]}" clause="{c["clause_no"]}"&gt;\n{c["text"]}\n&lt;/source&gt;' for _, c in hits
+    )
+    return (
+        f"&lt;sources&gt;\n{docs}\n&lt;/sources&gt;\n\n"
+        f"&lt;question&gt;{question}&lt;/question&gt;\n\n"
+        "Answer only from the sources. Cite every claim as [source id]. "
+        "If the sources do not contain the answer, say so."
+    )
+
+
+def generate(prompt: str) -&gt; str:
+    import anthropic
+
+    resp = anthropic.Anthropic().messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        system="You answer questions about contracts for a legal team.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.content[0].text
+
+
+if __name__ == "__main__":
+    store = InMemoryStore()
+    store.add(split_clauses("MSA-acme", MSA))  # load + chunk + embed + store
+    question = "What is the liability cap and are there exceptions?"
+    hits = store.search(question, k=3)  # retrieve
+    for score, c in hits:
+        print(f"{score:.3f}  {c['id']}")
+    prompt = assemble_prompt(question, hits)  # assemble
+    print(prompt)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print(generate(prompt))  # generate</code></pre>
+  <p>Actual output:</p>
+  <pre><code>$ python toy_rag.py
+0.304  MSA-acme#12.1
+0.298  MSA-acme#12.2
+0.250  MSA-acme#1
+&lt;sources&gt;
+&lt;source id="MSA-acme#12.1" clause="12.1"&gt;
+12.1 Neither party's aggregate liability shall exceed the fees paid in the twelve months preceding the claim.
+&lt;/source&gt;
+&lt;source id="MSA-acme#12.2" clause="12.2"&gt;
+12.2 The cap in 12.1 does not apply to breach of confidentiality or indemnity obligations.
+&lt;/source&gt;
+&lt;source id="MSA-acme#1" clause="1"&gt;
+1. Definitions
+"Services" means the e-signing services described in Schedule A.
+&lt;/source&gt;
+&lt;/sources&gt;
+
+&lt;question&gt;What is the liability cap and are there exceptions?&lt;/question&gt;
+
+Answer only from the sources. Cite every claim as [source id]. If the sources do not contain the answer, say so.</code></pre>
+  <p>Read the scores critically, as an interviewer would. Both liability clauses rank on top, which is good: 12.2 is the carve-out, and without it the answer would be wrong. But the Definitions clause got in at 0.250 only because it shares words like "the" and "services". That is the <b>noise in top-k</b> failure mode in miniature. Fixes: a higher <code>min_score</code>, a real semantic embedding, stop-word-free keyword search in a hybrid setup, or a reranker. Raise <code>min_score</code> to 0.27 and rerun to watch it drop out.</p>
+
+  <h3>Step 4: real embeddings with Voyage</h3>
+  <pre><code>import voyageai
+
+vo = voyageai.Client()  # reads VOYAGE_API_KEY
+
+chunks = ["12.1 Neither party's aggregate liability shall exceed the fees paid...",
+          "14.1 Either party may terminate for convenience on ninety (90) days' notice."]
+doc_vectors = vo.embed(chunks, model="voyage-law-2", input_type="document").embeddings
+query_vector = vo.embed(["What is the liability cap?"], model="voyage-law-2", input_type="query").embeddings[0]
+print(len(doc_vectors), len(query_vector))  # 2 1024</code></pre>
+  <p>Replace <code>fake_embed</code> with these calls: <code>input_type="document"</code> in <code>add</code>, <code>input_type="query"</code> in <code>search</code>. Batch the document calls (many texts per request) during ingestion. Voyage vectors are already unit length, so the dot product in <code>search</code> stays correct.</p>
+
+  <h3>Step 5: prompt assembly that makes citations work</h3>
+  <ul>
+    <li><b>Wrap each source in XML tags with an id.</b> Claude handles XML-tagged structure well, and an id lets you require <code>[MSA-acme#12.2]</code>-style citations that your UI can turn into links to the PDF page.</li>
+    <li><b>Instruct a refusal path.</b> "If the sources do not contain the answer, say so." Without it, the model fills gaps from its training data. In legal work that counts as a hallucination.</li>
+    <li><b>Put sources first and the question last.</b> Long context goes above the instruction.</li>
+    <li><b>Validate citations after generation.</b> Every cited id must be one you supplied. Strip or flag answers that cite ids you did not provide.</li>
+    <li><b>Keep tenant data in the user turn, not the system prompt.</b> Retrieved text is untrusted, because a counterparty wrote it. It must not carry the authority of system instructions.</li>
+  </ul>
+
+  <h3>Step 6: generate</h3>
+  <p><code>generate()</code> in <code>toy_rag.py</code> sends the assembled prompt to <code>claude-haiku-4-5-20251001</code> (cheap and fast; $1/$5 per million input/output tokens) when <code>ANTHROPIC_API_KEY</code> is set. Swap in <code>claude-sonnet-5-5</code> ($2/$10) for harder reasoning over several clauses. A RAG call with k = 5 chunks of 400 tokens plus instructions is about 2,500 input tokens, which costs fractions of a cent per question on either model.</p>
+
+  <h3>Failure modes</h3>
+  <div class="tbl"><table>
+    <tr><th>Symptom</th><th>Root cause</th><th>Fix</th></tr>
+    <tr><td>Answer misses an exception or carve-out</td><td>Chunk boundary split the clause; k too small</td><td>Structure-aware chunks; larger k plus rerank; retrieve neighbouring clauses</td></tr>
+    <tr><td>Retrieved "clause 12.2" is the wrong clause</td><td>Embeddings are weak on exact ids and numbers</td><td>Hybrid search with keyword matching; metadata filter on <code>clause_no</code></td></tr>
+    <tr><td>Chunk says "the Company" and never names it</td><td>Chunk lost its document context</td><td>Prepend doc title or section; contextual retrieval (next lessons)</td></tr>
+    <tr><td>Confident answer to an out-of-scope question</td><td>Always returns top-k, even when nothing is relevant</td><td>Score threshold plus an explicit "not in the sources" instruction</td></tr>
+    <tr><td>Tenant B sees tenant A's clause</td><td>Filter applied after retrieval, or missing</td><td><code>WHERE tenant_id = :jwtTenant</code> inside the vector query; row-level security; partitioning</td></tr>
+    <tr><td>Stale answer after a contract amendment</td><td>Re-ingestion did not delete old chunks</td><td>Upsert by stable chunk id; version column; delete-then-insert in one transaction</td></tr>
+    <tr><td>Recall drops after adding the ANN index</td><td>Filtering happens after the index scan (HNSW <code>ef_search</code> = 40)</td><td>Iterative index scans, partial indexes or partitioning (see the pgvector lesson)</td></tr>
+    <tr><td>Garbage text from scanned PDFs</td><td>No OCR; headers and footers repeated on every chunk</td><td>OCR step; strip running headers before chunking</td></tr>
+  </table></div>
+
+  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <details class="qa"><summary>Explain RAG end to end. (Asked almost everywhere.)</summary><p>Offline: load documents, chunk them, embed each chunk, store vector + text + metadata in a vector index. Online: embed the query with the same model, retrieve the top-k nearest chunks with tenant and metadata filters, assemble them into the prompt with ids, generate an answer that cites those ids, then validate the citations. Each stage has its own failure modes and its own metric.</p></details>
+  <details class="qa"><summary>How do you choose chunk size and overlap?</summary><p>Start from the document structure: for contracts, one clause per chunk with its section heading as metadata. For prose, 300–800 tokens with 10–20% overlap. Then tune on a golden set of question → expected-chunk pairs, measuring recall@k and answer faithfulness. Smaller chunks give sharper vectors but less context; larger chunks give more context but blurrier matches and more tokens.</p></details>
+  <details class="qa"><summary>Cosine similarity vs dot product vs Euclidean?</summary><p>Cosine compares direction only. Dot product also includes magnitude. On unit-normalised vectors, cosine equals the dot product, and Euclidean gives the same ranking. Use the metric the embedding model was trained for, and build the index with the matching operator class, or the index will not be used.</p></details>
+  <details class="qa"><summary>How do you pick k?</summary><p>Enough to cover multi-part answers (the clause plus its carve-out), bounded by token cost and the dilution effect. In practice: retrieve 20–50 candidates cheaply, rerank to 3–8, and apply a minimum score so irrelevant questions get no context.</p></details>
+  <details class="qa"><summary>How do you choose an embedding model?</summary><p>Benchmark candidates on my own labelled queries, not on a leaderboard. Consider domain (voyage-law-2 for contracts), language mix, dimensions × corpus size for RAM, latency and price, and whether it supports query/document input types. The model version is stored per row because switching means re-embedding everything.</p></details>
+  <details class="qa"><summary>RAG vs fine-tuning vs long context?</summary><p>Under about 200k tokens of knowledge: put it in the prompt with prompt caching. For large or frequently changing private data with citations and per-user access control: RAG. Fine-tuning changes behaviour and format, not facts, and does not respect access control. You cannot "un-train" one tenant's contract.</p></details>
+  <details class="qa"><summary>How do you stop hallucinations in a RAG answer?</summary><p>Retrieval quality first: if the right chunk is not in context, nothing downstream helps. Then: instruct the model to answer only from the sources and say when it cannot; require citations; validate that cited ids exist; apply a score threshold; and run faithfulness checks in offline evals. Structured citations make every claim auditable.</p></details>
+  <details class="qa"><summary>How do you enforce multi-tenant isolation in retrieval?</summary><p>The tenant id comes from the JWT and goes inside the vector query as a <code>WHERE</code> filter, not as post-filtering in Java. Back it with Postgres row-level security or per-tenant partitions, so a bug in one query cannot leak data across tenants.</p></details>
+  <details class="qa"><summary>A user says the bot missed an obvious clause. How do you debug?</summary><p>Replay the query and log the retrieved ids and scores. Was the clause chunked correctly? Is it in the index and up to date? Where does it rank, and what does the query embedding match instead? Was it filtered out? Then look at the prompt and generation. Most "LLM bugs" in RAG turn out to be retrieval or ingestion bugs.</p></details>
+
+  <h2 id="exercise"><span class="n">05</span>Exercise: capstone checkpoint (contract Q&amp;A)</h2>
+  <ol>
+    <li>Take 3 real-looking contracts (an MSA, an NDA and a DPA, written by you or from public templates) and run them through <code>split_clauses</code>. Print the chunk count and the longest chunk.</li>
+    <li>Write a golden set of 15 questions, each with the expected chunk ids. Include a two-clause answer (cap plus carve-out), an exact-id question ("what does 14.1 say?") and an out-of-scope question.</li>
+    <li>Implement <code>recall_at_k(golden, k)</code> using <code>fake_embed</code>, then with Voyage (<code>voyage-4</code> and <code>voyage-law-2</code>). Record recall@3 and recall@5 for each in a table.</li>
+    <li>Add <code>tenant_id</code> to chunk metadata and make <code>search</code> filter by it <em>before</em> scoring. Write an assert that tenant B never sees tenant A's chunks.</li>
+    <li>With an API key: generate answers and check that every <code>[id]</code> in each answer is in the supplied sources.</li>
+  </ol>
+  <div class="callout tip"><b>Done when</b><p>You have a recall table comparing three embedding setups, the out-of-scope question gets no sources above the threshold, and the tenant-isolation assert passes. Keep the golden set: the pgvector, better-retrieval and evals lessons reuse it.</p></div>
+
+  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/embeddings" target="_blank" rel="noopener">Embeddings (Claude docs): Voyage models, dimensions, input_type, normalisation</a></li>
+    <li><a href="https://www.anthropic.com/news/contextual-retrieval" target="_blank" rel="noopener">Introducing Contextual Retrieval (Anthropic): chunk context loss, the 200k-token "skip RAG" guidance</a></li>
+    <li><a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude pricing (Haiku 4.5, Sonnet 5.5)</a></li>
+    <li><a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener">pgvector README: distance operators, filtering, hybrid search</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/etl-pipeline.html" target="_blank" rel="noopener">Spring AI ETL pipeline: PagePdfDocumentReader, TokenTextSplitter (Java equivalent of this pipeline)</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-pgvector.html">pgvector hands-on</a> · <a href="learn-better-retrieval.html">Better retrieval</a> · <a href="ai-rag-enterprise-qa.html">RAG system design</a></span></div>
+</div>
+</body>
+</html>

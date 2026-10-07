@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Whiteboard Your System</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · Career</span></div>
+  <h1>Whiteboard your own system</h1>
+  <p class="lede">The hiring-manager project deep-dive is where many SDE-2 candidates who cleared coding get rejected. This lesson gives you a 10-minute walkthrough structure, the numbers you must know, the diagrams to draw, and prepared answers to "what breaks at 100×" and "what would you do differently", using a generic e-signing service as the worked example.</p>
+  <div class="facts">
+    <span class="fact"><b>Time-box:</b> 10 min talk + 30–40 min probing</span>
+    <span class="fact"><b>Round:</b> HM / project deep-dive / bar raiser</span>
+  </div>
+  <div class="chips"><span class="chip hot">Blinkit</span><span class="chip hot">CRED</span><span class="chip hot">Slice</span><span class="chip hot">Freshworks</span><span class="chip">Amazon</span><span class="chip">Uber</span><span class="chip">Atlassian</span><span class="chip">Razorpay</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#graded">What's graded</a></li>
+    <li><a href="#structure">The 10-minute structure</a></li>
+    <li><a href="#numbers">Numbers to know</a></li>
+    <li><a href="#example">Worked example: e-signing service</a></li>
+    <li><a href="#diagrams">Diagrams to draw</a></li>
+    <li><a href="#scale">At 100× what breaks first</a></li>
+    <li><a href="#differently">What would you do differently</a></li>
+    <li><a href="#probes">Probing questions</a></li>
+    <li><a href="#prep">Prep worksheet</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <ul>
+    <li><b>Depth of understanding</b>: can you go from the API down to the index, the transaction boundary and the Kafka partition key without hand-waving?</li>
+    <li><b>Ownership</b>: did you make the decisions or just implement them? They test this with "why" questions on each box.</li>
+    <li><b>Judgement</b>: alternatives you considered and why you rejected them.</li>
+    <li><b>Scale thinking</b>: real numbers now, and a credible view of what fails at 10× and 100×.</li>
+    <li><b>Self-critique</b>: honest answers on what you would change. Defensiveness is a red flag.</li>
+    <li><b>Communication</b>: a clear structure, a diagram, no internal jargon the interviewer cannot follow.</li>
+  </ul>
+  <div class="callout warn"><b>Why candidates fail this round</b><p>Reports from Blinkit, CRED, Slice and Freshworks show the same pattern: candidates describe features instead of architecture, cannot give a single scale number, say "the team decided" for every choice, or freeze on "what would you change?". All four are fixable in a weekend of preparation.</p></div>
+
+  <h2 id="structure"><span class="n">02</span>The 10-minute structure</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">0:00–1:00</span><span><b>Context.</b> The business problem, who uses it, your role ("I own this service and am on call for it").</span></div>
+    <div class="step"><span class="t">1:00–3:00</span><span><b>Architecture.</b> Draw the boxes: clients, gateway, your services, datastores, queues, external vendors. Point at your part.</span></div>
+    <div class="step"><span class="t">3:00–4:30</span><span><b>APIs.</b> 3–4 key endpoints and one event, with idempotency where it matters.</span></div>
+    <div class="step"><span class="t">4:30–6:00</span><span><b>Data model.</b> The 3–4 core tables, keys, indexes, partitioning, tenant isolation.</span></div>
+    <div class="step"><span class="t">6:00–7:30</span><span><b>Async flows.</b> One end-to-end flow through queues, retries, DLQ, consistency guarantees.</span></div>
+    <div class="step"><span class="t">7:30–8:30</span><span><b>Scale numbers.</b> RPS, p99, data size, tenants, availability, cost.</span></div>
+    <div class="step"><span class="t">8:30–10:00</span><span><b>Your decisions.</b> Two or three choices you made, the alternatives, and the outcome. End with "happy to go deeper anywhere".</span></div>
+  </div>
+  <p>Practise until you can do it in 10 minutes without notes. Many interviewers interrupt after 3–4 minutes; the structure lets you resume cleanly.</p>
+
+  <h2 id="numbers"><span class="n">03</span>Numbers to know</h2>
+  <p>Pull these from your dashboards before any interview. Round them, but know where they come from. If you do not know one, say how you would find it; never invent.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Number</th><th>Example (illustrative)</th><th>Follow-up you should expect</th></tr></thead>
+    <tbody>
+      <tr><td>Peak and average RPS per service</td><td class="num">avg 150, peak 1,200 RPS (month-end)</td><td>What drives the peak? How did you size for it?</td></tr>
+      <tr><td>p50 / p99 latency of key APIs</td><td class="num">p50 60ms, p99 280ms</td><td>Where does the p99 go? DB, vendor, GC?</td></tr>
+      <tr><td>Daily volume of the core entity</td><td class="num">15K documents/day, 45K signers</td><td>Growth rate? Busiest tenant?</td></tr>
+      <tr><td>Data size and growth</td><td class="num">audit table 180M rows, +6M/month; 40TB in S3</td><td>Retention? Partitioning? Archive?</td></tr>
+      <tr><td>Tenants and skew</td><td class="num">1,500 tenants; top 10 = 60% of volume</td><td>Noisy neighbour handling?</td></tr>
+      <tr><td>Availability / SLO</td><td class="num">99.95% monthly (~22 min downtime budget)</td><td>Last breach? Error budget policy?</td></tr>
+      <tr><td>Kafka throughput / partitions</td><td class="num">300 msg/s, 12 partitions, key = documentId</td><td>Ordering guarantees? Consumer lag alerts?</td></tr>
+      <tr><td>Infra footprint and cost</td><td class="num">6 pods × 2 vCPU; RDS r6g.xlarge</td><td>Biggest cost line? How would you cut it?</td></tr>
+      <tr><td>Incidents</td><td class="num">2 P1s last year; MTTR 35 min</td><td>Most recent RCA?</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout tip"><b>Back-of-envelope sanity check</b><p>15K documents/day ÷ 86,400 s ≈ 0.17 docs/s on average. Each document creates ~3 signers × ~8 API calls + ~20 audit events, so ~80 writes/document ≈ 14 writes/s average. A month-end peak of 10× is 140 writes/s: comfortable for one Postgres primary. Being able to do this live shows you understand your own system's headroom.</p></div>
+
+  <h2 id="example"><span class="n">04</span>Worked example: a generic e-signing service</h2>
+  <h3>Context (1 minute)</h3>
+  <p>"We run a multi-tenant e-signing platform for banks, NBFCs and enterprises. A tenant uploads a document, defines signers and order, signers receive links, sign with OTP/Aadhaar e-sign/DSC, and every action is recorded in a tamper-evident audit trail that serves as legal evidence. I own the signing workflow and audit services and I'm on call for both."</p>
+  <h3>Architecture</h3>
+  <div class="flow">
+    <span class="node">Tenant app / API client</span><span class="arrow">→</span>
+    <span class="node">API Gateway<small>JWT, tenant, rate limit</small></span><span class="arrow">→</span>
+    <span class="node">Document Service<small>upload, pre-signed URL</small></span><span class="arrow">→</span>
+    <span class="node store">S3<small>originals + signed PDFs</small></span>
+  </div>
+  <div class="flow">
+    <span class="node hl">Signing Workflow Service<small>state machine, owner</small></span><span class="arrow">→</span>
+    <span class="node store">PostgreSQL<small>workflows, signers, outbox</small></span><span class="arrow">→<small>relay</small></span>
+    <span class="node store">Kafka<small>workflow-events</small></span>
+  </div>
+  <div class="flow">
+    <span class="node store">Kafka<small>workflow-events</small></span><span class="arrow">→</span>
+    <span class="node hl">Audit Service<small>hash-chained log</small></span>
+    <span class="node">Notification Service<small>email, SMS, WhatsApp</small></span>
+    <span class="node">Webhook Dispatcher<small>tenant callbacks</small></span>
+    <span class="node">Billing<small>usage events</small></span>
+  </div>
+  <p class="flow-caption">Figure: document upload → signer workflow → events fan out to audit, notifications, webhooks and billing. Highlighted boxes are "mine".</p>
+  <h3>APIs</h3>
+  <pre><code>POST /v1/documents                       -&gt; 201 {documentId, uploadUrl}   (pre-signed S3 PUT)
+POST /v1/workflows                       Idempotency-Key: &lt;uuid&gt;
+     {documentId, signers:[{name, email, order, authMode}], expiresAt}
+     -&gt; 201 {workflowId, status:"IN_PROGRESS"}
+POST /v1/workflows/{id}/signers/{sid}/sign   {otpToken, signatureImage, position}
+     -&gt; 200 {status, nextSigner}
+GET  /v1/workflows/{id}/audit           -&gt; 200 [{seq, event, actor, ip, ts, hash, prevHash}]
+
+Event: workflow-events (key = workflowId)
+     {eventId, tenantId, workflowId, type:"SIGNER_COMPLETED", signerId, version, ts}</code></pre>
+  <h3>Data model</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Table</th><th>Key fields</th><th>Indexes / notes</th></tr></thead>
+    <tbody>
+      <tr><td>workflow</td><td>id, tenant_id, document_id, status, version, expires_at</td><td>(tenant_id, status, created_at); <code>version</code> for optimistic locking</td></tr>
+      <tr><td>signer</td><td>id, workflow_id, order_no, status, auth_mode, signed_at</td><td>(workflow_id, order_no) unique</td></tr>
+      <tr><td>audit_event</td><td>id, tenant_id, workflow_id, seq, type, actor, payload, hash, prev_hash</td><td>monthly range partitions on created_at; (tenant_id, workflow_id, seq); append-only, no UPDATE grant</td></tr>
+      <tr><td>outbox</td><td>id, aggregate_id, type, payload, created_at, published_at</td><td>partial index where published_at is null</td></tr>
+      <tr><td>idempotency_key</td><td>tenant_id, key, request_hash, response, expires_at</td><td>PK (tenant_id, key); TTL cleanup job</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Async flow: signer completes</h3>
+  <ol>
+    <li>Sign request validates the OTP token, then in <b>one DB transaction</b>: update signer status, bump workflow version (optimistic lock: <code>UPDATE … WHERE id=? AND version=?</code>), insert the outbox row.</li>
+    <li>The outbox relay (polling every 200ms, or Debezium CDC) publishes to Kafka with key = workflowId so all events of a workflow stay ordered on one partition.</li>
+    <li>Audit service consumes, computes <code>hash = SHA-256(prevHash + event)</code>, appends; deduplicates on eventId.</li>
+    <li>Notification service notifies the next signer; vendor failures go to retry topics with backoff (1m, 5m, 30m), then a DLQ with an alert.</li>
+    <li>When the last signer completes, a PDF-stamping job applies the final signature and certificate, stores the signed PDF in S3, and emits WORKFLOW_COMPLETED for webhooks and billing.</li>
+  </ol>
+  <h3>Your decisions (pick two or three)</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Decision</th><th>Alternatives considered</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Transactional outbox</td><td>Dual write; XA; CDC directly on business tables</td><td>Atomic with the state change, no XA support needed, simple to operate; CDC as a later upgrade.</td></tr>
+      <tr><td>Optimistic locking on workflow</td><td>SELECT FOR UPDATE; Redis lock</td><td>Conflicts are rare (two signers rarely act on the same workflow at the same ms); no lock held across the OTP verify call.</td></tr>
+      <tr><td>Hash-chained audit, append-only</td><td>Plain table; blockchain/ledger DB</td><td>Tamper evidence for court admissibility at low cost; verification job re-walks chains nightly.</td></tr>
+      <tr><td>Pre-signed S3 upload</td><td>Multipart upload through the app</td><td>Removes file bytes from app pods, halves memory, uploads scale with S3 not with pods.</td></tr>
+      <tr><td>Per-tenant rate limit at gateway</td><td>Global limit; none</td><td>One bank's bulk send once degraded everyone; token bucket per tenant in Redis.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="diagrams"><span class="n">05</span>Diagrams to draw</h2>
+  <div class="grid">
+    <div class="card"><h4>1. Component diagram</h4><p>Always. Boxes and arrows, sync vs async marked, datastores dashed, your ownership highlighted.</p></div>
+    <div class="card"><h4>2. Sequence of one flow</h4><p>Signer completes → DB txn → outbox → Kafka → consumers. Shows you understand ordering and failure points.</p></div>
+    <div class="card"><h4>3. State machine</h4><p>CREATED → IN_PROGRESS → (SIGNER_n_DONE)* → COMPLETED / EXPIRED / DECLINED / VOIDED. Interviewers love asking about illegal transitions.</p></div>
+    <div class="card"><h4>4. Data model sketch</h4><p>3–4 tables with keys and the one or two indexes that matter.</p></div>
+  </div>
+  <p>Practise drawing them in Excalidraw (most virtual rounds) and on paper. Use a consistent legend: solid arrow = sync HTTP, dashed arrow = async event.</p>
+
+  <h2 id="scale"><span class="n">06</span>"At 100× scale, what breaks first?"</h2>
+  <p>A senior answer ranks the bottlenecks by when they bite and names the fix for each. For the example: 100× means ~1.5M documents/day and ~14K writes/s at peak.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Order</th><th>What breaks</th><th>Symptom</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Postgres primary write throughput and connection count</td><td>Pool exhaustion, replication lag, p99 spikes</td><td>PgBouncer; move audit to its own DB/cluster; shard workflows by tenant_id (Citus or app-level) with large tenants isolated.</td></tr>
+      <tr><td class="num">2</td><td>Audit table size</td><td>Index bloat, slow vacuum, slow audit reads</td><td>Shorter partitions, cold partitions to S3 (Parquet) with a query path; or a write-optimised store for audit.</td></tr>
+      <tr><td class="num">3</td><td>Outbox relay</td><td>Growing outbox lag, delayed notifications</td><td>Switch polling to CDC (Debezium), multiple relays partitioned by aggregate hash.</td></tr>
+      <tr><td class="num">4</td><td>External vendors (SMS/e-sign/Aadhaar)</td><td>Throttling, 429s, cost explosion</td><td>Per-vendor rate limits, multi-vendor routing with fallback, batching where allowed.</td></tr>
+      <tr><td class="num">5</td><td>PDF processing CPU</td><td>Stamping queue backlog at month-end</td><td>Separate autoscaled worker pool off a queue, KEDA on lag; pre-render templates.</td></tr>
+      <tr><td class="num">6</td><td>Noisy-neighbour tenants</td><td>One bank's bulk job hurts all</td><td>Per-tenant quotas at every tier, separate Kafka topics/consumer groups for bulk, cell-based isolation for top tenants.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout info"><b>Phrase it like this</b><p>"The first thing to break is the Postgres primary: at 14K writes/s we'd be beyond a comfortable single-node envelope and well beyond our connection budget. I'd first split audit onto its own cluster because it's 70% of writes and append-only, then shard workflows by tenant. Kafka would be fine with more partitions. The vendors would be the next real constraint, and that's a commercial as much as a technical problem."</p></div>
+
+  <h2 id="differently"><span class="n">07</span>"What would you do differently?"</h2>
+  <p>Have three honest answers ready: one design choice, one process choice, one thing you would keep. Never say "nothing".</p>
+  <ul>
+    <li><b>Design:</b> "I'd have introduced the outbox from day one. We spent six months debugging lost events from dual writes."</li>
+    <li><b>Design:</b> "I'd model the workflow as an explicit state machine with a transitions table from the start; ad hoc status checks caused illegal transitions."</li>
+    <li><b>Operability:</b> "We added per-tenant metrics late. Today I'd tag every metric and log with tenantId from the first commit."</li>
+    <li><b>Process:</b> "I'd write a one-page design doc even for 'small' changes. The Redis rate limiter had a race we'd have caught in review of a doc."</li>
+    <li><b>What I'd keep:</b> "Hash-chained audit. Cheap, simple, and it held up in a customer's legal review."</li>
+  </ul>
+
+  <h2 id="probes"><span class="n">08</span>Probing questions to rehearse</h2>
+  <details class="qa"><summary>How do you guarantee a signer can't sign twice?</summary><p>Signer row status check plus optimistic lock on the workflow version inside one transaction; the sign endpoint also accepts an idempotency key, so retries return the original response rather than a conflict.</p></details>
+  <details class="qa"><summary>How do you make consumers idempotent?</summary><p>Each event carries a unique eventId; consumers record processed IDs in a table with a unique constraint in the same transaction as their side effect (or use natural keys like (workflowId, seq) for audit). Duplicates hit the constraint and are skipped.</p></details>
+  <details class="qa"><summary>What if Kafka is down?</summary><p>The sign request still commits because the outbox row is in the same DB transaction. The relay retries; events are delayed, not lost. We alert on outbox age above 60 seconds.</p></details>
+  <details class="qa"><summary>How is tenant isolation enforced?</summary><p>tenantId comes from the JWT, never from request parameters; repositories always filter by tenant (Hibernate filter or explicit clause), and integration tests assert cross-tenant reads return 404. For the largest tenants, separate rate limits and in future separate cells.</p></details>
+  <details class="qa"><summary>How would anyone detect audit tampering?</summary><p>Each row stores hash(prevHash + canonical event). A nightly job recomputes chains per workflow; any mismatch alerts. Periodic anchoring of daily root hashes to an external timestamping service makes even DBA-level tampering detectable.</p></details>
+  <details class="qa"><summary>Why Postgres and not MongoDB/DynamoDB?</summary><p>Strong transactional guarantees for the state change + outbox, relational queries for tenant reporting, and team expertise. Volume is well within Postgres limits. DynamoDB becomes interesting only if we shard massively and can live without cross-entity transactions.</p></details>
+  <details class="qa"><summary>What's the p99 dominated by?</summary><p>Answer from your dashboards. In the example: the OTP verification call to the vendor (~150ms) and the transaction commit. We moved non-critical work (notifications, webhooks) off the request path.</p></details>
+  <details class="qa"><summary>What was your personal contribution versus the team's?</summary><p>Be exact: "I designed and built the outbox and the audit chain, led the rate-limiter design; Priya built the notification consumers; the platform team owns the gateway."</p></details>
+
+  <h2 id="prep"><span class="n">09</span>Prep worksheet</h2>
+  <ul>
+    <li>One-sentence context and your role.</li>
+    <li>Component diagram, redrawn from memory in under 3 minutes.</li>
+    <li>Four APIs and one event, with idempotency.</li>
+    <li>Four tables with keys and indexes.</li>
+    <li>One async flow with retry/DLQ and consistency guarantee.</li>
+    <li>The nine numbers from the table above, with sources.</li>
+    <li>Three decisions with rejected alternatives.</li>
+    <li>Ranked 100× bottlenecks with fixes.</li>
+    <li>Three "do differently" answers.</li>
+    <li>A clear "I vs we" statement.</li>
+    <li>Recorded a 10-minute run-through and watched it back.</li>
+  </ul>
+  <p>Pair this with the HLD vocabulary in <a href="hld-toolkit.html">HLD toolkit</a> and the outbox/saga depth in <a href="distributed-transactions.html">Distributed transactions</a>.</p>
+
+  <h2 id="sources"><span class="n">10</span>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://microservices.io/patterns/data/transactional-outbox" target="_blank" rel="noopener">Transactional outbox pattern (microservices.io)</a></li>
+    <li><a href="https://github.com/donnemartin/system-design-primer" target="_blank" rel="noopener">System Design Primer — back-of-envelope and scaling vocabulary</a></li>
+    <li>HM deep-dive rejection pattern at Blinkit, CRED, Slice and Freshworks from the playbook's verified LeetCode Discuss interview notes.</li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="career-star-stories.html">STAR stories</a> · <a href="hld-toolkit.html">HLD toolkit</a> · <a href="distributed-transactions.html">Distributed transactions</a></span></div>
+</div>
+</body>
+</html>

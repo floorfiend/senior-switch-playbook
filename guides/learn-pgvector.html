@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>pgvector Hands-on</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · AI engineering</span></div>
+  <h1>pgvector, hands-on</h1>
+  <p class="lede">You already run Postgres in production. pgvector adds a vector column type, distance operators and two approximate indexes, so contract chunks, their embeddings, tenant ids and full-text index can live in one table under one transaction. This lesson runs it in Docker, designs the table, ingests PDFs from Python, and then does the same thing with Spring AI's <code>PgVectorStore</code>.</p>
+  <div class="facts">
+    <span class="fact"><b>Time:</b> 3–4 hours</span>
+    <span class="fact"><b>Stack:</b> Docker, Postgres 18 + pgvector 0.8.7, Python (psycopg 3), Spring AI 2.0</span>
+    <span class="fact"><b>Asked at:</b> Adobe (pgvector vs Pinecone vs Qdrant)</span>
+  </div>
+  <div class="chips"><span class="chip hot">Adobe</span><span class="chip">RAG rounds generally</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#outcomes">What you'll be able to do</a></li>
+    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#handson">Hands-on: Docker, SQL, Python, Spring AI</a></li>
+    <li><a href="#interviews">How it shows up in interviews</a></li>
+    <li><a href="#exercise">Capstone checkpoint</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <ul>
+    <li>Start Postgres with pgvector in one <code>docker run</code> and enable the extension.</li>
+    <li>Design a chunk table with tenant, document, page and model metadata, a generated <code>tsvector</code>, and the right indexes.</li>
+    <li>Choose between HNSW and IVFFlat, set <code>m</code>, <code>ef_construction</code>, <code>ef_search</code>, <code>lists</code> and <code>probes</code>, and explain the recall trade-off.</li>
+    <li>Use the six distance operators correctly, and write queries the planner can actually serve from the index.</li>
+    <li>Run filtered (per-tenant) nearest-neighbour queries without silently losing results.</li>
+    <li>Ingest contract PDFs from a Python script, idempotently.</li>
+    <li>Do the same with Spring AI <code>PgVectorStore</code>, and argue pgvector vs Pinecone vs Qdrant.</li>
+  </ul>
+
+  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
+
+  <h3>A vector column is just another column</h3>
+  <p>An embedding is a fixed-length array of floats, for example 1,024 numbers from <code>voyage-4</code>. pgvector adds a type <code>vector(n)</code> that stores it, plus operators that compute the distance between two vectors. Think of it as adding a new <code>Comparator</code> to Postgres: <code>ORDER BY embedding &lt;=&gt; :query LIMIT 5</code> means "sort rows by how far their embedding is from the query embedding and give me the closest five".</p>
+  <p>Without an index this is an exact scan: Postgres computes the distance for every row, which gives perfect recall and is fine up to tens of thousands of rows (and can use parallel workers). With an index it becomes approximate nearest-neighbour (ANN) search: much faster, but the README warns that "you will see different results for queries after adding an approximate index". That sentence is the root of most pgvector production bugs.</p>
+
+  <h3>Distance operators</h3>
+  <div class="tbl"><table>
+    <tr><th>Operator</th><th>Meaning</th><th>Index opclass</th><th>Use when</th></tr>
+    <tr><td><code>&lt;-&gt;</code></td><td>L2 (Euclidean) distance</td><td><code>vector_l2_ops</code></td><td>Model docs say L2, or image-style embeddings</td></tr>
+    <tr><td><code>&lt;#&gt;</code></td><td><b>Negative</b> inner product</td><td><code>vector_ip_ops</code></td><td>Vectors are normalised to length 1: same ranking as cosine, cheaper</td></tr>
+    <tr><td><code>&lt;=&gt;</code></td><td>Cosine distance (1 − cosine similarity)</td><td><code>vector_cosine_ops</code></td><td>Default for text embeddings; safe if you are not sure vectors are normalised</td></tr>
+    <tr><td><code>&lt;+&gt;</code></td><td>L1 (Manhattan) distance</td><td><code>vector_l1_ops</code></td><td>Rare in RAG</td></tr>
+    <tr><td><code>&lt;~&gt;</code>, <code>&lt;%&gt;</code></td><td>Hamming, Jaccard</td><td><code>bit_hamming_ops</code>, <code>bit_jaccard_ops</code></td><td>Binary vectors / binary quantisation</td></tr>
+  </table></div>
+  <p>Two traps. <code>&lt;#&gt;</code> returns the negative inner product so that "smaller is closer" holds for every operator (multiply by −1 to display it). And an index is built for one opclass: an HNSW index on <code>vector_cosine_ops</code> is useless for a query that orders by <code>&lt;-&gt;</code>. Voyage embeddings are normalised to length 1, so cosine, inner product and L2 all give the same ranking for them.</p>
+
+  <h3>HNSW vs IVFFlat, intuitively</h3>
+  <div class="grid">
+    <div class="card"><h4>HNSW (graph)</h4><p>A multi-layer "skip list of neighbours". Search starts at a sparse top layer, greedily walks towards the query, and drops a layer at a time. Like finding a house by motorway, then main road, then lane.</p><ul><li><code>m</code> = links per node (default 16)</li><li><code>ef_construction</code> = candidate list while building (default 64)</li><li><code>hnsw.ef_search</code> = candidate list while querying (default 40)</li></ul><p>Better speed/recall trade-off, slower build, more memory, no training step, so you can create it on an empty table.</p></div>
+    <div class="card"><h4>IVFFlat (clusters)</h4><p>k-means splits vectors into <code>lists</code> clusters. A query only scans the <code>probes</code> nearest clusters. Like a library: go to the right shelves, then read every book on them.</p><ul><li><code>lists</code>: start at rows/1000 (up to 1M rows), sqrt(rows) above that</li><li><code>ivfflat.probes</code>: default 1; start at sqrt(lists)</li></ul><p>Faster build, less memory, lower recall at the same speed. Must be built <b>after</b> data exists (centroids are trained from it).</p></div>
+  </div>
+  <div class="callout tip"><b>Default choice</b><p>Use HNSW with cosine for a contract corpus. Use IVFFlat only when build time or memory dominates, for example re-indexing tens of millions of vectors nightly. Both are limited to 2,000 dimensions for <code>vector</code>; <code>halfvec</code> indexes up to 4,000, and binary quantisation up to 64,000.</p></div>
+
+  <h3>The filtering problem (the senior question)</h3>
+  <p>With an approximate index, the <code>WHERE</code> clause is applied <i>after</i> the index returns candidates. The README's own arithmetic: if <code>tenant_id = 'acme'</code> matches 10% of rows and <code>ef_search</code> is 40, the index hands back about 40 candidates and only around 4 survive the filter. You asked for <code>LIMIT 10</code> and silently got 4. Fixes, in the order to try them:</p>
+  <ol>
+    <li><b>Iterative index scans</b> (0.8.0+): <code>SET hnsw.iterative_scan = strict_order</code> or <code>relaxed_order</code>. The index keeps scanning until enough rows pass the filter or it hits <code>hnsw.max_scan_tuples</code> (20,000 by default).</li>
+    <li><b>A B-tree index on the filter column</b>: for a small tenant the planner may prefer an exact scan of that tenant's rows, which is exact and fast.</li>
+    <li><b>Partial indexes</b> for a few distinct values (<code>... WHERE (clause_type = 'termination')</code>).</li>
+    <li><b>List partitioning by tenant</b>, or separate tables. The README's multitenancy note: a shared approximate index lets one tenant's vectors affect another tenant's recall and speed.</li>
+  </ol>
+
+  <h3>Why Postgres instead of a vector database</h3>
+  <p>For a Spring Boot team the argument is operational. The chunks join to <code>documents</code>, <code>tenants</code> and ACL tables you already have; inserts and deletes are transactional with the rest of your data (delete a contract and its chunks vanish in the same commit); WAL replication, PITR, backups and Flyway migrations already work. You give up the convenience of a managed, horizontally sharded ANN service, which you need only at a scale most legal-tech tenants never reach.</p>
+
+  <h2 id="handson"><span class="n">03</span>Step-by-step hands-on</h2>
+
+  <h3>Step 1: run Postgres 18 with pgvector</h3>
+  <pre><code>docker run -d --name pgvector-lab \
+  -e POSTGRES_PASSWORD=postgres -p 5432:5432 \
+  pgvector/pgvector:pg18-trixie
+
+docker exec -it pgvector-lab psql -U postgres</code></pre>
+  <pre><code>CREATE EXTENSION IF NOT EXISTS vector;
+SELECT extversion FROM pg_extension WHERE extname = 'vector';
+--  extversion
+-- ------------
+--  0.8.7</code></pre>
+
+  <h3>Step 2: design the table</h3>
+  <p>Metadata is what turns "similar text" into "similar text the user is allowed to see, from the right document, with a page to cite". Use real columns for anything you filter on; a <code>jsonb</code> column is fine for the rest.</p>
+  <pre><code>CREATE TABLE contract_chunks (
+    id              bigserial PRIMARY KEY,
+    tenant_id       text        NOT NULL,          -- from the JWT, never the request body
+    document_id     uuid        NOT NULL,
+    chunk_index     int         NOT NULL,
+    clause_type     text,                          -- termination, indemnity, ...
+    page            int,                           -- for citations
+    content         text        NOT NULL,
+    content_tsv     tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+    embedding       vector(3)   NOT NULL,          -- vector(1024) for voyage-4; 3 here so you can read it
+    embedding_model text        NOT NULL DEFAULT 'toy-3d',
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (document_id, chunk_index)              -- makes re-ingestion idempotent
+);
+
+INSERT INTO contract_chunks (tenant_id, document_id, chunk_index, clause_type, page, content, embedding) VALUES
+ ('acme',   'a0000000-0000-0000-0000-000000000001', 0, 'termination', 4,
+  'Either party may terminate this Agreement on thirty days written notice.', '[0.9,0.1,0.0]'),
+ ('acme',   'a0000000-0000-0000-0000-000000000001', 1, 'indemnity',   6,
+  'The Vendor shall indemnify the Customer against third party claims.',      '[0.1,0.9,0.1]'),
+ ('acme',   'a0000000-0000-0000-0000-000000000001', 2, 'limitation',  7,
+  'Total liability is capped at fees paid in the preceding twelve months.',  '[0.2,0.7,0.4]'),
+ ('acme',   'a0000000-0000-0000-0000-000000000002', 0, 'termination', 3,
+  'The Customer may terminate for convenience after the lock-in period.',    '[0.8,0.2,0.1]'),
+ ('globex', 'b0000000-0000-0000-0000-000000000001', 0, 'termination', 2,
+  'This lease terminates automatically on breach of payment terms.',         '[0.85,0.15,0.05]');
+
+CREATE INDEX ON contract_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX ON contract_chunks (tenant_id);
+CREATE INDEX ON contract_chunks USING gin (content_tsv);</code></pre>
+  <p>Why each column: <code>embedding_model</code> lets you re-embed with a new model side by side and never compare vectors from two models (their spaces are unrelated). <code>UNIQUE (document_id, chunk_index)</code> plus delete-then-insert in one transaction makes re-ingestion safe. <code>content_tsv</code> is there for hybrid search in the next lesson.</p>
+
+  <h3>Step 3: query it, and read the output</h3>
+  <pre><code>SELECT id, clause_type, page, round((embedding &lt;=&gt; '[1,0,0]')::numeric, 4) AS cosine_distance
+FROM contract_chunks
+WHERE tenant_id = 'acme'
+ORDER BY embedding &lt;=&gt; '[1,0,0]'
+LIMIT 3;
+
+--  id | clause_type | page | cosine_distance
+-- ----+-------------+------+-----------------
+--   1 | termination |    4 |          0.0061
+--   4 | termination |    3 |          0.0369
+--   3 | limitation  |    7 |          0.7592</code></pre>
+  <p>Chunk 5 (globex) is closer to the query than chunk 3 but never appears: the tenant filter did its job. All operators on one row, against <code>[1,0,0]</code>:</p>
+  <pre><code>SELECT embedding &lt;-&gt; '[1,0,0]' AS l2, embedding &lt;#&gt; '[1,0,0]' AS neg_inner,
+       embedding &lt;=&gt; '[1,0,0]' AS cosine_dist, 1 - (embedding &lt;=&gt; '[1,0,0]') AS cosine_sim,
+       embedding &lt;+&gt; '[1,0,0]' AS l1
+FROM contract_chunks WHERE id = 1;
+
+--  l2     0.1414   neg_inner -0.9000   cosine_dist 0.0061   cosine_sim 0.9939   l1 0.2000</code></pre>
+
+  <h3>Step 4: make sure the index is used</h3>
+  <p>The planner only uses a vector index when the query has <code>ORDER BY &lt;distance operator&gt; ASC</code> and a <code>LIMIT</code>. Ordering by an expression such as similarity disables it. Verified on the container above (with <code>enable_seqscan = off</code> so a 5-row table still shows the choice):</p>
+  <pre><code>EXPLAIN (COSTS OFF) SELECT id FROM contract_chunks ORDER BY embedding &lt;=&gt; '[1,0,0]' LIMIT 5;
+--  Limit
+--    -&gt;  Index Scan using contract_chunks_embedding_idx on contract_chunks
+--          Order By: (embedding &lt;=&gt; '[1,0,0]'::vector)
+
+EXPLAIN (COSTS OFF) SELECT id FROM contract_chunks ORDER BY 1 - (embedding &lt;=&gt; '[1,0,0]') DESC LIMIT 5;
+--  Limit
+--    -&gt;  Sort
+--          Sort Key: (('1'::double precision - (embedding &lt;=&gt; '[1,0,0]'::vector))) DESC
+--          -&gt;  Seq Scan on contract_chunks</code></pre>
+  <p>Compute similarity in the select list for display, order by the bare distance. In production use <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p>
+
+  <h3>Step 5: tune recall per query, and filter safely</h3>
+  <pre><code>BEGIN;
+SET LOCAL hnsw.ef_search = 100;              -- more candidates: better recall, slower (default 40)
+SET LOCAL hnsw.iterative_scan = relaxed_order; -- keep scanning until LIMIT rows pass the WHERE
+SELECT id, page FROM contract_chunks
+WHERE tenant_id = 'acme' AND clause_type = 'termination'
+ORDER BY embedding &lt;=&gt; '[1,0,0]' LIMIT 10;
+COMMIT;
+
+-- IVFFlat alternative (build after loading data):
+CREATE INDEX ON contract_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+SET ivfflat.probes = 10;                     -- default 1; start near sqrt(lists)
+
+-- Hard tenant isolation: one partition (and one ANN index) per large tenant
+CREATE TABLE chunks_p (tenant_id text NOT NULL, embedding vector(1024), content text)
+    PARTITION BY LIST (tenant_id);
+CREATE TABLE chunks_acme PARTITION OF chunks_p FOR VALUES IN ('acme');</code></pre>
+  <p><code>SET LOCAL</code> scopes the setting to the transaction, which matters behind a connection pool such as HikariCP: a plain <code>SET</code> leaks to the next borrower of that connection. With <code>relaxed_order</code>, results can be slightly out of distance order; wrap the query in a <code>MATERIALIZED</code> CTE and re-sort (<code>ORDER BY distance + 0</code> on Postgres 17+) if you need strict order.</p>
+
+  <h3>Step 6: ingest PDFs from Python</h3>
+  <pre><code>uv venv &amp;&amp; source .venv/bin/activate
+uv pip install "psycopg[binary]" pgvector pypdf voyageai numpy
+export VOYAGE_API_KEY=...        # Anthropic has no embedding model; its docs point to Voyage AI
+python ingest_pdfs.py acme contracts/*.pdf</code></pre>
+  <pre><code>"""Ingest contract PDFs into pgvector: python ingest_pdfs.py acme contracts/*.pdf"""
+import sys
+import uuid
+from pathlib import Path
+
+import psycopg
+import voyageai
+from pgvector.psycopg import register_vector
+from pypdf import PdfReader
+
+DSN = "postgresql://postgres:postgres@localhost:5432/postgres"
+MODEL, DIM = "voyage-4", 1024
+CHUNK_CHARS, OVERLAP = 2000, 200  # ~500 tokens, 10% overlap
+
+SCHEMA = f"""
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS contract_chunks (
+    id              bigserial PRIMARY KEY,
+    tenant_id       text        NOT NULL,
+    document_id     uuid        NOT NULL,
+    chunk_index     int         NOT NULL,
+    page            int         NOT NULL,
+    source          text        NOT NULL,
+    content         text        NOT NULL,
+    content_tsv     tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+    embedding       vector({DIM}) NOT NULL,
+    embedding_model text        NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (document_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS contract_chunks_hnsw ON contract_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS contract_chunks_tenant ON contract_chunks (tenant_id);
+CREATE INDEX IF NOT EXISTS contract_chunks_tsv ON contract_chunks USING gin (content_tsv);
+"""
+
+
+def chunk_page(text: str) -&gt; list[str]:
+    """Split one page into overlapping windows, preferring paragraph breaks."""
+    text = " ".join(text.split("\n\n")).strip()
+    chunks, start = [], 0
+    while start &lt; len(text):
+        end = min(start + CHUNK_CHARS, len(text))
+        if end &lt; len(text):  # back off to the last sentence end inside the window
+            cut = text.rfind(". ", start + CHUNK_CHARS // 2, end)
+            end = cut + 1 if cut != -1 else end
+        chunks.append(text[start:end].strip())
+        if end == len(text):
+            break
+        start = end - OVERLAP
+    return [c for c in chunks if c]
+
+
+def load_pdf(path: Path) -&gt; list[tuple[int, str]]:
+    """Return (page_number, chunk_text) pairs; page numbers are 1-based for citations."""
+    out = []
+    for page_no, page in enumerate(PdfReader(path).pages, start=1):
+        for chunk in chunk_page(page.extract_text() or ""):
+            out.append((page_no, chunk))
+    return out
+
+
+def ingest(conn: psycopg.Connection, vo: voyageai.Client, tenant_id: str, path: Path) -&gt; int:
+    chunks = load_pdf(path)
+    if not chunks:
+        print(f"skip {path}: no extractable text (scanned PDF? run OCR first)")
+        return 0
+    # uuid5 of tenant + file name: re-ingesting the same file replaces its rows instead of duplicating them
+    doc_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}/{path.name}")
+    vectors = []
+    for i in range(0, len(chunks), 128):  # batch the embedding calls
+        batch = [text for _, text in chunks[i:i + 128]]
+        vectors += vo.embed(batch, model=MODEL, input_type="document").embeddings
+    with conn.transaction():
+        conn.execute("DELETE FROM contract_chunks WHERE document_id = %s", (doc_id,))
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO contract_chunks (tenant_id, document_id, chunk_index, page, source, content, "
+                "embedding, embedding_model) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                [(tenant_id, doc_id, i, page, path.name, text, vec, MODEL)
+                 for i, ((page, text), vec) in enumerate(zip(chunks, vectors))],
+            )
+    return len(chunks)
+
+
+def main() -&gt; None:
+    tenant_id, files = sys.argv[1], [Path(p) for p in sys.argv[2:]]
+    vo = voyageai.Client()  # reads VOYAGE_API_KEY
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(SCHEMA)
+        register_vector(conn)  # after CREATE EXTENSION, so the vector type exists
+        for f in files:
+            print(f"{f.name}: {ingest(conn, vo, tenant_id, f)} chunks")
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+  <p>What it does: one row per ~500-token window with 10% overlap, page numbers kept for citations, embeddings batched 128 at a time with <code>input_type="document"</code>, and a deterministic <code>uuid5</code> document id so running it twice replaces rows instead of duplicating them. I ran the chunking and database path against the container with a fake embedder: 3 chunks of 1,979 / 1,964 / 1,856 characters, and 3 rows after two runs. For a big initial load, the README recommends <code>COPY ... WITH (FORMAT BINARY)</code> and creating indexes after loading (<code>CREATE INDEX CONCURRENTLY</code> in production, and enough <code>maintenance_work_mem</code> for the HNSW graph to fit).</p>
+  <p>Query side, note <code>input_type="query"</code>:</p>
+  <pre><code>import numpy as np
+import psycopg
+import voyageai
+from pgvector.psycopg import register_vector
+
+DSN = "postgresql://postgres:postgres@localhost:5432/postgres"
+
+
+def search(conn, vo, tenant_id: str, question: str, k: int = 5):
+    q = np.array(vo.embed([question], model="voyage-4", input_type="query").embeddings[0])
+    return conn.execute(
+        """
+        SELECT source, page, left(content, 120), embedding &lt;=&gt; %s AS distance
+        FROM contract_chunks
+        WHERE tenant_id = %s
+        ORDER BY embedding &lt;=&gt; %s
+        LIMIT %s
+        """,
+        (q, tenant_id, q, k),
+    ).fetchall()
+
+
+if __name__ == "__main__":
+    with psycopg.connect(DSN) as conn:
+        register_vector(conn)
+        for row in search(conn, voyageai.Client(), "acme", "Can the customer terminate early?"):
+            print(row)</code></pre>
+  <p>Expected output: tuples of <code>('msa.pdf', 4, 'Either party may terminate ...', 0.21...)</code>, nearest first. Distances depend on your documents.</p>
+
+  <h3>Step 7: the Spring AI equivalent with PgVectorStore</h3>
+  <p>Spring AI 2.0 targets Spring Boot 4.0/4.1. Add the BOM and starters (with the Leegality build, versions come from the catalog):</p>
+  <pre><code>dependencies {
+    implementation platform("org.springframework.ai:spring-ai-bom:2.0.0")
+    implementation "org.springframework.ai:spring-ai-starter-vector-store-pgvector"
+    implementation "org.springframework.ai:spring-ai-pdf-document-reader"
+    // plus one EmbeddingModel starter, e.g. spring-ai-starter-model-openai or -ollama
+}</code></pre>
+  <pre><code>spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: postgres
+  ai:
+    vectorstore:
+      pgvector:
+        index-type: HNSW            # NONE | IVFFlat | HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 1536            # must equal your embedding model's output size
+        initialize-schema: true     # dev only; use Flyway in prod
+        table-name: vector_store</code></pre>
+  <p>With <code>initialize-schema: true</code> it creates this table, which is worth knowing because interviewers ask what the abstraction hides:</p>
+  <pre><code>CREATE TABLE IF NOT EXISTS vector_store (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    content text,
+    metadata json,
+    embedding vector(1536)
+);
+CREATE INDEX ON vector_store USING HNSW (embedding vector_cosine_ops);</code></pre>
+  <pre><code>@Service
+public class ContractIngestionService {
+
+    private final VectorStore vectorStore;
+
+    public ContractIngestionService(VectorStore vectorStore) {
+        this.vectorStore = vectorStore;
+    }
+
+    public void ingest(String tenantId, String documentId, Resource pdf) {
+        List&lt;Document&gt; pages = new PagePdfDocumentReader(pdf).read();
+        List&lt;Document&gt; chunks = TokenTextSplitter.builder().withChunkSize(500).build().apply(pages);
+        List&lt;Document&gt; tagged = chunks.stream().map(d -&gt; {
+            Map&lt;String, Object&gt; meta = new HashMap&lt;&gt;(d.getMetadata());
+            meta.put("tenantId", tenantId);
+            meta.put("documentId", documentId);
+            return new Document(d.getText(), meta);
+        }).toList();
+        vectorStore.add(tagged); // embeds via the EmbeddingModel bean, then inserts
+    }
+}
+
+@RestController
+class ContractSearchController {
+
+    private final VectorStore vectorStore;
+
+    ContractSearchController(VectorStore vectorStore) {
+        this.vectorStore = vectorStore;
+    }
+
+    @GetMapping("/contracts/search")
+    @PreAuthorize("hasAuthority('SCOPE_contracts:read')")
+    List&lt;Document&gt; search(@RequestParam String q, @AuthenticationPrincipal Jwt jwt) {
+        FilterExpressionBuilder b = new FilterExpressionBuilder();
+        return vectorStore.similaritySearch(SearchRequest.builder()
+                .query(q)
+                .topK(5)
+                .similarityThreshold(0.5)
+                .filterExpression(b.eq("tenantId", jwt.getClaimAsString("tenant_id")).build())
+                .build());
+    }
+}</code></pre>
+  <p>Use <code>FilterExpressionBuilder</code> rather than concatenating a tenant id into the text form (<code>"tenantId == '" + x + "'"</code>): string-built filters are an injection bug waiting for a tenant name with a quote in it. The text form is fine for constants: <code>"clause_type in ['termination','indemnity'] &amp;&amp; year &gt;= 2024"</code>.</p>
+  <div class="callout warn"><b>Production gotchas of the default store</b><ul>
+    <li>Metadata lives in one <code>json</code> column, so tenant filters are JSON-path predicates, not a B-tree lookup. At scale, own the table (your own schema plus a custom query, or a <code>JdbcTemplate</code> repository) so <code>tenant_id</code> is a real indexed column or a partition key.</li>
+    <li><code>dimensions</code> must match the embedding model; switching models means a new table or column and a re-embed, never mixed vectors.</li>
+    <li>Leave <code>initialize-schema</code> off in production and own the DDL in Flyway, like any other table.</li>
+  </ul></div>
+
+  <h3>pgvector vs Pinecone vs Qdrant (the Adobe question)</h3>
+  <div class="tbl"><table>
+    <tr><th></th><th>pgvector</th><th>Pinecone</th><th>Qdrant</th></tr>
+    <tr><td>What it is</td><td>Postgres extension</td><td>Fully managed vector DB (SaaS)</td><td>Open-source vector DB (Rust), self-host or managed cloud</td></tr>
+    <tr><td>Strengths</td><td>Joins, ACID with your business data, one backup/HA story, SQL full-text for hybrid, no new vendor</td><td>Zero ops, scales storage and query capacity for you, namespaces for tenant separation</td><td>Payload filtering built into the search, quantisation options, purpose-built ANN performance at large scale</td></tr>
+    <tr><td>Weaknesses</td><td>Single-node by default (shard with Citus etc.); index memory competes with OLTP; post-filtering pitfalls</td><td>Data leaves your VPC (a DPDP/data-residency conversation), cost at volume, a second consistency boundary to sync</td><td>Another stateful cluster to run and secure, plus sync from Postgres</td></tr>
+    <tr><td>Choose when</td><td>Up to tens of millions of chunks, team already runs Postgres, strong tenant/ACL joins</td><td>Small team, no infra appetite, very large or spiky corpus</td><td>Hundreds of millions of vectors, heavy filtered search, want open source</td></tr>
+  </table></div>
+  <p>Senior framing: "Start with pgvector because the hard part of enterprise RAG is permissions and freshness, and those are joins and transactions. I'd move to a dedicated engine when p95 ANN latency or index memory starts hurting the OLTP workload, and measure that with recall@k on a golden set before and after."</p>
+
+  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <details class="qa"><summary>HNSW or IVFFlat for 5M contract chunks?</summary><p>HNSW. It has the better speed/recall trade-off and needs no training step, so it stays correct as data grows. Cost: slower build and more memory, so set <code>maintenance_work_mem</code> high enough for the graph during builds and build <code>CONCURRENTLY</code>. IVFFlat (lists ≈ sqrt(5M) ≈ 2,236, probes ≈ 47) is the answer if nightly rebuild time or RAM is the constraint.</p></details>
+  <details class="qa"><summary>After adding an HNSW index, a tenant's search returns 3 results instead of 10. Why?</summary><p>Post-filtering. The index returns about <code>ef_search</code> (40) candidates and the <code>WHERE tenant_id</code> filter discards most. Fix with <code>hnsw.iterative_scan</code>, a higher <code>ef_search</code> via <code>SET LOCAL</code>, a B-tree on <code>tenant_id</code> so small tenants get an exact scan, or partitioning by tenant.</p></details>
+  <details class="qa"><summary>What do m, ef_construction and ef_search control?</summary><p><code>m</code> is the number of neighbours per node (graph density, memory). <code>ef_construction</code> is the candidate list size during build (graph quality, build time). <code>ef_search</code> is the candidate list size per query (recall vs latency), and it is the only one you can change without rebuilding. Defaults 16 / 64 / 40.</p></details>
+  <details class="qa"><summary>Cosine, inner product or L2?</summary><p>Use whatever the embedding model was trained for, usually cosine. If vectors are unit-normalised (Voyage's are), all three rank identically, and inner product (<code>&lt;#&gt;</code>) is the cheapest. The index opclass must match the operator in the query.</p></details>
+  <details class="qa"><summary>Why is my vector query doing a sequential scan?</summary><p>No <code>LIMIT</code>, ordering by an expression (<code>1 - distance DESC</code>), an operator that does not match the index opclass, or a table small enough that the planner rightly prefers a scan. Check with <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p></details>
+  <details class="qa"><summary>How do you isolate tenants in a shared vector table?</summary><p>Tenant id from the JWT is added to every query in the repository layer, never from parameters. Add row-level security as defence in depth. For large tenants, list partitions so each has its own ANN index, which also stops one tenant's data distribution hurting another's recall. Test isolation with an automated cross-tenant query that must return zero rows.</p></details>
+  <details class="qa"><summary>Your embedding model has 3,072 dimensions. Can pgvector index it?</summary><p>Not as <code>vector</code>: the index limit is 2,000 dimensions. Index it as <code>halfvec</code> (up to 4,000) with an expression index, use binary quantisation with re-ranking, or ask the model for fewer dimensions (Matryoshka models such as voyage-4 offer 256–2048).</p></details>
+  <details class="qa"><summary>How do you re-embed the corpus with a new model with zero downtime?</summary><p>Add a new column or table with the new dimension and <code>embedding_model</code> value, backfill in batches, build its index concurrently, dual-write new documents, switch reads behind a flag after recall@k on the golden set is equal or better, then drop the old column. Never compare vectors across models.</p></details>
+  <details class="qa"><summary>Deletes and updates: anything special?</summary><p>They are ordinary MVCC rows, which is the advantage: a contract delete removes its chunks in the same transaction. Dead tuples can reduce results, and vacuuming HNSW can be slow; the README suggests <code>REINDEX INDEX CONCURRENTLY</code> then <code>VACUUM</code> after large deletes.</p></details>
+  <details class="qa"><summary>When would you leave pgvector?</summary><p>When vector search load or index memory starts degrading the transactional workload, or the corpus outgrows a single node, at a size where Citus-style sharding is more work than a dedicated engine. Before that, read replicas for search traffic, <code>halfvec</code> and binary quantisation buy a lot of headroom.</p></details>
+
+  <h2 id="exercise"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <p>For the contract Q&amp;A and risky-clause flagger capstone:</p>
+  <ol>
+    <li>Create <code>contract_chunks</code> with <code>vector(1024)</code>, a <code>tenant_id</code> B-tree, a GIN index on <code>content_tsv</code> and HNSW cosine, all through a Flyway migration.</li>
+    <li>Ingest 5–10 sample contracts (public sample NDAs and MSAs) for two fake tenants with <code>ingest_pdfs.py</code>, and confirm a second run leaves the row count unchanged.</li>
+    <li>Write 15 golden questions with the expected document and page. Measure recall@5 with and without the HNSW index, and with <code>ef_search</code> at 40 and 200.</li>
+    <li>Write a test proving tenant <code>globex</code> can never retrieve an <code>acme</code> chunk, even for a question copied from an acme contract.</li>
+    <li>Expose <code>GET /contracts/search</code> in Spring Boot with tenant from the JWT, as in step 7.</li>
+  </ol>
+  <div class="callout info"><b>Done when</b><p>You can show the <code>EXPLAIN</code> output using the HNSW index, a recall table, and a green cross-tenant test.</p></div>
+
+  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener">pgvector README (v0.8.7): operators, HNSW/IVFFlat options, filtering, iterative scans, multitenancy, Docker tags, FAQ</a></li>
+    <li><a href="https://github.com/pgvector/pgvector-python" target="_blank" rel="noopener">pgvector-python: psycopg 3 <code>register_vector</code>, hybrid search examples</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/vectordbs/pgvector.html" target="_blank" rel="noopener">Spring AI PGvector Vector Store: properties, default schema, filter expressions</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/etl-pipeline.html" target="_blank" rel="noopener">Spring AI ETL pipeline: PagePdfDocumentReader, TokenTextSplitter</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/getting-started.html" target="_blank" rel="noopener">Spring AI getting started: BOM, Spring Boot 4 compatibility</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/embeddings" target="_blank" rel="noopener">Embeddings (Claude docs): Voyage models, input_type, normalisation</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-rag-fundamentals.html">RAG fundamentals</a> · <a href="learn-better-retrieval.html">Better retrieval</a> · <a href="ai-rag-enterprise-qa.html">RAG system design</a></span></div>
+</div>
+</body>
+</html>

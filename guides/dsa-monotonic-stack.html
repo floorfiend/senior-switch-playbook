@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Monotonic Stack</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · DSA</span></div>
+  <h1>Monotonic Stack</h1>
+  <p class="lede">A stack kept in sorted order turns "for every element, find the nearest bigger or smaller one" from O(n²) into O(n). Learn the one loop, then recognise it in histograms, temperatures and digit removal.</p>
+  <div class="facts">
+    <span class="fact"><b>Study time:</b> ~3 h including the 4 problems</span>
+    <span class="fact"><b>Seen:</b> Tekion, Amazon, Kotak, Goldman Sachs, ServiceNow, PhonePe</span>
+  </div>
+  <div class="chips"><span class="chip hot">Amazon</span><span class="chip">Tekion</span><span class="chip">Kotak</span><span class="chip">Goldman Sachs</span><span class="chip">ServiceNow</span><span class="chip">PhonePe</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#when">When to use this pattern</a></li>
+    <li><a href="#model">The mental model, with a trace</a></li>
+    <li><a href="#templates">Java templates</a></li>
+    <li><a href="#problems">Worked problems (4)</a></li>
+    <li><a href="#mistakes">Mistakes and follow-ups</a></li>
+    <li><a href="#selfcheck">Self-check</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="when"><span class="n">01</span>When to use this pattern</h2>
+  <p>Reach for a monotonic stack when the answer for each position depends on the <b>nearest</b> element to its left or right that is bigger or smaller. Phrases that give it away:</p>
+  <ul>
+    <li>"next greater element", "next warmer day", "how many days until", "stock span"</li>
+    <li>"largest rectangle", "maximal rectangle", "trapping rain water", "visible people in a queue"</li>
+    <li>"remove k digits to make the smallest number", "smallest subsequence of distinct characters", "lexicographically smallest"</li>
+    <li>"sum of subarray minimums" (each element's contribution = how far it stays the minimum to the left and right)</li>
+  </ul>
+  <p>The brute force is two nested loops scanning outward from every index: O(n²). If n is 10<sup>5</sup> that is 10<sup>10</sup> steps, which is the interviewer's hint that an O(n) idea exists.</p>
+  <div class="tbl"><table>
+    <tr><th>You want</th><th>Scan</th><th>Stack order (bottom → top)</th><th>Pop while</th></tr>
+    <tr><td>Next greater (right)</td><td>left → right</td><td>decreasing</td><td><code>a[top] &lt; a[i]</code></td></tr>
+    <tr><td>Next smaller (right)</td><td>left → right</td><td>increasing</td><td><code>a[top] &gt; a[i]</code></td></tr>
+    <tr><td>Previous greater (left)</td><td>left → right</td><td>decreasing</td><td><code>a[top] &lt;= a[i]</code>, then top is the answer</td></tr>
+    <tr><td>Previous smaller (left)</td><td>left → right</td><td>increasing</td><td><code>a[top] &gt;= a[i]</code>, then top is the answer</td></tr>
+  </table></div>
+
+  <h2 id="model"><span class="n">02</span>The mental model, with a trace</h2>
+  <p>Think of the stack as a waiting room of indices whose answer is not known yet. When a new element arrives, it is the answer for every waiting element smaller than it, and those leave the room. Everyone still waiting is bigger than the newcomer, so the room is always sorted (decreasing from bottom to top). The newcomer then waits too.</p>
+  <p>Why O(n): each index is pushed once and popped at most once, so the inner <code>while</code> runs at most n times across the whole loop, even though it looks nested.</p>
+  <p>Next greater element on <code>[2, 1, 5, 6, 2, 3]</code> (stack shows indices with values):</p>
+  <div class="tbl"><table>
+    <tr><th>i</th><th>a[i]</th><th>Popped (answer = i)</th><th>Stack after (bottom → top)</th></tr>
+    <tr><td class="num">0</td><td class="num">2</td><td>none</td><td>0:2</td></tr>
+    <tr><td class="num">1</td><td class="num">1</td><td>none (2 &gt; 1)</td><td>0:2, 1:1</td></tr>
+    <tr><td class="num">2</td><td class="num">5</td><td>1, then 0 → res[1]=2, res[0]=2</td><td>2:5</td></tr>
+    <tr><td class="num">3</td><td class="num">6</td><td>2 → res[2]=3</td><td>3:6</td></tr>
+    <tr><td class="num">4</td><td class="num">2</td><td>none</td><td>3:6, 4:2</td></tr>
+    <tr><td class="num">5</td><td class="num">3</td><td>4 → res[4]=5</td><td>3:6, 5:3</td></tr>
+    <tr><td>end</td><td></td><td>3 and 5 stay at −1</td><td></td></tr>
+  </table></div>
+  <p>Result: <code>[2, 2, 3, -1, 5, -1]</code> (indices of the next greater element).</p>
+
+  <h3>The histogram technique</h3>
+  <p>For the largest rectangle in a histogram, each bar's best rectangle uses its own height and stretches left and right until a shorter bar. So you need, for every bar, the previous smaller and the next smaller index: width = <code>next - prev - 1</code>. An increasing stack gives both in one pass. When bar <code>i</code> pops bar <code>t</code>, <code>i</code> is <code>t</code>'s next smaller, and the element under <code>t</code> on the stack is its previous smaller. A sentinel height 0 at <code>i = n</code> flushes the stack at the end.</p>
+  <div class="flow">
+    <span class="node">prev smaller<small>stack below top</small></span><span class="arrow">←</span>
+    <span class="node hl">popped bar t<small>height h</small></span><span class="arrow">→</span>
+    <span class="node">next smaller<small>current i</small></span><span class="arrow">=</span>
+    <span class="node store">area = h × (i − prev − 1)</span>
+  </div>
+  <p class="flow-caption">Figure: the popped bar learns both its boundaries at the moment it is popped.</p>
+  <p>Trace on heights <code>[2, 1, 5, 6, 2, 3]</code>:</p>
+  <div class="tbl"><table>
+    <tr><th>i</th><th>h</th><th>Pops (height × width)</th><th>Stack after</th><th>Best</th></tr>
+    <tr><td class="num">0</td><td class="num">2</td><td>none</td><td>[0]</td><td class="num">0</td></tr>
+    <tr><td class="num">1</td><td class="num">1</td><td>bar 0: 2 × (1 − (−1) − 1) = 2</td><td>[1]</td><td class="num">2</td></tr>
+    <tr><td class="num">2</td><td class="num">5</td><td>none</td><td>[1, 2]</td><td class="num">2</td></tr>
+    <tr><td class="num">3</td><td class="num">6</td><td>none</td><td>[1, 2, 3]</td><td class="num">2</td></tr>
+    <tr><td class="num">4</td><td class="num">2</td><td>bar 3: 6 × 1 = 6; bar 2: 5 × (4 − 1 − 1) = 10</td><td>[1, 4]</td><td class="num">10</td></tr>
+    <tr><td class="num">5</td><td class="num">3</td><td>none</td><td>[1, 4, 5]</td><td class="num">10</td></tr>
+    <tr><td class="num">6</td><td class="num">0 (sentinel)</td><td>bar 5: 3 × 1 = 3; bar 4: 2 × 4 = 8; bar 1: 1 × 6 = 6</td><td>[6]</td><td class="num">10</td></tr>
+  </table></div>
+
+  <h2 id="templates"><span class="n">03</span>Java templates</h2>
+  <p>Both run in O(n) time and O(n) space. Use <code>ArrayDeque</code> as the stack (<code>push</code>/<code>pop</code>/<code>peek</code> work on the head); <code>java.util.Stack</code> is synchronised and slower, and a reviewer will mention it. For the hottest loops an <code>int[]</code> with a top pointer avoids boxing.</p>
+  <pre><code>import java.util.*;
+
+class StackTemplates {
+    // Next greater element to the right (index), -1 if none. Each index is pushed and popped once: O(n).
+    static int[] nextGreater(int[] a) {
+        int[] res = new int[a.length];
+        Arrays.fill(res, -1);
+        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();      // indices whose answer is still unknown
+        for (int i = 0; i &lt; a.length; i++) {
+            while (!stack.isEmpty() &amp;&amp; a[stack.peek()] &lt; a[i]) {
+                res[stack.pop()] = i;                   // a[i] resolves everything smaller on top
+            }
+            stack.push(i);
+        }
+        return res;
+    }
+
+    // Previous smaller element to the left (index), -1 if none. The stack holds candidates; O(n).
+    static int[] prevSmaller(int[] a) {
+        int[] res = new int[a.length];
+        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();
+        for (int i = 0; i &lt; a.length; i++) {
+            while (!stack.isEmpty() &amp;&amp; a[stack.peek()] &gt;= a[i]) {
+                stack.pop();                            // can never be the answer for anyone right of i
+            }
+            res[i] = stack.isEmpty() ? -1 : stack.peek();
+            stack.push(i);
+        }
+        return res;
+    }
+}</code></pre>
+  <div class="callout tip"><b>Store indices, not values</b><p>Indices give you both the value (<code>a[idx]</code>) and the distance (<code>i - idx</code>), which daily temperatures and the histogram both need.</p></div>
+
+  <h2 id="problems"><span class="n">04</span>Worked problems</h2>
+
+  <h3>4.1 Next Greater Element I</h3>
+  <p><a href="https://leetcode.com/problems/next-greater-element-i/" target="_blank" rel="noopener">LeetCode 496: next-greater-element-i</a> · Easy</p>
+  <p><b>Problem.</b> <code>nums1</code> is a subset of <code>nums2</code> (all values distinct). For each value in <code>nums1</code>, return the first greater value to its right in <code>nums2</code>, or −1.</p>
+  <p><b>Key insight.</b> Run the next-greater loop over <code>nums2</code> once, record answers in a map keyed by value (values are distinct), then look each <code>nums1</code> value up.</p>
+  <pre><code>import java.util.*;
+
+class Solution {
+    public int[] nextGreaterElement(int[] nums1, int[] nums2) {
+        Map&lt;Integer, Integer&gt; next = new HashMap&lt;&gt;();
+        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();            // decreasing values still waiting
+        for (int x : nums2) {
+            while (!stack.isEmpty() &amp;&amp; stack.peek() &lt; x) {
+                next.put(stack.pop(), x);                     // x is the first greater to the right
+            }
+            stack.push(x);
+        }
+        int[] out = new int[nums1.length];
+        for (int i = 0; i &lt; nums1.length; i++) {
+            out[i] = next.getOrDefault(nums1[i], -1);
+        }
+        return out;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n + m) time, O(n) space.</p>
+  <p><b>Edge cases.</b> The last element always maps to −1; a strictly decreasing <code>nums2</code> leaves everything on the stack. Follow-up: Next Greater Element II (circular array) — loop <code>i</code> from 0 to <code>2n − 1</code> and use <code>i % n</code>, pushing only in the first pass.</p>
+
+  <h3>4.2 Daily Temperatures</h3>
+  <p><a href="https://leetcode.com/problems/daily-temperatures/" target="_blank" rel="noopener">LeetCode 739: daily-temperatures</a> · Medium</p>
+  <p><b>Problem.</b> For each day, how many days until a strictly warmer temperature? 0 if none.</p>
+  <p><b>Key insight.</b> Next greater element, but the answer is the distance <code>i − j</code>, so store indices.</p>
+  <pre><code>import java.util.*;
+
+class Solution {
+    public int[] dailyTemperatures(int[] temperatures) {
+        int n = temperatures.length;
+        int[] answer = new int[n];
+        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();            // indices, temperatures decreasing
+        for (int i = 0; i &lt; n; i++) {
+            while (!stack.isEmpty() &amp;&amp; temperatures[stack.peek()] &lt; temperatures[i]) {
+                int j = stack.pop();
+                answer[j] = i - j;
+            }
+            stack.push(i);
+        }
+        return answer;                                        // indices left in stack keep 0
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time, O(n) space.</p>
+  <p><b>Edge cases.</b> Equal temperatures are not warmer, so pop on strict <code>&lt;</code>; with <code>&lt;=</code> you would wrongly answer equal days. Trace on <code>[73,74,75,71,69,72,76,73]</code> gives <code>[1,1,4,2,1,1,0,0]</code>.</p>
+  <p><b>Follow-up.</b> O(1) extra space: iterate from the right and jump using the answers already computed (<code>j += answer[j]</code>) until you find a warmer day. Still amortised O(n).</p>
+
+  <h3>4.3 Largest Rectangle in Histogram</h3>
+  <p><a href="https://leetcode.com/problems/largest-rectangle-in-histogram/" target="_blank" rel="noopener">LeetCode 84: largest-rectangle-in-histogram</a> · Hard</p>
+  <p><b>Problem.</b> Bars of width 1 with given heights. Return the area of the largest rectangle that fits under the skyline.</p>
+  <p><b>Key insight.</b> The histogram technique from section 02: an increasing stack; on pop, the current index is the right boundary and the new top is the left boundary.</p>
+  <pre><code>import java.util.*;
+
+class Solution {
+    public int largestRectangleArea(int[] heights) {
+        int n = heights.length;
+        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();            // indices, heights increasing
+        int best = 0;
+        for (int i = 0; i &lt;= n; i++) {
+            int h = i == n ? 0 : heights[i];                  // sentinel 0 flushes the stack
+            while (!stack.isEmpty() &amp;&amp; heights[stack.peek()] &gt;= h) {
+                int height = heights[stack.pop()];
+                int left = stack.isEmpty() ? -1 : stack.peek(); // previous smaller bar
+                best = Math.max(best, height * (i - left - 1)); // i is the next smaller bar
+            }
+            stack.push(i);
+        }
+        return best;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time, O(n) space.</p>
+  <p><b>Edge cases.</b> All bars equal (<code>[3,3,3]</code> → 9): popping on <code>&gt;=</code> means each equal bar is popped by the next one with too narrow a width, but the last bar left on the stack has nothing below it (left = −1), so the sentinel pop computes the full width. Strictly increasing input: nothing pops until the sentinel. Area fits in <code>int</code> for the given limits (10<sup>5</sup> × 10<sup>4</sup>).</p>
+  <p><b>Follow-up.</b> Maximal Rectangle (LeetCode 85) on a 0/1 matrix: build a heights array row by row (height + 1 on a 1, reset to 0 on a 0) and run this function on each row. O(rows × cols).</p>
+
+  <h3>4.4 Remove K Digits <span class="chip">PhonePe</span></h3>
+  <p><a href="https://leetcode.com/problems/remove-k-digits/" target="_blank" rel="noopener">LeetCode 402: remove-k-digits</a> · Medium</p>
+  <p><b>Problem.</b> Given a non-negative integer as a string, remove exactly <code>k</code> digits to make the smallest possible number. No leading zeros in the answer; return "0" if nothing remains.</p>
+  <p><b>Key insight.</b> A number is smaller when its leftmost digits are smaller. Scan left to right; while the previous kept digit is larger than the current one and you still have removals, drop it. That leaves a non-decreasing stack. If removals remain, the largest digits are at the tail, so cut from the end.</p>
+  <pre><code>class Solution {
+    public String removeKdigits(String num, int k) {
+        StringBuilder stack = new StringBuilder();            // digits kept so far, non-decreasing
+        for (char c : num.toCharArray()) {
+            while (k &gt; 0 &amp;&amp; stack.length() &gt; 0 &amp;&amp; stack.charAt(stack.length() - 1) &gt; c) {
+                stack.deleteCharAt(stack.length() - 1);       // a smaller digit earlier wins
+                k--;
+            }
+            stack.append(c);
+        }
+        stack.setLength(stack.length() - k);                  // still owe removals: drop from the tail
+        int i = 0;
+        while (i &lt; stack.length() - 1 &amp;&amp; stack.charAt(i) == '0') {
+            i++;                                              // strip leading zeros, keep one digit
+        }
+        String result = stack.substring(i);
+        return result.isEmpty() ? "0" : result;
+    }
+}</code></pre>
+  <p><b>Complexity.</b> O(n) time (each digit pushed and popped at most once), O(n) space.</p>
+  <p><b>Trace</b> on <code>"1432219"</code>, k = 3: 1 → 14 → 13 (drop 4) → 12 (drop 3) → 122 → 121 (drop 2, k = 0) → 1219.</p>
+  <p><b>Edge cases.</b> <code>k == num.length()</code> → "0"; leading zeros after removal (<code>"10200"</code>, k = 1 → "200"); non-decreasing input such as <code>"112"</code> removes from the tail → "11"; never use <code>Long.parseLong</code>, the string can be 10<sup>5</sup> digits.</p>
+
+  <h2 id="mistakes"><span class="n">05</span>Common mistakes and follow-ups interviewers ask</h2>
+  <div class="callout warn"><b>Mistakes that cost the round</b><ul>
+    <li>Calling it O(n²) because of the nested loop, or failing to explain the amortised argument when asked.</li>
+    <li>Strict versus non-strict comparisons chosen at random. Decide what happens with equal values before coding; it changes the answer for duplicates.</li>
+    <li>Forgetting the leftover stack at the end (histogram without a sentinel misses the increasing tail; remove-k-digits without the tail cut ignores remaining k).</li>
+    <li>Using <code>java.util.Stack</code> without being able to say why <code>ArrayDeque</code> is preferred.</li>
+  </ul></div>
+  <details class="qa"><summary>Why is the stack approach O(n) when it has a while inside a for?</summary><p>Every index is pushed exactly once and popped at most once. The total number of pops over the whole run is at most n, so total work is O(n) amortised.</p></details>
+  <details class="qa"><summary>Sum of Subarray Minimums: how does the stack help?</summary><p>Each <code>a[i]</code> is the minimum of <code>left × right</code> subarrays, where <code>left</code> is the distance to the previous smaller and <code>right</code> the distance to the next smaller-or-equal (asymmetric to avoid double counting duplicates). Two monotonic passes give both; sum <code>a[i] × left × right</code> mod 10<sup>9</sup>+7.</p></details>
+  <details class="qa"><summary>Trapping Rain Water with a stack?</summary><p>Keep a decreasing stack of indices. When a taller bar arrives, pop the bottom of a "valley", and the water above it is <code>(min(left, right) − bottom) × width</code>. The two-pointer solution is O(1) space and usually preferred; know both.</p></details>
+  <details class="qa"><summary>Online version: stock span arriving one price at a time?</summary><p>Online Stock Span (LeetCode 901): keep a stack of (price, span). For a new price, pop all entries with price &lt;= it and add their spans. Each call is amortised O(1).</p></details>
+  <details class="qa"><summary>Sliding window maximum — is that the same pattern?</summary><p>It is the queue cousin: a monotonic deque where you also evict indices that fall out of the window from the front. See the sliding window lesson.</p></details>
+
+  <h2 id="selfcheck"><span class="n">06</span>Self-check</h2>
+  <details class="qa"><summary>1. To find the next smaller element to the right, is the stack increasing or decreasing from bottom to top?</summary><p>Increasing. You pop while <code>a[top] &gt; a[i]</code>, so everything left is &lt;= the newcomer.</p></details>
+  <details class="qa"><summary>2. In the histogram loop, what are the left and right boundaries of a popped bar?</summary><p>Right boundary: the current index <code>i</code> (its next smaller). Left boundary: the index now on top of the stack, or −1 if empty (its previous smaller). Width = <code>i − left − 1</code>.</p></details>
+  <details class="qa"><summary>3. What is Remove K Digits for <code>"9"</code>, k = 1, and for <code>"10"</code>, k = 2?</summary><p>Both return "0".</p></details>
+  <details class="qa"><summary>4. Daily temperatures for <code>[30, 30, 31]</code>?</summary><p><code>[2, 1, 0]</code>. Equal is not warmer, so the first 30 waits for 31.</p></details>
+
+  <h2 id="sources"><span class="n">07</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li>Company tags come from the 2025–26 interview reports collected for this playbook (monotonic stack at Tekion, Amazon, Kotak, Goldman Sachs and ServiceNow; remove-k-digits at PhonePe).</li>
+    <li><a href="https://cp-algorithms.com/data_structures/stack_queue_modification.html" target="_blank" rel="noopener">cp-algorithms: Minimum stack / minimum queue</a> (the queue variant used for sliding-window minimum)</li>
+    <li>Problems: <a href="https://leetcode.com/problems/next-greater-element-i/" target="_blank" rel="noopener">496</a>, <a href="https://leetcode.com/problems/daily-temperatures/" target="_blank" rel="noopener">739</a>, <a href="https://leetcode.com/problems/largest-rectangle-in-histogram/" target="_blank" rel="noopener">84</a>, <a href="https://leetcode.com/problems/remove-k-digits/" target="_blank" rel="noopener">402</a></li>
+    <li>Extra practice: <a href="https://leetcode.com/problems/next-greater-element-ii/" target="_blank" rel="noopener">next-greater-element-ii</a>, <a href="https://leetcode.com/problems/online-stock-span/" target="_blank" rel="noopener">online-stock-span</a>, <a href="https://leetcode.com/problems/sum-of-subarray-minimums/" target="_blank" rel="noopener">sum-of-subarray-minimums</a>, <a href="https://leetcode.com/problems/maximal-rectangle/" target="_blank" rel="noopener">maximal-rectangle</a>, <a href="https://leetcode.com/problems/trapping-rain-water/" target="_blank" rel="noopener">trapping-rain-water</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span>Related: <a href="dsa-heaps-intervals.html">Heaps and intervals</a> · <a href="dsa-sliding-window.html">Sliding window</a> · <a href="dsa-dynamic-programming.html">Dynamic programming</a></span></div>
+</div>
+</body>
+</html>

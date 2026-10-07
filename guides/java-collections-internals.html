@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Java Collections Internals</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · Java &amp; backend</span></div>
+  <h1>Java Collections Internals</h1>
+  <p class="lede">How HashMap, ConcurrentHashMap, LinkedHashMap, TreeMap, PriorityQueue and the List implementations actually work, the equals/hashCode contract and the bugs it causes, immutability with defensive copies, and four LeetCode design problems built on these structures.</p>
+  <div class="facts">
+    <span class="fact"><b>Study time:</b> 4–5 hours</span>
+    <span class="fact"><b>Round:</b> Java core / tech screen / LLD</span>
+    <span class="fact"><b>Code:</b> Java 21, all compiled and run</span>
+  </div>
+  <div class="chips"><span class="chip hot">JPMC</span><span class="chip hot">Walmart</span><span class="chip">Intuit</span><span class="chip">LinkedIn</span><span class="chip">Apple</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#why">Why interviewers ask this</a></li>
+    <li><a href="#concepts">Core concepts</a></li>
+    <li><a href="#internals">How it works internally</a></li>
+    <li><a href="#practical">Production patterns and gotchas</a></li>
+    <li><a href="#leetcode">Worked LeetCode designs</a></li>
+    <li><a href="#qa">Interview questions</a></li>
+    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
+  <p>Collections are the cheapest way for an interviewer to find out whether five years of Java means five years of understanding or one year repeated five times. Every service you own uses <code>HashMap</code> and <code>ConcurrentHashMap</code>; a senior engineer is expected to explain what happens on <code>put</code>, why a key went missing, and why a counter under load is wrong.</p>
+  <ul>
+    <li><b>JPMC</b> asked candidates to write an immutable class that holds a mutable <code>Address</code>, then asked for the <code>HashMap</code> size after inserting duplicate <code>Person</code> objects with and without <code>equals</code>/<code>hashCode</code> overridden.</li>
+    <li><b>Walmart</b>, <b>Intuit</b>, <b>LinkedIn</b> and <b>Apple</b> asked HashMap internals (buckets, collisions, treeification, resize) and ConcurrentHashMap versus <code>synchronizedMap</code>, usually as a warm-up before an LLD or coding round.</li>
+    <li>The design problems here (LRU, LFU, O(1) randomised set, your own hash map) appear in coding rounds at the same companies because they test whether you can compose two structures to get O(1) everything.</li>
+  </ul>
+  <div class="callout info"><b>What a senior answer sounds like</b><p>Not "HashMap uses hashing". Instead: "a power-of-two array of bins; the hash is XOR-ed with its upper 16 bits and masked with <code>n - 1</code>; a bin is a linked list that becomes a red-black tree at 8 nodes if the table has at least 64 bins; the table doubles past 0.75 load and each bin splits into a low and high list without rehashing". Then connect it to a production consequence.</p></div>
+
+  <h2 id="concepts"><span class="n">02</span>Core concepts, from scratch</h2>
+  <h3>The map you actually reach for</h3>
+  <div class="tbl"><table>
+    <tr><th>Need</th><th>Use</th><th>get/put</th><th>Order</th><th>Nulls</th></tr>
+    <tr><td>Plain key-value, one thread</td><td><code>HashMap</code></td><td>O(1) avg</td><td>None</td><td>1 null key, null values</td></tr>
+    <tr><td>Shared across threads</td><td><code>ConcurrentHashMap</code></td><td>O(1) avg, lock-free reads</td><td>None</td><td>No null keys or values</td></tr>
+    <tr><td>Insertion or access order (LRU)</td><td><code>LinkedHashMap</code></td><td>O(1) avg</td><td>Insertion or access</td><td>Like HashMap</td></tr>
+    <tr><td>Sorted keys, range queries, floor/ceiling</td><td><code>TreeMap</code></td><td>O(log n)</td><td>Sorted by comparator</td><td>No null key with natural ordering</td></tr>
+    <tr><td>Sorted and concurrent</td><td><code>ConcurrentSkipListMap</code></td><td>O(log n)</td><td>Sorted</td><td>No nulls</td></tr>
+    <tr><td>Enum keys</td><td><code>EnumMap</code></td><td>O(1), array indexed by ordinal</td><td>Enum order</td><td>No null key</td></tr>
+  </table></div>
+
+  <h3>The equals/hashCode contract</h3>
+  <p>A hash map finds a key in two steps: <code>hashCode()</code> picks the bucket, then <code>equals()</code> picks the entry inside the bucket. The contract in <code>Object</code>'s Javadoc follows from that:</p>
+  <ul>
+    <li>If <code>a.equals(b)</code> then <code>a.hashCode() == b.hashCode()</code>. Break this and equal keys land in different buckets, so the map stores both.</li>
+    <li>Equal hash codes do not imply equality (collisions are allowed: <code>"Aa"</code> and <code>"BB"</code> both hash to 2112).</li>
+    <li><code>hashCode()</code> must be stable while the object is in a hash-based collection. Mutating a field used by it orphans the entry.</li>
+    <li><code>equals</code> must be reflexive, symmetric, transitive and consistent, and <code>x.equals(null)</code> is false. Using <code>instanceof</code> in a non-final class with subclasses that add fields breaks symmetry; make value classes <code>final</code> or use records.</li>
+  </ul>
+
+  <h3>The JPMC question: HashMap size with duplicate Person objects</h3>
+  <p>Insert <code>Person("Asha", 30)</code> twice and <code>Person("Ravi", 28)</code> once. The answer depends on what <code>Person</code> overrides:</p>
+  <pre><code>import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+
+class PersonSizeDemo {
+    static class PlainPerson {                    // no equals/hashCode: identity semantics
+        final String name;
+        final int age;
+        PlainPerson(String name, int age) { this.name = name; this.age = age; }
+    }
+
+    static class EqOnlyPerson extends PlainPerson { // equals without hashCode: contract broken
+        EqOnlyPerson(String name, int age) { super(name, age); }
+        @Override public boolean equals(Object o) {
+            return o instanceof EqOnlyPerson p &amp;&amp; p.age == age &amp;&amp; p.name.equals(name);
+        }
+    }
+
+    static final class Person {                   // both overridden, consistently
+        final String name;
+        final int age;
+        Person(String name, int age) { this.name = name; this.age = age; }
+        @Override public boolean equals(Object o) {
+            return o instanceof Person p &amp;&amp; p.age == age &amp;&amp; p.name.equals(name);
+        }
+        @Override public int hashCode() { return Objects.hash(name, age); }
+    }
+
+    record PersonRecord(String name, int age) { } // records generate both for you
+
+    public static void main(String[] args) {
+        Map&lt;Object, String&gt; plain = new HashMap&lt;&gt;();
+        plain.put(new PlainPerson("Asha", 30), "a");
+        plain.put(new PlainPerson("Asha", 30), "b");
+        plain.put(new PlainPerson("Ravi", 28), "c");
+
+        Map&lt;Object, String&gt; eqOnly = new HashMap&lt;&gt;();
+        eqOnly.put(new EqOnlyPerson("Asha", 30), "a");
+        eqOnly.put(new EqOnlyPerson("Asha", 30), "b");
+        eqOnly.put(new EqOnlyPerson("Ravi", 28), "c");
+
+        Map&lt;Object, String&gt; proper = new HashMap&lt;&gt;();
+        proper.put(new Person("Asha", 30), "a");
+        proper.put(new Person("Asha", 30), "b");      // replaces value "a"
+        proper.put(new Person("Ravi", 28), "c");
+
+        Map&lt;Object, String&gt; rec = new HashMap&lt;&gt;();
+        rec.put(new PersonRecord("Asha", 30), "a");
+        rec.put(new PersonRecord("Asha", 30), "b");
+        rec.put(new PersonRecord("Ravi", 28), "c");
+
+        System.out.println(plain.size());   // 3
+        System.out.println(eqOnly.size());  // 3 (almost always: identity hashes land in different buckets)
+        System.out.println(proper.size());  // 2, and get(new Person("Asha", 30)) returns "b"
+        System.out.println(rec.size());     // 2
+    }
+}</code></pre>
+  <div class="tbl"><table>
+    <tr><th>Person overrides</th><th>size()</th><th>Why</th></tr>
+    <tr><td>Neither</td><td class="num">3</td><td>Identity equality: three distinct objects.</td></tr>
+    <tr><td><code>equals</code> only</td><td class="num">3 (almost always)</td><td>Identity hash codes differ, so the two "equal" objects usually land in different buckets and <code>equals</code> is never called. If they happen to share a bucket and a hash, you get 2. That nondeterminism is the bug. <code>javac -Xlint</code> warns: "overrides equals, but neither it nor any superclass overrides hashCode".</td></tr>
+    <tr><td><code>hashCode</code> only</td><td class="num">3</td><td>Same bucket, but identity <code>equals</code> says different.</td></tr>
+    <tr><td>Both (or a record)</td><td class="num">2</td><td>The second put finds the equal key and replaces the value; it does not replace the key object.</td></tr>
+  </table></div>
+
+  <h3>Immutability and defensive copies</h3>
+  <p>The JPMC follow-up: make <code>Employee</code> immutable when it holds an <code>Address</code> you cannot change. <code>final</code> fields are not enough, because <code>final</code> stops reassignment, not mutation of the object the field points to. The recipe:</p>
+  <ol>
+    <li>Class is <code>final</code> (or constructor private with a factory) so a subclass cannot add mutable state or override accessors.</li>
+    <li>All fields <code>private final</code>, no setters.</li>
+    <li>Copy mutable inputs in the constructor (copy in), and copy mutable outputs in getters (copy out).</li>
+    <li>For collections, <code>List.copyOf</code>/<code>Map.copyOf</code> produce truly unmodifiable copies. <code>Collections.unmodifiableList(list)</code> is only a read-only <em>view</em>: the caller still holding <code>list</code> can change what you see.</li>
+    <li>"Mutators" return a new instance (<code>withCity</code>).</li>
+  </ol>
+  <pre><code>import java.util.List;
+
+final class Address {                         // mutable class we do not own
+    private String city;
+    private String pin;
+
+    Address(String city, String pin) { this.city = city; this.pin = pin; }
+
+    String getCity() { return city; }
+    String getPin() { return pin; }
+    void setCity(String city) { this.city = city; }
+}
+
+final class Employee {                        // final: no subclass can add mutable state
+    private final String name;
+    private final Address address;
+    private final List&lt;String&gt; skills;
+
+    Employee(String name, Address address, List&lt;String&gt; skills) {
+        this.name = name;
+        this.address = new Address(address.getCity(), address.getPin()); // copy in
+        this.skills = List.copyOf(skills);                               // unmodifiable copy (rejects nulls)
+    }
+
+    String getName() { return name; }
+    Address getAddress() { return new Address(address.getCity(), address.getPin()); } // copy out
+    List&lt;String&gt; getSkills() { return skills; }                                       // already unmodifiable
+
+    Employee withCity(String city) {          // "mutation" returns a new object
+        return new Employee(name, new Address(city, address.getPin()), skills);
+    }
+}
+
+class ImmutableDemo {
+    public static void main(String[] args) {
+        Address addr = new Address("Pune", "411001");
+        java.util.ArrayList&lt;String&gt; skills = new java.util.ArrayList&lt;&gt;(List.of("Java"));
+        Employee e = new Employee("Asha", addr, skills);
+
+        addr.setCity("Delhi");                  // caller mutates its own reference
+        skills.add("Go");
+        e.getAddress().setCity("Mumbai");       // caller mutates the returned copy
+        System.out.println(e.getAddress().getCity() + " " + e.getSkills()); // Pune [Java]
+        try {
+            e.getSkills().add("Rust");
+        } catch (UnsupportedOperationException ex) {
+            System.out.println("skills are unmodifiable");
+        }
+        System.out.println(e.withCity("Noida").getAddress().getCity() + " " + e.getAddress().getCity()); // Noida Pune
+    }
+}</code></pre>
+  <p>Output: <code>Pune [Java]</code>, then <code>skills are unmodifiable</code>, then <code>Noida Pune</code>. The bonus answer: immutable objects are thread-safe without locks, and the JMM guarantees that <code>final</code> fields are visible to every thread once the constructor finishes, as long as <code>this</code> does not escape during construction.</p>
+
+  <h2 id="internals"><span class="n">03</span>How it works internally</h2>
+  <h3>HashMap: the bucket array</h3>
+  <div class="flow">
+    <span class="node">key.hashCode()</span><span class="arrow">→</span>
+    <span class="node hl">spread<small>h ^ (h &gt;&gt;&gt; 16)</small></span><span class="arrow">→</span>
+    <span class="node hl">index<small>(n - 1) &amp; hash</small></span><span class="arrow">→</span>
+    <span class="node store">table[index]<small>null | Node list | TreeNode</small></span><span class="arrow">→</span>
+    <span class="node">equals() walk<small>hash compare first</small></span>
+  </div>
+  <p class="flow-caption">Figure: lookup path in java.util.HashMap (JDK 8 onwards).</p>
+  <ul>
+    <li><b>Table</b>: a <code>Node&lt;K,V&gt;[]</code> created lazily on the first put. Default capacity 16, always a power of two (<code>tableSizeFor</code> rounds up the capacity you pass).</li>
+    <li><b>Hash spreading</b>: <code>static final int hash(Object key) { int h; return (key == null) ? 0 : (h = key.hashCode()) ^ (h &gt;&gt;&gt; 16); }</code>. The index uses only the low bits (<code>hash &amp; (n - 1)</code>), so without spreading, hash codes that differ only in high bits (common with <code>Float</code> keys or small tables) would all collide. A null key always goes to bucket 0.</li>
+    <li><b>Node</b>: <code>final int hash; final K key; V value; Node next</code>. Caching the hash lets the bucket walk compare ints before calling <code>equals</code>, and lets resize avoid recomputing <code>hashCode()</code>.</li>
+    <li><b>Load factor and resize</b>: threshold = capacity × 0.75 (12 for 16). When <code>++size &gt; threshold</code> the table doubles. Because capacity is a power of two, each entry either stays at index <code>i</code> or moves to <code>i + oldCap</code>, decided by one bit: <code>(hash &amp; oldCap) == 0</code>. Each bucket splits into a "lo" and "hi" list, preserving order, with no rehash.</li>
+    <li><b>Treeify</b>: when a bin reaches <code>TREEIFY_THRESHOLD = 8</code> nodes it becomes a red-black tree of <code>TreeNode</code>s, but only if the table has at least <code>MIN_TREEIFY_CAPACITY = 64</code> bins; below that the map resizes instead, because a small table is the more likely cause. A tree bin shrinks back to a list at <code>UNTREEIFY_THRESHOLD = 6</code> (during resize split or removal). The gap between 8 and 6 is hysteresis, so a bin hovering at 7 does not flip back and forth. Tree bins order by hash, then by <code>compareTo</code> if keys are <code>Comparable</code>, then by a tie-break on class name and identity hash.</li>
+    <li>Why 8: with a good hash and 0.75 load, bin sizes follow a Poisson distribution with mean about 0.5; the source comment gives the probability of a bin reaching 8 as about 6 in 100 million. Trees only matter when hashing is bad or adversarial (HashDoS), where they cap the worst case at O(log n) instead of O(n).</li>
+  </ul>
+
+  <h3>Worked trace: put into a 16-bin table</h3>
+  <div class="tbl"><table>
+    <tr><th>Step</th><th>Key</th><th>hashCode</th><th>spread hash</th><th>index (n=16)</th><th>Bucket state</th></tr>
+    <tr><td>1</td><td>"pune"</td><td class="num">3452540</td><td class="num">3452488</td><td class="num">8</td><td>[8]: pune</td></tr>
+    <tr><td>2</td><td>"delhi"</td><td class="num">95468108</td><td class="num">95469564</td><td class="num">12</td><td>[12]: delhi</td></tr>
+    <tr><td>3</td><td>"goa"</td><td class="num">102521</td><td class="num">102520</td><td class="num">8</td><td>[8]: pune → goa (collision, appended at tail)</td></tr>
+    <tr><td>4</td><td>"Aa"</td><td class="num">2112</td><td class="num">2112</td><td class="num">0</td><td>[0]: Aa</td></tr>
+    <tr><td>5</td><td>"BB"</td><td class="num">2112</td><td class="num">2112</td><td class="num">0</td><td>[0]: Aa → BB (same hash, equals false)</td></tr>
+    <tr><td>Resize to 32</td><td colspan="5">Bucket 8 splits on bit 16: "pune" (bit clear) stays at 8, "goa" (bit set) moves to 24. "delhi" moves 12 → 28. Bucket 0 stays.</td></tr>
+  </table></div>
+
+  <h3>What changed in Java 8</h3>
+  <div class="tbl"><table>
+    <tr><th>Aspect</th><th>Java 7</th><th>Java 8+</th></tr>
+    <tr><td>Bin structure</td><td>Linked list only; worst case O(n)</td><td>List, treeified to red-black tree at 8 (JEP 180); worst case O(log n)</td></tr>
+    <tr><td>Insertion</td><td>Head of list</td><td>Tail of list</td></tr>
+    <tr><td>Resize</td><td>Rehash every entry; head insertion reversed lists, which under unsynchronised concurrent resize could create a cycle and an infinite loop in <code>get</code></td><td>Lo/hi split preserving order. Still not thread-safe (lost updates, lost entries), but no cycle</td></tr>
+    <tr><td>Hash function</td><td>Several shifts and XORs</td><td>One XOR with the upper 16 bits (trees handle the bad cases)</td></tr>
+    <tr><td>ConcurrentHashMap</td><td>16 <code>Segment</code>s, each a ReentrantLock; concurrency level fixed at creation</td><td>No segments: CAS for empty bins, <code>synchronized</code> on the bin head otherwise</td></tr>
+  </table></div>
+
+  <h3>ConcurrentHashMap (Java 8+)</h3>
+  <ul>
+    <li><b>Reads</b> take no lock. The table and <code>Node.val</code>/<code>next</code> are volatile, and bins are read with <code>Unsafe</code>/VarHandle volatile reads, so <code>get</code> sees the latest completed write.</li>
+    <li><b>Insert into an empty bin</b>: a single CAS of the new node into <code>table[i]</code>. No lock at all.</li>
+    <li><b>Insert into a non-empty bin</b>: <code>synchronized (firstNodeOfBin)</code>. Contention is per bin, so thousands of threads can write to different bins in parallel. The old "concurrency level" constructor argument is only a sizing hint now.</li>
+    <li><b>Resize</b> is cooperative: a thread that hits a bin marked with a <code>ForwardingNode</code> helps move bins (in strides) instead of waiting. Reads during resize follow the forwarding node to the new table.</li>
+    <li><b>Size</b>: a <code>baseCount</code> updated by CAS, plus a <code>CounterCell[]</code> array that threads spread across under contention (the same striping idea as <code>LongAdder</code>). <code>size()</code> sums them, so it is an estimate under concurrent modification. Prefer <code>mappingCount()</code> (returns long).</li>
+    <li><b>No null keys or values</b>: with nulls, <code>get(k) == null</code> would be ambiguous (absent or mapped to null), and unlike HashMap you cannot follow up with <code>containsKey</code> because another thread may change the map in between.</li>
+    <li><b>Atomic compound operations</b>: <code>putIfAbsent</code>, <code>computeIfAbsent</code>, <code>compute</code>, <code>merge</code> run atomically per key while holding the bin lock. <code>get</code> followed by <code>put</code> is two operations and loses updates under contention.</li>
+    <li><b>Iterators</b> are weakly consistent: they never throw <code>ConcurrentModificationException</code> and may or may not reflect concurrent updates.</li>
+  </ul>
+  <pre><code>import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+class CounterRace {
+    public static void main(String[] args) throws InterruptedException {
+        ConcurrentHashMap&lt;String, Integer&gt; racy = new ConcurrentHashMap&lt;&gt;();
+        ConcurrentHashMap&lt;String, Integer&gt; atomic = new ConcurrentHashMap&lt;&gt;();
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        for (int t = 0; t &lt; 8; t++) {
+            pool.submit(() -&gt; {
+                for (int i = 0; i &lt; 100_000; i++) {
+                    Integer old = racy.get("hits");                   // check ...
+                    racy.put("hits", old == null ? 1 : old + 1);      // ... then act: lost updates
+                    atomic.merge("hits", 1, Integer::sum);            // one atomic read-modify-write per key
+                }
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(1, TimeUnit.MINUTES);
+        System.out.println("racy   = " + racy.get("hits"));   // less than 800000, varies per run
+        System.out.println("atomic = " + atomic.get("hits")); // always 800000
+        if (atomic.get("hits") != 800_000) throw new AssertionError();
+    }
+}</code></pre>
+  <p>One run printed <code>racy = 622051</code> and <code>atomic = 800000</code>. <code>ConcurrentHashMap</code> makes each call thread-safe, not your sequence of calls.</p>
+
+  <h3>LinkedHashMap and access order</h3>
+  <p><code>LinkedHashMap</code> extends <code>HashMap</code> and threads a doubly linked list through every entry (<code>before</code>/<code>after</code> pointers). With the constructor flag <code>accessOrder = true</code>, every <code>get</code>/<code>put</code> of an existing key moves that entry to the tail. After each insert it calls <code>removeEldestEntry(eldest)</code>; return true and the head is removed. That is a complete LRU cache in ten lines:</p>
+  <pre><code>import java.util.LinkedHashMap;
+import java.util.Map;
+
+class LruCache&lt;K, V&gt; extends LinkedHashMap&lt;K, V&gt; {
+    private final int capacity;
+
+    LruCache(int capacity) {
+        super(16, 0.75f, true);               // accessOrder = true: get() moves the entry to the tail
+        this.capacity = capacity;
+    }
+
+    @Override
+    protected boolean removeEldestEntry(Map.Entry&lt;K, V&gt; eldest) {
+        return size() &gt; capacity;              // called after every put; evicts the head (least recently used)
+    }
+}
+
+class LruDemo {
+    public static void main(String[] args) {
+        LruCache&lt;String, Integer&gt; c = new LruCache&lt;&gt;(2);
+        c.put("a", 1);
+        c.put("b", 2);
+        c.get("a");                            // order now b, a
+        c.put("c", 3);                         // evicts b
+        System.out.println(c.keySet());        // [a, c]
+        if (!c.keySet().toString().equals("[a, c]")) throw new AssertionError();
+    }
+}</code></pre>
+  <p>It is not thread-safe, and in access order even <code>get</code> is a structural modification. Wrapping it in <code>Collections.synchronizedMap</code> works for low traffic; in production use Caffeine (W-TinyLFU, concurrent, size and time bounds).</p>
+
+  <h3>TreeMap</h3>
+  <p>A red-black tree: a binary search tree with colouring rules that keep the height at most 2·log2(n+1), so <code>get</code>, <code>put</code>, <code>remove</code> are O(log n) with at most two rotations per insert and three per delete. Its value is the <code>NavigableMap</code> API: <code>floorKey</code>, <code>ceilingEntry</code>, <code>headMap</code>, <code>tailMap</code>, <code>subMap</code>, <code>firstEntry</code>, <code>pollFirstEntry</code>. Typical uses: rate tables keyed by effective date (floorEntry(today)), consistent-hashing rings (ceilingEntry(hash), wrap to firstEntry), interval booking checks. TreeMap uses <code>compareTo</code>, never <code>equals</code>: if <code>compareTo</code> returns 0 for two keys that are not equal, the map treats them as the same key. Keep comparators consistent with equals.</p>
+
+  <h3>PriorityQueue</h3>
+  <p>A binary min-heap stored in an <code>Object[]</code>: the children of index <code>i</code> are <code>2i + 1</code> and <code>2i + 2</code>, the parent is <code>(i - 1) / 2</code>. <code>offer</code> appends and sifts up (O(log n)), <code>poll</code> moves the last element to the root and sifts down (O(log n)), <code>peek</code> is O(1). Gotchas interviewers probe:</p>
+  <ul>
+    <li><code>remove(Object)</code> and <code>contains</code> are O(n) linear scans. For "update priority" use lazy deletion (push the new entry, skip stale ones on poll) as in Dijkstra.</li>
+    <li>The iterator and <code>toString()</code> are in array order, not sorted order. Only repeated <code>poll</code> yields sorted output.</li>
+    <li>Building from a collection (<code>new PriorityQueue&lt;&gt;(list)</code>) heapifies in O(n), cheaper than n offers.</li>
+    <li>Changing a field used by the comparator while the element is inside silently breaks the heap invariant (same family of bug as the mutable map key).</li>
+    <li>Not thread-safe; use <code>PriorityBlockingQueue</code>. Comparator <code>(a, b) -&gt; a - b</code> overflows for large values; use <code>Integer.compare</code> or <code>Comparator.comparingInt</code>.</li>
+  </ul>
+
+  <h3>ArrayList versus LinkedList</h3>
+  <div class="tbl"><table>
+    <tr><th>Operation</th><th>ArrayList</th><th>LinkedList</th></tr>
+    <tr><td>get(i)</td><td>O(1)</td><td>O(n) (walks from the nearer end)</td></tr>
+    <tr><td>add at end</td><td>Amortised O(1); grows by 1.5x (<code>old + (old &gt;&gt; 1)</code>) with <code>Arrays.copyOf</code></td><td>O(1)</td></tr>
+    <tr><td>add/remove in middle</td><td>O(n) shift via <code>System.arraycopy</code> (fast, contiguous)</td><td>O(1) once you hold the node, O(n) to find it</td></tr>
+    <tr><td>Memory per element</td><td>One reference (4 bytes with compressed oops)</td><td>A 24-byte node plus the reference: roughly 6x</td></tr>
+    <tr><td>Cache behaviour</td><td>Contiguous, prefetch-friendly</td><td>Pointer chasing</td></tr>
+  </table></div>
+  <p>In practice <code>ArrayList</code> wins almost everywhere; use <code>ArrayDeque</code> for stacks and queues. <code>LinkedList</code> is only defensible when you hold a <code>ListIterator</code> and do many insertions at that position. Java 21 added <code>SequencedCollection</code> (JEP 431): <code>getFirst()</code>, <code>getLast()</code>, <code>reversed()</code> on lists, deques and <code>LinkedHashMap</code>/<code>LinkedHashSet</code>.</p>
+
+  <h2 id="practical"><span class="n">04</span>Production patterns and gotchas</h2>
+  <h3>The mutable-key bug</h3>
+  <pre><code>import java.util.HashMap;
+import java.util.Map;
+
+class MutableKeyBug {
+    static final class Key {
+        int id;                                   // mutable field used in equals/hashCode: the bug
+
+        Key(int id) { this.id = id; }
+
+        @Override public boolean equals(Object o) { return o instanceof Key k &amp;&amp; k.id == id; }
+        @Override public int hashCode() { return Integer.hashCode(id); }
+    }
+
+    public static void main(String[] args) {
+        Map&lt;Key, String&gt; map = new HashMap&lt;&gt;();
+        Key k = new Key(1);
+        map.put(k, "contract-1");
+        k.id = 2;                                         // mutate the key after insertion
+        System.out.println(map.get(k));                   // null: searches the bucket for hash(2)
+        System.out.println(map.get(new Key(1)));          // null: right bucket, but equals fails (stored key is 2 now)
+        System.out.println(map.containsValue("contract-1")); // true: the entry is still there, orphaned
+        System.out.println(map.size());                   // 1
+    }
+}</code></pre>
+  <p>The entry still occupies bucket <code>index(hash(1))</code> with a stored hash of 1, but nothing can reach it: looking up the mutated key goes to bucket <code>index(hash(2))</code>, and looking up a fresh <code>Key(1)</code> finds the node but <code>equals</code> now compares 1 with 2. In a long-running service this is a memory leak plus a cache that never hits. The same applies to <code>HashSet</code> (it is a <code>HashMap</code> with a dummy value) and to JPA entities whose <code>hashCode</code> uses a generated id that is null before persist. Fix: keys immutable (records, <code>String</code>, <code>UUID</code>), or a business key that never changes.</p>
+
+  <div class="grid">
+    <div class="card"><h4>Presize when you know n</h4><p><code>new HashMap&lt;&gt;(n)</code> sets capacity, not entries: 100 entries in a capacity-100 map still resizes. Use <code>HashMap.newHashMap(n)</code> (Java 19+) which accounts for the 0.75 load factor.</p></div>
+    <div class="card"><h4>ConcurrentModificationException</h4><p>Fail-fast iterators check <code>modCount</code>. Removing inside a for-each throws even single-threaded. Use <code>iterator.remove()</code> or <code>removeIf</code>.</p></div>
+    <div class="card"><h4>Do not block inside compute</h4><p><code>computeIfAbsent</code> on ConcurrentHashMap holds the bin lock while your function runs. A remote call inside it stalls every key in that bin. Modifying the same map inside the function can throw <code>IllegalStateException("Recursive update")</code>.</p></div>
+    <div class="card"><h4>List.of versus Arrays.asList</h4><p><code>List.of</code> is immutable and rejects nulls (<code>contains(null)</code> throws NPE). <code>Arrays.asList</code> is fixed-size but writable through to the array.</p></div>
+    <div class="card"><h4>Unbounded maps are leaks</h4><p>A static <code>ConcurrentHashMap</code> used as a cache with no eviction is the classic heap-growth incident. Use Caffeine with <code>maximumSize</code> and <code>expireAfterWrite</code>.</p></div>
+    <div class="card"><h4>Collections.synchronizedMap</h4><p>One lock for every operation, and you must still synchronise manually while iterating. Rarely the right choice over ConcurrentHashMap.</p></div>
+  </div>
+
+  <h2 id="leetcode"><span class="n">05</span>Worked LeetCode designs</h2>
+  <h3>Design HashMap</h3>
+  <p><a href="https://leetcode.com/problems/design-hashmap/" target="_blank" rel="noopener">leetcode.com/problems/design-hashmap</a>. Implement <code>put</code>, <code>get</code> (return -1 if missing) and <code>remove</code> for int keys without the built-in hash tables. Key insight: show the interviewer the real thing in miniature, power-of-two table, spread hash, separate chaining and a resize at 0.75 load, rather than a 10<sup>6</sup>-element array (which works for the constraints but teaches nothing).</p>
+  <pre><code>class MyHashMap {
+    private static final class Node {
+        final int key;
+        int value;
+        Node next;
+
+        Node(int key, int value, Node next) { this.key = key; this.value = value; this.next = next; }
+    }
+
+    private Node[] table = new Node[16];      // length is always a power of two
+    private int size;
+
+    private static int index(int key, int length) {
+        int h = Integer.hashCode(key);
+        h ^= h &gt;&gt;&gt; 16;                         // spread high bits into the low bits, like java.util.HashMap
+        return h &amp; (length - 1);               // same as h % length when length is a power of two
+    }
+
+    public void put(int key, int value) {
+        int i = index(key, table.length);
+        for (Node e = table[i]; e != null; e = e.next) {
+            if (e.key == key) {
+                e.value = value;
+                return;
+            }
+        }
+        table[i] = new Node(key, value, table[i]);
+        if (++size &gt; table.length * 3 / 4) {  // load factor 0.75
+            resize();
+        }
+    }
+
+    public int get(int key) {
+        for (Node e = table[index(key, table.length)]; e != null; e = e.next) {
+            if (e.key == key) {
+                return e.value;
+            }
+        }
+        return -1;
+    }
+
+    public void remove(int key) {
+        int i = index(key, table.length);
+        Node prev = null;
+        for (Node e = table[i]; e != null; prev = e, e = e.next) {
+            if (e.key == key) {
+                if (prev == null) {
+                    table[i] = e.next;
+                } else {
+                    prev.next = e.next;
+                }
+                size--;
+                return;
+            }
+        }
+    }
+
+    private void resize() {
+        Node[] old = table;
+        table = new Node[old.length * 2];
+        for (Node head : old) {
+            for (Node e = head; e != null; ) {
+                Node next = e.next;
+                int i = index(e.key, table.length);
+                e.next = table[i];
+                table[i] = e;
+                e = next;
+            }
+        }
+    }
+}</code></pre>
+  <p>Time: O(1) average per operation, amortised over resizes. Space: O(n). Edge cases: updating an existing key must not grow <code>size</code>; removing the head of a chain; removing a missing key. Follow-ups: thread safety (lock striping by bucket), open addressing with linear probing (tombstones on delete), treeify long chains.</p>
+
+  <h3>LRU Cache</h3>
+  <p><a href="https://leetcode.com/problems/lru-cache/" target="_blank" rel="noopener">leetcode.com/problems/lru-cache</a>. A fixed-capacity cache whose <code>get</code> and <code>put</code> are O(1); when full, evict the least recently used key. Insight: a hash map gives O(1) lookup, a doubly linked list gives O(1) move-to-front and remove-from-back; the map stores list nodes. Sentinel head and tail remove every null check. Interviewers usually say "without LinkedHashMap", so be ready with both.</p>
+  <pre><code>import java.util.HashMap;
+import java.util.Map;
+
+class LRUCache {
+    private static final class Node {
+        int key;
+        int value;
+        Node prev;
+        Node next;
+
+        Node(int key, int value) { this.key = key; this.value = value; }
+    }
+
+    private final int capacity;
+    private final Map&lt;Integer, Node&gt; map = new HashMap&lt;&gt;();
+    private final Node head = new Node(0, 0);   // sentinel: most recent is head.next
+    private final Node tail = new Node(0, 0);   // sentinel: least recent is tail.prev
+
+    public LRUCache(int capacity) {
+        this.capacity = capacity;
+        head.next = tail;
+        tail.prev = head;
+    }
+
+    public int get(int key) {
+        Node n = map.get(key);
+        if (n == null) {
+            return -1;
+        }
+        unlink(n);
+        addFirst(n);
+        return n.value;
+    }
+
+    public void put(int key, int value) {
+        Node n = map.get(key);
+        if (n != null) {
+            n.value = value;
+            unlink(n);
+            addFirst(n);
+            return;
+        }
+        if (map.size() == capacity) {
+            Node lru = tail.prev;
+            unlink(lru);
+            map.remove(lru.key);                // this is why the node stores its key
+        }
+        n = new Node(key, value);
+        map.put(key, n);
+        addFirst(n);
+    }
+
+    private void unlink(Node n) {
+        n.prev.next = n.next;
+        n.next.prev = n.prev;
+    }
+
+    private void addFirst(Node n) {
+        n.next = head.next;
+        n.prev = head;
+        head.next.prev = n;
+        head.next = n;
+    }
+}</code></pre>
+  <p>Time: O(1) for both operations. Space: O(capacity). Edge cases: capacity 1, <code>put</code> on an existing key must update and refresh without evicting. Follow-ups: thread safety (one lock is honest; Caffeine-style buffered reordering scales), TTL per entry, size by bytes instead of count.</p>
+
+  <h3>LFU Cache</h3>
+  <p><a href="https://leetcode.com/problems/lfu-cache/" target="_blank" rel="noopener">leetcode.com/problems/lfu-cache</a>. Evict the least frequently used key; break ties by least recently used. Both operations must be O(1). Insight: group keys by frequency, each group an insertion-ordered set (oldest first), and track <code>minFreq</code>. On access, move the key from group f to f + 1, and bump <code>minFreq</code> only if group f became empty and was the minimum. A new key always resets <code>minFreq</code> to 1.</p>
+  <pre><code>import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+
+class LFUCache {
+    private final int capacity;
+    private final Map&lt;Integer, int[]&gt; entries = new HashMap&lt;&gt;();               // key -&gt; {value, freq}
+    private final Map&lt;Integer, LinkedHashSet&lt;Integer&gt;&gt; byFreq = new HashMap&lt;&gt;(); // freq -&gt; keys, oldest first
+    private int minFreq;
+
+    public LFUCache(int capacity) {
+        this.capacity = capacity;
+    }
+
+    public int get(int key) {
+        int[] e = entries.get(key);
+        if (e == null) {
+            return -1;
+        }
+        touch(key, e);
+        return e[0];
+    }
+
+    public void put(int key, int value) {
+        if (capacity == 0) {
+            return;
+        }
+        int[] e = entries.get(key);
+        if (e != null) {
+            e[0] = value;
+            touch(key, e);
+            return;
+        }
+        if (entries.size() == capacity) {
+            LinkedHashSet&lt;Integer&gt; keys = byFreq.get(minFreq);
+            int victim = keys.iterator().next();  // least frequent; ties broken by least recent
+            keys.remove(victim);
+            if (keys.isEmpty()) {
+                byFreq.remove(minFreq);
+            }
+            entries.remove(victim);
+        }
+        entries.put(key, new int[] {value, 1});
+        byFreq.computeIfAbsent(1, f -&gt; new LinkedHashSet&lt;&gt;()).add(key);
+        minFreq = 1;                              // a brand-new key always has the lowest frequency
+    }
+
+    private void touch(int key, int[] e) {
+        int f = e[1];
+        LinkedHashSet&lt;Integer&gt; keys = byFreq.get(f);
+        keys.remove(key);
+        if (keys.isEmpty()) {
+            byFreq.remove(f);
+            if (minFreq == f) {
+                minFreq = f + 1;
+            }
+        }
+        e[1] = f + 1;
+        byFreq.computeIfAbsent(f + 1, x -&gt; new LinkedHashSet&lt;&gt;()).add(key);
+    }
+}</code></pre>
+  <p>Time: O(1) average. Space: O(capacity). Edge cases: capacity 0, updating an existing key counts as a use, evicting before inserting (otherwise the new key evicts itself). <code>LinkedHashSet</code> gives the LRU tie-break for free because iteration is insertion order and remove/add moves a key to the end.</p>
+
+  <h3>Insert Delete GetRandom O(1)</h3>
+  <p><a href="https://leetcode.com/problems/insert-delete-getrandom-o1/" target="_blank" rel="noopener">leetcode.com/problems/insert-delete-getrandom-o1</a>. A set with O(1) average <code>insert</code>, <code>remove</code> and uniformly random <code>getRandom</code>. Insight: random access needs an array; O(1) delete from an array needs swap-with-last; finding the index needs a map from value to index.</p>
+  <pre><code>import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+
+class RandomizedSet {
+    private final List&lt;Integer&gt; values = new ArrayList&lt;&gt;();
+    private final Map&lt;Integer, Integer&gt; indexOf = new HashMap&lt;&gt;();
+    private final Random random = new Random();
+
+    public boolean insert(int val) {
+        if (indexOf.containsKey(val)) {
+            return false;
+        }
+        indexOf.put(val, values.size());
+        values.add(val);
+        return true;
+    }
+
+    public boolean remove(int val) {
+        Integer i = indexOf.remove(val);
+        if (i == null) {
+            return false;
+        }
+        int last = values.remove(values.size() - 1);  // O(1): removing the tail never shifts
+        if (i &lt; values.size()) {                       // val was not the tail: move the tail into its slot
+            values.set(i, last);
+            indexOf.put(last, i);
+        }
+        return true;
+    }
+
+    public int getRandom() {
+        return values.get(random.nextInt(values.size()));
+    }
+}</code></pre>
+  <p>Time: O(1) average. Space: O(n). Edge case that fails most first attempts: removing the last element, where "swap with last" would re-insert the removed value into the index map. The <code>i &lt; values.size()</code> check handles it. Follow-up (LeetCode 381): allow duplicates by mapping value to a set of indices.</p>
+
+  <h2 id="qa"><span class="n">06</span>Interview questions with crisp answers</h2>
+  <details class="qa"><summary>Walk me through HashMap.put.</summary><p>Compute <code>hash = h ^ (h &gt;&gt;&gt; 16)</code>; create the table if null (16 bins); index <code>(n - 1) &amp; hash</code>. Empty bin: place a node. Otherwise walk the bin (or tree): if a node has the same hash and an equal key, replace the value and return the old one. Else append at the tail; if the list reaches 8, treeify (or resize if fewer than 64 bins). Increment <code>modCount</code> and <code>size</code>; if size exceeds the threshold, double the table and split bins into lo/hi lists.</p></details>
+  <details class="qa"><summary>Why is the capacity a power of two?</summary><p>So the index is a bitmask (<code>hash &amp; (n - 1)</code>) instead of a modulo, and so a resize moves each entry to either the same index or index + oldCap based on a single bit. The cost is that only low bits pick the bucket, which is why the hash is spread with the upper 16 bits.</p></details>
+  <details class="qa"><summary>When does a bucket become a tree, and why not always use trees?</summary><p>At 8 nodes, if the table has at least 64 bins; it reverts at 6. TreeNodes are about twice the size of Nodes and slower for small bins; with a decent hash a bin of 8 is vanishingly rare, so trees exist as protection against bad or malicious hash codes.</p></details>
+  <details class="qa"><summary>What happens if two threads use a HashMap concurrently?</summary><p>Lost updates, lost entries during resize, a <code>size</code> that disagrees with contents, and in Java 7 a possible infinite loop from a cyclic list. Java 8 removed the cycle but the map is still not thread-safe. Use ConcurrentHashMap.</p></details>
+  <details class="qa"><summary>How does ConcurrentHashMap achieve concurrency without segments?</summary><p>CAS to install the first node in an empty bin, <code>synchronized</code> on the bin's head node for everything else, volatile reads for <code>get</code>, cooperative resizing with forwarding nodes, and a striped counter for size. Lock granularity is one bin rather than one of 16 segments.</p></details>
+  <details class="qa"><summary>Why does ConcurrentHashMap reject null?</summary><p>A null from <code>get</code> must mean "absent". With null values you would need <code>containsKey</code> to disambiguate, and that check-then-act is racy across threads. Doug Lea considered the ambiguity unacceptable in concurrent maps.</p></details>
+  <details class="qa"><summary>Is <code>if (!map.containsKey(k)) map.put(k, v)</code> safe on ConcurrentHashMap?</summary><p>No, it is check-then-act: two threads can both see absent and both put. Use <code>putIfAbsent</code> or <code>computeIfAbsent</code>. For counters use <code>merge(k, 1, Integer::sum)</code> or a <code>ConcurrentHashMap&lt;K, LongAdder&gt;</code>.</p></details>
+  <details class="qa"><summary>Is ConcurrentHashMap.size() exact?</summary><p>Only when no updates are in flight. It sums <code>baseCount</code> and the counter cells without locking, so under concurrent writes it is a moment-in-time estimate. Use <code>mappingCount()</code> for maps that might exceed <code>Integer.MAX_VALUE</code>.</p></details>
+  <details class="qa"><summary>How would you build an LRU cache, and how do you make it thread-safe?</summary><p>LinkedHashMap with access order and <code>removeEldestEntry</code>, or HashMap plus a doubly linked list for the LeetCode version. Thread safety: a single <code>ReentrantLock</code> around both structures is correct and fine for modest traffic. At scale, use Caffeine, which records reads in striped ring buffers and applies them in batches so reads do not contend on a global lock.</p></details>
+  <details class="qa"><summary>What is the difference between fail-fast and weakly consistent iterators?</summary><p>Fail-fast (ArrayList, HashMap) compare <code>modCount</code> and throw <code>ConcurrentModificationException</code> on a structural change not made through the iterator; best-effort, not a concurrency guarantee. Weakly consistent (concurrent collections) never throw, traverse elements as they existed at some point, and may reflect later changes.</p></details>
+  <details class="qa"><summary>TreeMap or HashMap for 1 million entries with range queries?</summary><p>TreeMap (or ConcurrentSkipListMap if shared): range queries like "all bookings between 10:00 and 11:00" are <code>subMap</code> in O(log n + k). HashMap would need a full scan. If you only need point lookups, HashMap is faster and smaller.</p></details>
+  <details class="qa"><summary>How does PriorityQueue find the minimum, and what is slow in it?</summary><p>The minimum is always at index 0 of a binary heap array. offer and poll are O(log n); remove(Object) and contains are O(n); iteration is not sorted.</p></details>
+  <details class="qa"><summary>Why are Strings good HashMap keys?</summary><p>Immutable, final class, and the hash is computed once and cached in the object. Their equals and hashCode are consistent and well distributed for typical data.</p></details>
+  <details class="qa"><summary>Does a record make a class immutable?</summary><p>Shallowly. Record fields are final and equals/hashCode/toString are generated, but a record holding a <code>List</code> or <code>Address</code> exposes that mutable object. Copy in a compact constructor: <code>record Employee(String name, List&lt;String&gt; skills) { Employee { skills = List.copyOf(skills); } }</code>.</p></details>
+
+  <h2 id="exercise"><span class="n">07</span>Hands-on exercise (45 minutes)</h2>
+  <ol>
+    <li>Compile and run <code>CounterRace</code> above three times; note the racy count each time. Replace <code>merge</code> with a <code>ConcurrentHashMap&lt;String, LongAdder&gt;</code> and <code>computeIfAbsent(k, x -&gt; new LongAdder()).increment()</code>. Confirm it is exact.</li>
+    <li>Write a key class whose <code>hashCode()</code> returns a constant. Insert 10,000 keys into a HashMap and time 1 million lookups. Then make the class implement <code>Comparable</code> and repeat. Explain the difference using treeification (tree bins can only order by <code>compareTo</code> when keys are Comparable).</li>
+    <li>Take your <code>MyHashMap</code> and add a <code>ReentrantLock[]</code> of 16 stripes (lock = <code>stripes[index &amp; 15]</code>). What breaks during resize, and how does ConcurrentHashMap solve it?</li>
+    <li>Make the JPMC <code>Employee</code> a record with a compact constructor and verify that the defensive copies still hold.</li>
+  </ol>
+
+  <h2 id="sources"><span class="n">08</span>Sources and go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/HashMap.java" target="_blank" rel="noopener">OpenJDK HashMap.java source (implementation notes, treeify constants, Poisson comment)</a></li>
+    <li><a href="https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java" target="_blank" rel="noopener">OpenJDK ConcurrentHashMap.java source (overview comment on bins, counter cells, resizing)</a></li>
+    <li><a href="https://openjdk.org/jeps/180" target="_blank" rel="noopener">JEP 180: Handle Frequent HashMap Collisions with Balanced Trees</a></li>
+    <li><a href="https://openjdk.org/jeps/431" target="_blank" rel="noopener">JEP 431: Sequenced Collections</a></li>
+    <li><a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html" target="_blank" rel="noopener">HashMap Javadoc (Java 21)</a>, <a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/LinkedHashMap.html" target="_blank" rel="noopener">LinkedHashMap Javadoc</a>, <a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html" target="_blank" rel="noopener">ConcurrentHashMap Javadoc</a></li>
+    <li>LeetCode: <a href="https://leetcode.com/problems/design-hashmap/" target="_blank" rel="noopener">Design HashMap</a>, <a href="https://leetcode.com/problems/lru-cache/" target="_blank" rel="noopener">LRU Cache</a>, <a href="https://leetcode.com/problems/lfu-cache/" target="_blank" rel="noopener">LFU Cache</a>, <a href="https://leetcode.com/problems/insert-delete-getrandom-o1/" target="_blank" rel="noopener">Insert Delete GetRandom O(1)</a></li>
+    <li>Joshua Bloch, Effective Java (3rd ed.), items 10–11 (equals and hashCode) and 17 (minimise mutability); Brian Goetz, Java Concurrency in Practice, chapter 5.</li>
+    <li>Interview reports referenced in section 01 are from the playbook's verified 2025–26 notes (JPMC, Walmart, Intuit, LinkedIn, Apple).</li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="java-concurrency.html">Java concurrency</a> · <a href="lld-cache-library.html">Cache library LLD</a> · <a href="dsa-heaps-intervals.html">Heaps and intervals</a></span></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cache Library LLD</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Machine coding · LLD</span></div>
+  <h1>Cache Library with Pluggable Eviction and TTL</h1>
+  <p class="lede">Build an in-process cache library: bounded size, per-entry TTL, eviction policy you can swap (LRU, LFU, FIFO) without touching the cache, thread-safe, with stats and listeners. Seniors are separated by two things: making eviction a real abstraction, and getting the expiry races right.</p>
+  <div class="facts">
+    <span class="fact"><b>Time-box:</b> 60–120 min</span>
+    <span class="fact"><b>Seen:</b> LRU/LFU at ~9 companies; full library at Groww, Tekion, Microsoft, Confluent</span>
+  </div>
+  <div class="chips"><span class="chip hot">Groww</span><span class="chip hot">Tekion</span><span class="chip">Microsoft</span><span class="chip">Confluent</span><span class="chip">Walmart</span><span class="chip">Goldman Sachs</span><span class="chip">Freshworks</span><span class="chip">Razorpay</span><span class="chip">Rippling</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#graded">What's graded</a></li>
+    <li><a href="#clarify">Clarifying questions</a></li>
+    <li><a href="#reqs">Requirements</a></li>
+    <li><a href="#design">Class design</a></li>
+    <li><a href="#code">Core code</a></li>
+    <li><a href="#concurrency">Concurrency and edge cases</a></li>
+    <li><a href="#extensions">Extensions</a></li>
+    <li><a href="#tests">Tests to write</a></li>
+    <li><a href="#mistakes">Mistakes and review questions</a></li>
+    <li><a href="#plan">90-minute plan</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <p>The reports show three flavours of the same problem:</p>
+  <div class="grid">
+    <div class="card"><h4>Open-ended library (Groww, Tekion)</h4><p>Groww SDE-2 (Apr 2025): two hours, the whole statement was "build a scalable cache"; the candidate shipped add/contains/invalidate/setMaxSize with FIFO via a queue. Feedback: "This isn't scalable. FIFO isn't enough — what if we want different eviction logic?" Tekion SDE-2 (Jun 2026, selected): "design your own library of a TTL based caching system" — running code not required, "clear classes, design patterns were expected"; the candidate called it the toughest round.</p></div>
+    <div class="card"><h4>Layered follow-ups (Microsoft)</h4><p>Start with a key-value store, add TTL, then "what races exist on expiry?", then add LRU. Each layer must slot into the previous code without a rewrite.</p></div>
+    <div class="card"><h4>Algorithmic core (Confluent, Freshworks, Razorpay)</h4><p>Confluent: LRU with TTL plus "average of all active values" in the most optimised way. Freshworks: LRU cache, talk through brute force to O(1). Razorpay OA: LFU with ties broken by smallest key.</p></div>
+  </div>
+  <p>Across all of them: requirements you defined yourself, an <code>EvictionPolicy</code> interface (the Groww rejection in one line), correct O(1) or O(log n) structures, an honest concurrency story, an injectable clock so TTL is testable, and patterns you can name and justify.</p>
+
+  <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
+  <div class="tbl"><table>
+    <tr><th>Question</th><th>Why it matters</th></tr>
+    <tr><td>Library embedded in one JVM, or a cache service?</td><td>Library means generics, no network, thread safety inside. Service means sharding and replication (an HLD conversation).</td></tr>
+    <tr><td>Capacity by entry count or by weight (bytes)?</td><td>Weight needs a <code>Weigher</code> and evicting until total weight fits; count is simpler. Offer weight as an extension.</td></tr>
+    <tr><td>Which eviction policies? Should users plug their own?</td><td>Answer before they ask: yes, via an interface. Default LRU.</td></tr>
+    <tr><td>TTL per entry, a default, or both? Expire-after-write or after-access?</td><td>Changes what you store per entry and whether reads extend life.</td></tr>
+    <tr><td>Must expired entries free memory promptly, or is lazy expiry OK?</td><td>Lazy-only can hold dead entries forever; add a sweeper.</td></tr>
+    <tr><td>Read-heavy or write-heavy? How many threads?</td><td>Decides between one lock, lock striping, or Caffeine-style buffered reads.</td></tr>
+    <tr><td>Null keys or values allowed?</td><td>Reject both: null as "absent" makes <code>get</code> ambiguous.</td></tr>
+    <tr><td>Do callers need a loader (read-through) or stats?</td><td>Loader brings the thundering-herd question; stats need <code>LongAdder</code>.</td></tr>
+  </table></div>
+
+  <h2 id="reqs"><span class="n">03</span>Requirements</h2>
+  <div class="grid">
+    <div class="card"><h4>Functional</h4><ul>
+      <li><code>get</code>, <code>put</code> (default TTL), <code>put</code> with TTL, <code>remove</code>, <code>size</code>, <code>clear</code>.</li>
+      <li>Max size; on overflow evict per configured policy.</li>
+      <li>Expired entries are never returned.</li>
+      <li>Policies: LRU, LFU, FIFO; custom ones via interface.</li>
+      <li>Removal listener with cause (EXPIRED, EVICTED, EXPLICIT, REPLACED).</li>
+      <li>Stats: hits, misses, evictions.</li>
+    </ul></div>
+    <div class="card"><h4>Non-functional</h4><ul>
+      <li>Thread-safe; no lost updates; listener never runs under the cache lock.</li>
+      <li>O(1) get/put for LRU/FIFO; O(log n) acceptable for LFU and expiry bookkeeping.</li>
+      <li>Deterministic tests via injected <code>Clock</code>.</li>
+      <li>Builder-based configuration, immutable after build.</li>
+    </ul></div>
+    <div class="card"><h4>Out of scope</h4><ul>
+      <li>Distribution, replication, persistence.</li>
+      <li>Off-heap storage.</li>
+      <li>Write-behind to a database (extension only).</li>
+    </ul></div>
+  </div>
+
+  <h2 id="design"><span class="n">04</span>Class design</h2>
+  <div class="tbl"><table>
+    <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
+    <tr><td><code>Cache&lt;K,V&gt;</code></td><td>Public API</td><td><code>get</code>, <code>put</code>, <code>remove</code>, <code>size</code>, <code>stats</code></td></tr>
+    <tr><td><code>InMemoryCache&lt;K,V&gt;</code></td><td>Storage, TTL, coordinates policy, fires events</td><td><code>HashMap&lt;K,Entry&gt;</code>, lock, <code>PriorityQueue&lt;Expiry&gt;</code>, <code>Clock</code></td></tr>
+    <tr><td><code>Entry&lt;V&gt;</code></td><td>Value plus expiry</td><td>value, expiresAtMillis (0 = never)</td></tr>
+    <tr><td><code>EvictionPolicy&lt;K&gt;</code></td><td>Decides the victim; knows nothing about values or TTL</td><td><code>onInsert</code>, <code>onAccess</code>, <code>onRemove</code>, <code>victim</code></td></tr>
+    <tr><td><code>LruPolicy</code>, <code>LfuPolicy</code>, <code>FifoPolicy</code></td><td>Concrete strategies</td><td>linked set; frequency buckets</td></tr>
+    <tr><td><code>RemovalListener&lt;K,V&gt;</code></td><td>Observer of removals</td><td><code>onRemoval(key, value, cause)</code></td></tr>
+    <tr><td><code>CacheStats</code></td><td>Counters</td><td><code>LongAdder</code> hits, misses, evictions</td></tr>
+    <tr><td><code>CacheBuilder&lt;K,V&gt;</code></td><td>Validated configuration</td><td><code>maxSize</code>, <code>defaultTtl</code>, <code>policy</code>, <code>clock</code>, <code>listener</code></td></tr>
+  </table></div>
+  <div class="flow">
+    <span class="node">Caller</span><span class="arrow">→</span>
+    <span class="node hl">InMemoryCache<small>lock, TTL, size</small></span><span class="arrow">→</span>
+    <span class="node store">HashMap<small>key → Entry</small></span>
+    <span class="arrow">+</span>
+    <span class="node">EvictionPolicy<small>LRU · LFU · FIFO</small></span>
+    <span class="arrow">+</span>
+    <span class="node store">Expiry heap<small>by expiresAt</small></span>
+    <span class="arrow">→</span>
+    <span class="node">RemovalListener<small>after unlock</small></span>
+  </div>
+  <p class="flow-caption">Figure: the cache owns data and time; the policy only owns ordering of keys; listeners hear about removals outside the lock.</p>
+  <h3>Patterns and why</h3>
+  <ul>
+    <li><b>Strategy</b> for eviction. The policy sees keys and events only, so a new policy is one class and no change to the cache. This is the exact gap the Groww interviewer called out.</li>
+    <li><b>Builder</b> for configuration: many optional parameters, validation in <code>build()</code>, immutable result.</li>
+    <li><b>Observer</b> for removal listeners and stats hooks.</li>
+    <li><b>Decorator</b> for cross-cutting layers: <code>LoadingCache</code> (read-through), <code>TransactionalCache</code>, metrics.</li>
+    <li><b>Template / null object</b> avoided: no abstract base class with half the logic; composition is easier to defend.</li>
+  </ul>
+
+  <h2 id="code"><span class="n">05</span>Core code</h2>
+  <pre><code>public interface Cache&lt;K, V&gt; {
+    Optional&lt;V&gt; get(K key);
+    void put(K key, V value);                 // default TTL
+    void put(K key, V value, Duration ttl);   // null ttl = never expires
+    boolean remove(K key);
+    int size();
+    CacheStats stats();
+}
+
+public enum RemovalCause { EXPLICIT, REPLACED, EXPIRED, EVICTED }
+
+@FunctionalInterface
+public interface RemovalListener&lt;K, V&gt; {
+    void onRemoval(K key, V value, RemovalCause cause);
+}
+
+/** Owns only key ordering. Called with the cache lock held, so implementations need no locking. */
+public interface EvictionPolicy&lt;K&gt; {
+    void onInsert(K key);
+    void onAccess(K key);
+    void onRemove(K key);
+    K victim(); // next key to evict, or null if empty
+}</code></pre>
+
+  <p>LRU and FIFO are a <code>LinkedHashSet</code>: insertion order is the list, the hash gives O(1) removal. "Move to back on access" is remove + add. If the interviewer insists on the hand-rolled doubly linked list (Freshworks did), it is the same shape: <code>HashMap&lt;K, Node&gt;</code> plus head/tail sentinels.</p>
+  <pre><code>public final class LruPolicy&lt;K&gt; implements EvictionPolicy&lt;K&gt; {
+    private final LinkedHashSet&lt;K&gt; order = new LinkedHashSet&lt;&gt;(); // eldest first
+
+    public void onInsert(K key) { order.add(key); }
+    public void onAccess(K key) { order.remove(key); order.add(key); }
+    public void onRemove(K key) { order.remove(key); }
+    public K victim() { return order.isEmpty() ? null : order.iterator().next(); }
+}
+
+public final class FifoPolicy&lt;K&gt; implements EvictionPolicy&lt;K&gt; {
+    private final LinkedHashSet&lt;K&gt; order = new LinkedHashSet&lt;&gt;();
+
+    public void onInsert(K key) { order.add(key); }
+    public void onAccess(K key) { }                       // access does not change FIFO order
+    public void onRemove(K key) { order.remove(key); }
+    public K victim() { return order.isEmpty() ? null : order.iterator().next(); }
+}
+
+/** LFU, ties broken by least-recently-used within the same frequency. */
+public final class LfuPolicy&lt;K&gt; implements EvictionPolicy&lt;K&gt; {
+    private final Map&lt;K, Integer&gt; freq = new HashMap&lt;&gt;();
+    private final TreeMap&lt;Integer, LinkedHashSet&lt;K&gt;&gt; buckets = new TreeMap&lt;&gt;();
+
+    public void onInsert(K key) { freq.put(key, 1); bucket(1).add(key); }
+
+    public void onAccess(K key) {
+        int f = freq.merge(key, 1, Integer::sum);
+        unlink(key, f - 1);
+        bucket(f).add(key);
+    }
+
+    public void onRemove(K key) {
+        Integer f = freq.remove(key);
+        if (f != null) unlink(key, f);
+    }
+
+    public K victim() {
+        var lowest = buckets.firstEntry(); // O(log F); empty buckets are always removed
+        return lowest == null ? null : lowest.getValue().iterator().next();
+    }
+
+    private LinkedHashSet&lt;K&gt; bucket(int f) { return buckets.computeIfAbsent(f, x -&gt; new LinkedHashSet&lt;&gt;()); }
+
+    private void unlink(K key, int f) {
+        LinkedHashSet&lt;K&gt; b = buckets.get(f);
+        b.remove(key);
+        if (b.isEmpty()) buckets.remove(f);
+    }
+}</code></pre>
+  <p>For the classic O(1) LFU, replace the <code>TreeMap</code> with a <code>HashMap</code> plus a <code>minFreq</code> int: on insert set <code>minFreq = 1</code>; on access, if the old bucket was <code>minFreq</code> and is now empty, increment it. Arbitrary removals (TTL, explicit delete) can leave <code>minFreq</code> stale, which is why the <code>TreeMap</code> version is the safer default in a library. For Razorpay's "ties go to the smallest key", make each bucket a <code>TreeSet&lt;K&gt;</code>.</p>
+
+  <pre><code>public final class InMemoryCache&lt;K, V&gt; implements Cache&lt;K, V&gt; {
+    private record Entry&lt;V&gt;(V value, long expiresAt) {
+        boolean expired(long now) { return expiresAt != 0 &amp;&amp; now &gt;= expiresAt; }
+    }
+    private record Expiry&lt;K, V&gt;(K key, Entry&lt;V&gt; entry) {}
+    private record Removal&lt;K, V&gt;(K key, V value, RemovalCause cause) {}
+
+    private final Map&lt;K, Entry&lt;V&gt;&gt; map = new HashMap&lt;&gt;();
+    private final PriorityQueue&lt;Expiry&lt;K, V&gt;&gt; expiries =
+            new PriorityQueue&lt;&gt;(Comparator.comparingLong((Expiry&lt;K, V&gt; e) -&gt; e.entry().expiresAt()));
+    private final ReentrantLock lock = new ReentrantLock(); // ponytail: one lock; stripe into segments if contended
+    private final EvictionPolicy&lt;K&gt; policy;
+    private final int maxSize;
+    private final Duration defaultTtl;
+    private final Clock clock;
+    private final RemovalListener&lt;K, V&gt; listener;
+    private final CacheStats stats = new CacheStats();
+
+    InMemoryCache(CacheBuilder&lt;K, V&gt; b) {
+        this.policy = b.policy; this.maxSize = b.maxSize; this.defaultTtl = b.defaultTtl;
+        this.clock = b.clock; this.listener = b.listener;
+    }
+
+    @Override
+    public Optional&lt;V&gt; get(K key) {
+        Objects.requireNonNull(key);
+        List&lt;Removal&lt;K, V&gt;&gt; removed = new ArrayList&lt;&gt;();
+        Optional&lt;V&gt; result;
+        lock.lock();
+        try {
+            Entry&lt;V&gt; e = map.get(key);
+            if (e != null &amp;&amp; e.expired(clock.millis())) {
+                removeEntry(key, e, RemovalCause.EXPIRED, removed); // lazy expiry
+                e = null;
+            }
+            if (e == null) {
+                stats.miss();
+                result = Optional.empty();
+            } else {
+                policy.onAccess(key);
+                stats.hit();
+                result = Optional.of(e.value());
+            }
+        } finally {
+            lock.unlock();
+        }
+        fire(removed);
+        return result;
+    }
+
+    @Override
+    public void put(K key, V value) { put(key, value, defaultTtl); }
+
+    @Override
+    public void put(K key, V value, Duration ttl) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(value);
+        List&lt;Removal&lt;K, V&gt;&gt; removed = new ArrayList&lt;&gt;();
+        lock.lock();
+        try {
+            long now = clock.millis();
+            Entry&lt;V&gt; fresh = new Entry&lt;&gt;(value, ttl == null ? 0 : now + ttl.toMillis());
+            Entry&lt;V&gt; old = map.put(key, fresh);
+            if (old == null) {
+                policy.onInsert(key);
+            } else {
+                policy.onAccess(key);
+                removed.add(new Removal&lt;&gt;(key, old.value(), RemovalCause.REPLACED));
+            }
+            if (fresh.expiresAt() != 0) expiries.add(new Expiry&lt;&gt;(key, fresh));
+            purgeExpired(now, removed);           // prefer dropping dead entries over live ones
+            while (map.size() &gt; maxSize) {
+                K victim = policy.victim();
+                removeEntry(victim, map.get(victim), RemovalCause.EVICTED, removed);
+                stats.eviction();
+            }
+        } finally {
+            lock.unlock();
+        }
+        fire(removed);
+    }
+
+    @Override
+    public boolean remove(K key) {
+        List&lt;Removal&lt;K, V&gt;&gt; removed = new ArrayList&lt;&gt;();
+        lock.lock();
+        try {
+            Entry&lt;V&gt; e = map.get(key);
+            if (e == null) return false;
+            removeEntry(key, e, RemovalCause.EXPLICIT, removed);
+        } finally {
+            lock.unlock();
+        }
+        fire(removed);
+        return true;
+    }
+
+    /** Called by a scheduled sweeper too, so memory is reclaimed for keys nobody reads again. */
+    public void cleanUp() {
+        List&lt;Removal&lt;K, V&gt;&gt; removed = new ArrayList&lt;&gt;();
+        lock.lock();
+        try { purgeExpired(clock.millis(), removed); } finally { lock.unlock(); }
+        fire(removed);
+    }
+
+    private void purgeExpired(long now, List&lt;Removal&lt;K, V&gt;&gt; removed) {
+        while (!expiries.isEmpty() &amp;&amp; expiries.peek().entry().expired(now)) {
+            Expiry&lt;K, V&gt; x = expiries.poll();
+            // identity check: skip heap items for entries that were overwritten or removed since
+            if (map.get(x.key()) == x.entry()) removeEntry(x.key(), x.entry(), RemovalCause.EXPIRED, removed);
+        }
+    }
+
+    private void removeEntry(K key, Entry&lt;V&gt; e, RemovalCause cause, List&lt;Removal&lt;K, V&gt;&gt; removed) {
+        map.remove(key);
+        policy.onRemove(key);
+        removed.add(new Removal&lt;&gt;(key, e.value(), cause));
+    }
+
+    private void fire(List&lt;Removal&lt;K, V&gt;&gt; removed) { // outside the lock: listener may be slow or re-enter
+        for (Removal&lt;K, V&gt; r : removed) {
+            try { listener.onRemoval(r.key(), r.value(), r.cause()); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    @Override public int size() { lock.lock(); try { return map.size(); } finally { lock.unlock(); } }
+    @Override public CacheStats stats() { return stats; }
+}</code></pre>
+
+  <pre><code>public final class CacheBuilder&lt;K, V&gt; {
+    int maxSize = 10_000;
+    Duration defaultTtl;                            // null = no expiry
+    EvictionPolicy&lt;K&gt; policy = new LruPolicy&lt;&gt;();
+    Clock clock = Clock.systemUTC();
+    RemovalListener&lt;K, V&gt; listener = (k, v, c) -&gt; { };
+
+    public CacheBuilder&lt;K, V&gt; maxSize(int n) { this.maxSize = n; return this; }
+    public CacheBuilder&lt;K, V&gt; defaultTtl(Duration d) { this.defaultTtl = d; return this; }
+    public CacheBuilder&lt;K, V&gt; policy(EvictionPolicy&lt;K&gt; p) { this.policy = p; return this; }
+    public CacheBuilder&lt;K, V&gt; clock(Clock c) { this.clock = c; return this; }
+    public CacheBuilder&lt;K, V&gt; listener(RemovalListener&lt;K, V&gt; l) { this.listener = l; return this; }
+
+    public Cache&lt;K, V&gt; build() {
+        if (maxSize &lt;= 0) throw new IllegalArgumentException("maxSize must be positive");
+        if (defaultTtl != null &amp;&amp; (defaultTtl.isNegative() || defaultTtl.isZero())) {
+            throw new IllegalArgumentException("ttl must be positive");
+        }
+        return new InMemoryCache&lt;&gt;(this);
+    }
+}
+
+public final class CacheStats {
+    private final LongAdder hits = new LongAdder(), misses = new LongAdder(), evictions = new LongAdder();
+    void hit() { hits.increment(); }
+    void miss() { misses.increment(); }
+    void eviction() { evictions.increment(); }
+    public double hitRate() {
+        long h = hits.sum(), total = h + misses.sum();
+        return total == 0 ? 1.0 : (double) h / total;
+    }
+}</code></pre>
+  <p>The sweeper is one line in the demo: <code>scheduler.scheduleAtFixedRate(cache::cleanUp, 1, 1, TimeUnit.SECONDS)</code>. Redis does the same pair: passive expiry when a key is touched, plus an active cycle that samples keys with a TTL.</p>
+
+  <h2 id="concurrency"><span class="n">06</span>Concurrency and edge cases</h2>
+  <div class="tbl"><table>
+    <tr><th>Race / edge</th><th>What goes wrong</th><th>Fix in this design</th></tr>
+    <tr><td>Expiry vs overwrite (Microsoft's question)</td><td>Thread A sees key expired and deletes it; thread B has just put a fresh value; A deletes B's fresh value.</td><td>Check and delete under one lock, and the sweeper deletes only if <code>map.get(key) == entry</code> (the entry it scheduled). With a <code>ConcurrentHashMap</code> design the same idea is <code>map.remove(key, entry)</code>, the conditional remove.</td></tr>
+    <tr><td>LRU reads mutate order</td><td>"Reads are safe" is false: every <code>get</code> reorders the list. A <code>ReadWriteLock</code> read lock is wrong for LRU.</td><td>Exclusive lock for get. At scale, Caffeine records reads into lossy ring buffers and replays them under a try-lock, so readers rarely block.</td></tr>
+    <tr><td>Check-then-act in callers</td><td><code>if (!cache.contains(k)) cache.put(k, load())</code> loads twice.</td><td>Offer <code>get(key, loader)</code> that computes once per key (per-key <code>CompletableFuture</code> in a <code>ConcurrentHashMap</code>), which also stops a cache stampede.</td></tr>
+    <tr><td>Listener re-enters the cache</td><td>Deadlock or <code>ConcurrentModificationException</code> if called under the lock.</td><td>Collect removals, fire after <code>unlock()</code>; swallow and log listener exceptions.</td></tr>
+    <tr><td>Clock goes backwards</td><td>NTP step makes entries live longer or die early.</td><td>Use <code>System.nanoTime</code>-based ticker for durations in production; inject a <code>Clock</code>/ticker so tests can advance time.</td></tr>
+    <tr><td>Stale heap items</td><td>Overwrite leaves an old <code>Expiry</code> in the heap.</td><td>Identity check on purge; heap is bounded by puts, and the sweeper drains it.</td></tr>
+    <tr><td>Size 0, TTL 0, null value</td><td>Degenerate behaviour.</td><td>Validated in the builder; <code>put</code> rejects nulls.</td></tr>
+    <tr><td>Evicting during a burst of expired entries</td><td>Live LRU entry evicted while dead entries still occupy slots.</td><td><code>purgeExpired</code> runs before the eviction loop.</td></tr>
+  </table></div>
+  <div class="callout info"><b>Scaling the lock, in the order to propose it</b><p>1) One lock, measured. 2) Segments: N independent caches selected by <code>hash(key) % N</code>, each with its own map, policy and lock; LRU becomes approximately global, which is usually fine (Guava did this). 3) <code>ConcurrentHashMap</code> for data plus buffered policy updates (Caffeine). Caffeine's W-TinyLFU also adds an admission filter so a one-hit wonder cannot evict a hot entry; its published traces show materially higher hit rates than plain LRU.</p></div>
+
+  <h2 id="extensions"><span class="n">07</span>Extensions interviewers add mid-round</h2>
+  <details class="qa"><summary>"Add a new eviction policy" (Groww)</summary><p>Implement <code>EvictionPolicy</code>; pass it to the builder. Zero changes to <code>InMemoryCache</code>. If they ask for TTL-aware eviction ("evict the entry closest to expiry"), that is a policy backed by a <code>TreeSet</code> ordered by expiresAt, which needs the expiry in <code>onInsert</code>; widen the signature to <code>onInsert(K key, long expiresAt)</code> once and every policy ignores what it does not need.</p></details>
+  <details class="qa"><summary>"Average of all active (non-expired) values in the best complexity" (Confluent)</summary><p>Keep <code>sum</code> and <code>count</code> as fields, updated in <code>removeEntry</code> and <code>put</code> (subtract old value on replace). <code>average()</code> first calls <code>purgeExpired(now)</code>, which pops only the entries that have expired, each in O(log n), then returns <code>sum / count</code>. Amortised O(log n) per expired entry, O(1) otherwise. If timestamps are given strictly increasing (ask, as that candidate did), the heap can be a plain FIFO deque.</p></details>
+  <details class="qa"><summary>"Support transactions: begin, commit, rollback, nested" (Rippling-style)</summary><p>A decorator with a <code>Deque&lt;Map&lt;K, Optional&lt;V&gt;&gt;&gt;</code> of write sets (empty <code>Optional</code> = tombstone for delete). <code>put</code>/<code>remove</code> write to the top map when a transaction is open. <code>get</code> searches the stack top-down, then the base cache. <code>commit</code> pops the top and merges into the next layer, or applies to the base if it was the outermost. <code>rollback</code> just pops. Per-thread transactions: keep the stack in a <code>ThreadLocal</code>; isolation between threads is then read-committed.</p></details>
+  <pre><code>public final class TransactionalCache&lt;K, V&gt; {
+    private final Cache&lt;K, V&gt; base;
+    private final Deque&lt;Map&lt;K, Optional&lt;V&gt;&gt;&gt; txs = new ArrayDeque&lt;&gt;();
+
+    public TransactionalCache(Cache&lt;K, V&gt; base) { this.base = base; }
+
+    public void begin() { txs.push(new HashMap&lt;&gt;()); }
+    public void put(K k, V v) { if (txs.isEmpty()) base.put(k, v); else txs.peek().put(k, Optional.of(v)); }
+    public void remove(K k) { if (txs.isEmpty()) base.remove(k); else txs.peek().put(k, Optional.empty()); }
+
+    public Optional&lt;V&gt; get(K k) {
+        for (Map&lt;K, Optional&lt;V&gt;&gt; layer : txs) { // ArrayDeque iterates from the top of the stack
+            if (layer.containsKey(k)) return layer.get(k);
+        }
+        return base.get(k);
+    }
+
+    public void rollback() { requireTx(); txs.pop(); }
+
+    public void commit() {
+        requireTx();
+        Map&lt;K, Optional&lt;V&gt;&gt; top = txs.pop();
+        if (!txs.isEmpty()) { txs.peek().putAll(top); return; }
+        top.forEach((k, v) -&gt; v.ifPresentOrElse(val -&gt; base.put(k, val), () -&gt; base.remove(k)));
+    }
+
+    private void requireTx() { if (txs.isEmpty()) throw new IllegalStateException("no transaction"); }
+}</code></pre>
+  <details class="qa"><summary>"Read-through / write-through to a database"</summary><p><code>LoadingCache</code> decorator with a <code>CacheLoader&lt;K,V&gt;</code>; single-flight per key as above. Write-through: write DB then cache (or invalidate). Write-behind: queue writes and flush in batches; mention data loss on crash and ordering per key.</p></details>
+  <details class="qa"><summary>"Expire-after-access (sliding TTL)"</summary><p>On <code>get</code>, replace the entry with a new expiresAt and push a new heap item; the identity check makes the old heap item harmless. Offer it as a builder option, not a second cache class.</p></details>
+  <details class="qa"><summary>"Max memory instead of max entries"</summary><p><code>Weigher&lt;K,V&gt;</code> in the builder, a <code>totalWeight</code> field, and the eviction loop runs while <code>totalWeight &gt; maxWeight</code>. Reject single entries heavier than the limit.</p></details>
+  <details class="qa"><summary>"Make it distributed"</summary><p>Different problem: consistent hashing across nodes, replication or not, and invalidation (pub/sub or versioned keys). A near-cache (this library) in front of Redis is the common real answer; TTL is the safety net for missed invalidations.</p></details>
+
+  <h2 id="tests"><span class="n">08</span>Tests to write</h2>
+  <div class="tbl"><table>
+    <tr><th>Test</th><th>Asserts</th></tr>
+    <tr><td><code>lruEvictsLeastRecentlyUsed</code></td><td>Capacity 2: put a, b; get a; put c → b gone, a and c present.</td></tr>
+    <tr><td><code>lfuEvictsLowestFrequencyThenOldest</code></td><td>Capacity 3: put a, b, c; read a twice; b and c never read (b inserted first) → put d evicts b.</td></tr>
+    <tr><td><code>fifoIgnoresAccess</code></td><td>Reading a does not save it from eviction.</td></tr>
+    <tr><td><code>expiredEntryIsNeverReturned</code></td><td>Mutable test clock advanced past TTL → <code>get</code> empty, listener sees EXPIRED.</td></tr>
+    <tr><td><code>overwriteResetsTtl</code></td><td>put with 1 s, advance 0.9 s, put again, advance 0.9 s → still present.</td></tr>
+    <tr><td><code>cleanUpReclaimsUnreadExpiredEntries</code></td><td><code>size()</code> drops after <code>cleanUp()</code> without any <code>get</code>.</td></tr>
+    <tr><td><code>expiredEntriesPurgedBeforeLiveEviction</code></td><td>Full cache with one expired entry: a new put removes the expired one, not the LRU live one.</td></tr>
+    <tr><td><code>listenerRunsOutsideLock</code></td><td>Listener that calls <code>cache.get</code> does not deadlock (completes within timeout).</td></tr>
+    <tr><td><code>concurrentPutsNeverExceedMaxSize</code></td><td>16 threads × 10k random puts → final <code>size() &lt;= maxSize</code>, no exceptions.</td></tr>
+    <tr><td><code>averageOfActiveValuesIgnoresExpired</code></td><td>Confluent case: values 10, 20, 30 with staggered TTL → averages 20, then 25, then 30.</td></tr>
+    <tr><td><code>rollbackDiscardsNestedWrites</code></td><td>begin, put, begin, put, rollback, commit → only the outer write is visible.</td></tr>
+    <tr><td><code>builderRejectsInvalidConfig</code></td><td>maxSize 0 and negative TTL throw.</td></tr>
+  </table></div>
+
+  <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected, and review questions</h2>
+  <div class="callout warn"><b>Rejected for this</b>
+    <ul>
+      <li><b>Hard-coded FIFO with no eviction abstraction</b>, then explaining interfaces only after being challenged (Groww: "This isn't scalable... what if we want different eviction logic?"). Put the interface in the first 20 minutes.</li>
+      <li>Not defining requirements when the statement is one line; the requirements are part of the grade.</li>
+      <li>TTL checked only on read, so the cache fills with dead entries.</li>
+      <li><code>synchronized</code> on <code>get</code> with a <code>ConcurrentHashMap</code> inside "for safety": two mechanisms, neither reasoned about.</li>
+      <li>Using <code>LinkedHashMap(accessOrder=true)</code> and calling it a library: fine as a first step, but it cannot do LFU or TTL and the follow-up exposes that.</li>
+      <li><code>System.currentTimeMillis()</code> scattered through the code, then <code>Thread.sleep</code> in tests.</li>
+    </ul>
+  </div>
+  <details class="qa"><summary>Why does the policy not hold the values?</summary><p>Single responsibility: the cache owns data and time; the policy owns an ordering over keys. A new policy never needs to understand TTL, listeners or stats, and the cache never needs to understand frequencies.</p></details>
+  <details class="qa"><summary>Why a <code>ReentrantLock</code> instead of <code>synchronized</code>?</summary><p>Either is correct here. <code>ReentrantLock</code> gives <code>tryLock</code> with timeout for a sweeper that should not block callers, and fairness if needed. With virtual threads, <code>synchronized</code> used to pin the carrier thread before JDK 24.</p></details>
+  <details class="qa"><summary>Why not a <code>ReadWriteLock</code>?</summary><p>Because LRU and LFU mutate on read. For FIFO with no access tracking, a read lock would work, but one code path for all policies is simpler.</p></details>
+  <details class="qa"><summary>What is the complexity of each operation?</summary><p>get: O(1) map + O(1) LRU/FIFO, O(log F) LFU. put: O(1) map, O(log n) heap insert when TTL set, O(k log n) to purge k expired entries, amortised once per entry.</p></details>
+  <details class="qa"><summary>How do you stop a cache stampede on a hot expired key?</summary><p>Single-flight loading (one loader per key, others wait on its future), plus jittered TTLs so many keys do not expire together, plus optional refresh-ahead that reloads before expiry while serving the old value.</p></details>
+  <details class="qa"><summary>Why are listener exceptions swallowed?</summary><p>A listener bug must not break a <code>put</code> that already succeeded. Log it with the key and cause; in production, run listeners on an executor so a slow one cannot add latency.</p></details>
+
+  <h2 id="plan"><span class="n">10</span>A 90-minute plan</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">0–10 min</span><span>Write requirements yourself: API, max size, TTL semantics, policies, thread safety, listeners, stats. Confirm in two sentences.</span></div>
+    <div class="step"><span class="t">10–15 min</span><span>Class table and the Strategy/Builder/Observer choice. Say the Groww lesson out loud: eviction is an interface.</span></div>
+    <div class="step"><span class="t">15–30 min</span><span><code>Cache</code>, <code>EvictionPolicy</code>, <code>LruPolicy</code>, <code>FifoPolicy</code>, <code>InMemoryCache</code> without TTL. Test LRU.</span></div>
+    <div class="step"><span class="t">30–50 min</span><span>TTL: <code>Entry</code>, expiry heap, lazy expiry on get, <code>purgeExpired</code>, <code>cleanUp</code>, injected <code>Clock</code>. Test with a mutable clock.</span></div>
+    <div class="step"><span class="t">50–62 min</span><span><code>LfuPolicy</code>, builder validation, listeners fired outside the lock, stats.</span></div>
+    <div class="step"><span class="t">62–75 min</span><span>Concurrency test with 16 threads; explain the expiry/overwrite race and the identity check.</span></div>
+    <div class="step"><span class="t">75–90 min</span><span>Whatever they add: average of active values, transactions, loader. Close with the scaling ladder (segments → Caffeine-style buffers).</span></div>
+  </div>
+
+  <h2 id="sources"><span class="n">11</span>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/6683943/" target="_blank" rel="noopener">Groww SDE-II, Apr 2025: "build a scalable cache", FIFO criticised (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/8533315/" target="_blank" rel="noopener">Tekion SDE-2, Jun 2026: TTL caching library LLD (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/6974811/" target="_blank" rel="noopener">Confluent SSE: LRU with TTL and average of active values (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7107261/" target="_blank" rel="noopener">Freshworks SSE: design LRU cache (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/6889780/" target="_blank" rel="noopener">Razorpay OA: LFU cache with smallest-key tie-break (LeetCode)</a></li>
+    <li><a href="https://github.com/ben-manes/caffeine/wiki/Efficiency" target="_blank" rel="noopener">Caffeine wiki: W-TinyLFU efficiency</a></li>
+    <li><a href="https://highscalability.com/design-of-a-modern-cache/" target="_blank" rel="noopener">Design of a Modern Cache (Caffeine's author, High Scalability)</a></li>
+    <li><a href="https://redis-doc-test.readthedocs.io/en/latest/commands/expire/" target="_blank" rel="noopener">Redis EXPIRE: passive and active expiry</a></li>
+    <li><a href="https://docs.oracle.com/javase%2F7%2Fdocs%2Fapi%2F/java/util/LinkedHashMap.html" target="_blank" rel="noopener">LinkedHashMap Javadoc: access order and removeEldestEntry</a></li>
+  </ul>
+
+  <div class="foot"><a href="lld-message-queue.html">← Prev: Message queue</a><a href="../index.html">Back to the playbook</a><a href="lld-notification-service.html">Next: Notification service →</a></div>
+</div>
+</body>
+</html>

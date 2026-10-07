@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stock Price Alerts HLD</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">System design · HLD</span></div>
+  <h1>Stock Price Change Alert System</h1>
+  <p class="lede">Users set "notify me when RELIANCE crosses ₹3,000" or "when TCS moves more than 3% today". You must match a firehose of price ticks against tens of millions of standing alerts and push each fired alert exactly once, within seconds. A senior answer inverts the problem: index alerts by symbol and threshold so that each tick does a range scan, not a table scan.</p>
+  <div class="facts">
+    <span class="fact"><b>Time-box:</b> 45–60 min</span>
+    <span class="fact"><b>Seen:</b> 5 Uber SDE-2 / Senior reports, 2025–26; Groww and Upstox variants</span>
+  </div>
+  <div class="chips"><span class="chip hot">Uber</span><span class="chip">Groww</span><span class="chip">Upstox</span><span class="chip">Zerodha-style brokers</span><span class="chip">Robinhood</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#graded">What's graded</a></li>
+    <li><a href="#scope">Clarify and scope</a></li>
+    <li><a href="#capacity">Capacity estimation</a></li>
+    <li><a href="#api">API design</a></li>
+    <li><a href="#data">Data model</a></li>
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#deep">Deep dives</a></li>
+    <li><a href="#scale">Scaling and failure</a></li>
+    <li><a href="#tradeoffs">Trade-offs</a></li>
+    <li><a href="#followups">Follow-up questions</a></li>
+    <li><a href="#mistakes">Rejection reasons</a></li>
+    <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <p>An Uber SDE-2 candidate (Apr 2026, rated "Very Hard") listed the expectation verbatim: <b>push vs pull mechanism, DB design, API design, deep dive and trade-offs</b>. In practice the grading splits into four things:</p>
+  <ul>
+    <li><b>The matching insight.</b> Do you scan every alert on every tick (fails at 50M alerts × 50k ticks/s), or keep per-symbol sorted thresholds so a tick touches only the alerts it actually crosses?</li>
+    <li><b>Push vs pull at two boundaries.</b> Market data → matcher (push, streaming) and matcher → user (push notification / WebSocket, not client polling). You must say why at each boundary.</li>
+    <li><b>Correct-once semantics.</b> No duplicate notifications when a matcher restarts or a price flaps around the threshold; no missed alerts when a tick gaps over the threshold.</li>
+    <li><b>Hot symbols and bursts.</b> NIFTY or RELIANCE carry millions of alerts; a market-wide crash fires millions at once. Show where the system bends and how you protect the notification pipeline.</li>
+  </ul>
+  <p>Related rounds probe the same muscles: Groww SDE-II asked a stock order system that must place buy / sell / stop-loss orders arriving via a queue within a <b>10 ms SLA</b> (the feedback criticised missing multi-exchange support and scalability), and Upstox SDE-2 asked a <b>trailing-loss</b> system. A stop-loss is just a price alert whose action is "place order" instead of "send push".</p>
+
+  <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
+  <h3>Questions to ask</h3>
+  <ul>
+    <li><b>Which alert types?</b> Absolute crossing (above / below), percentage move vs previous close, percentage move within a window, trailing. Each changes the index you need.</li>
+    <li><b>One-shot or recurring?</b> One-shot alerts are deleted on fire, which keeps the index small. Recurring ones need re-arm rules (hysteresis) or users get spammed when price oscillates.</li>
+    <li><b>Latency target?</b> Retail apps accept "within 1–2 seconds of the tick". A stop-loss that places orders needs milliseconds (the Groww variant).</li>
+    <li><b>Delivery channels?</b> Mobile push (FCM / APNs), in-app WebSocket, SMS, email. Push is best-effort; you own the "fired" record, the device owns display.</li>
+    <li><b>Price source?</b> Exchange feed (NSE / BSE multicast via a vendor) gives last traded price (LTP) ticks. Ask whether to alert on LTP or on bid / ask.</li>
+    <li><b>Market hours and halts?</b> Pre-open session, circuit limits, corporate actions (splits change every threshold).</li>
+  </ul>
+  <div class="grid">
+    <div class="card"><h4>Functional</h4><ul><li>Create, list, edit, delete alerts (limit ~100 per user)</li><li>Fire when the condition becomes true; notify via push + in-app</li><li>Alert history ("fired at ₹3,001.40 at 10:31:02")</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>Tick → notification p99 ≤ 2 s</li><li>No duplicates, no misses (gaps must still fire)</li><li>99.95% availability during market hours</li><li>Survive 10× bursts on crash days</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Order placement and risk checks (mention the hook)</li><li>Charting and quotes streaming</li><li>Building the exchange feed handler</li></ul></div>
+  </div>
+
+  <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <div class="tbl"><table>
+    <tr><th>Quantity</th><th>Assumption</th><th>Result</th></tr>
+    <tr><td>Users with alerts</td><td>10M monthly users, 30% set alerts</td><td class="num">3M</td></tr>
+    <tr><td>Active alerts</td><td>3M users × ~15 alerts</td><td class="num">~50M</td></tr>
+    <tr><td>Alert index memory</td><td>50M × ~64 B (id, threshold, user ref) in a compact structure</td><td class="num">~3.2 GB (fits in a few JVMs)</td></tr>
+    <tr><td>Alert rows in DB</td><td>50M × ~300 B with indexes</td><td class="num">~15 GB</td></tr>
+    <tr><td>Instruments</td><td>NSE + BSE equities, F&amp;O, indices actively traded</td><td class="num">~10k</td></tr>
+    <tr><td>Tick rate</td><td>10k symbols, peak ~5 ticks/s on liquid names (coalesced)</td><td class="num">~50k ticks/s peak</td></tr>
+    <tr><td>Alert writes</td><td>Creates + edits, heavy at 9:00–9:15</td><td class="num">~500/s peak</td></tr>
+    <tr><td>Normal fire rate</td><td>~2% of alerts fire per day over 6.25 h</td><td class="num">1M/day ≈ 45/s</td></tr>
+    <tr><td>Crash-day burst</td><td>20% of alerts fire within 5 min</td><td class="num">10M / 300 s ≈ 33k/s</td></tr>
+    <tr><td>Skew</td><td>Top symbol (NIFTY 50 / RELIANCE) holds ~5% of alerts</td><td class="num">~2.5M alerts on one key</td></tr>
+  </table></div>
+  <p>The numbers say two things. The index fits in memory, so the matcher should be an in-memory service with a durable log behind it, not a database query per tick. And the bottleneck on a bad day is the <b>notification fan-out</b> (33k/s against FCM quotas), not matching.</p>
+
+  <h2 id="api"><span class="n">04</span>API design</h2>
+  <pre><code>POST /v1/alerts                      Idempotency-Key: 6f1c...  (client UUID)
+{ "symbol": "NSE:RELIANCE",
+  "type": "PRICE_CROSS",              // PRICE_CROSS | PCT_CHANGE_DAY | TRAILING
+  "direction": "ABOVE",               // ABOVE | BELOW | EITHER (for PCT)
+  "value": "3000.00",                 // price, percent, or trail percent
+  "repeat": "ONCE",                   // ONCE | DAILY (re-arm next session)
+  "channels": ["PUSH", "IN_APP"] }
+→ 201 { "alertId": "al_9Kx...", "status": "ACTIVE", "createdAt": "..." }
+
+GET    /v1/alerts?status=ACTIVE&amp;cursor=...   → paged list for the user (JWT gives userId)
+PATCH  /v1/alerts/{alertId}  { "value": "3050.00" }   If-Match: "v3"
+DELETE /v1/alerts/{alertId}
+GET    /v1/alerts/{alertId}/events          → fire history
+
+WS     /v1/stream   (in-app: server pushes {"event":"ALERT_FIRED", ...})</code></pre>
+  <ul>
+    <li>User id comes from the JWT, never the body. Validate the symbol against the instrument master and reject thresholds that are already true at creation ("RELIANCE above ₹2,000" when it trades at ₹2,950) or offer to fire immediately.</li>
+    <li>Idempotency-Key on create stops a double-tapped button producing two alerts. <code>If-Match</code> with a version on PATCH avoids lost updates from two devices.</li>
+    <li>Money as decimal strings, never floats; store as <code>NUMERIC(12,2)</code> or paise as <code>BIGINT</code>.</li>
+  </ul>
+
+  <h2 id="data"><span class="n">05</span>Data model</h2>
+  <div class="tbl"><table>
+    <tr><th>Store</th><th>Shape</th><th>Key / index</th><th>Why</th></tr>
+    <tr><td>Postgres <code>alerts</code> (source of truth)</td><td>alert_id, user_id, symbol, type, direction, value, ref_price, repeat, status (ACTIVE / FIRED / CANCELLED), version, created_at</td><td>Shard by <code>user_id</code>; index (user_id, status); secondary (symbol, status) for rebuilds</td><td>User-facing CRUD is per user; transactional status flips</td></tr>
+    <tr><td>Postgres <code>alert_events</code></td><td>alert_id, fire_seq, price, tick_ts, fired_at, notify_status</td><td>PK (alert_id, fire_seq) — unique constraint is the dedup</td><td>History and exactly-once fire record</td></tr>
+    <tr><td>Kafka <code>alert-changes</code></td><td>CDC of alerts (Debezium) or outbox events</td><td>Key = symbol; compacted per alert_id</td><td>Feeds matchers, ordered per symbol</td></tr>
+    <tr><td>Kafka <code>ticks</code></td><td>symbol, ltp, exchange_ts, seq</td><td>Key = symbol</td><td>Same partitioning as alert-changes so one matcher owns a symbol</td></tr>
+    <tr><td>Matcher memory</td><td>Per symbol: two sorted maps (ABOVE ascending, BELOW descending) threshold → alert ids</td><td>Symbol → index</td><td>O(log n + k) per tick</td></tr>
+    <tr><td>Redis</td><td>Device tokens, user prefs, rate-limit counters</td><td>user_id</td><td>Hot lookups in the notifier</td></tr>
+  </table></div>
+  <p>Postgres fits because CRUD is small, relational and needs transactions; the read pattern that matters at scale (by symbol, by threshold) is served from memory, not from the DB. If the interviewer pushes for a NoSQL store, DynamoDB / Cassandra with partition key user_id works equally well; the matcher design does not change.</p>
+
+  <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
+  <div class="flow">
+    <span class="node">Exchange feed<small>NSE / BSE vendor</small></span><span class="arrow">→</span>
+    <span class="node">Feed handler<small>normalise, coalesce</small></span><span class="arrow">→</span>
+    <span class="node store">Kafka ticks<small>key = symbol</small></span><span class="arrow">→</span>
+    <span class="node hl">Matcher shards<small>in-memory index</small></span>
+  </div>
+  <div class="flow">
+    <span class="node">Mobile app</span><span class="arrow">→</span>
+    <span class="node">API gateway<small>JWT</small></span><span class="arrow">→</span>
+    <span class="node">Alert service<small>CRUD</small></span><span class="arrow">→</span>
+    <span class="node store">Postgres<small>alerts + outbox</small></span><span class="arrow">→</span>
+    <span class="node store">Kafka alert-changes<small>key = symbol</small></span><span class="arrow">→</span>
+    <span class="node hl">Matcher shards</span>
+  </div>
+  <div class="flow">
+    <span class="node hl">Matcher shards</span><span class="arrow">→</span>
+    <span class="node store">Kafka alert-fired<small>key = user</small></span><span class="arrow">→</span>
+    <span class="node">Fire recorder<small>insert alert_events</small></span><span class="arrow">→</span>
+    <span class="node">Notifier<small>rate limit, batch</small></span><span class="arrow">→</span>
+    <span class="node">FCM / APNs / WS gateway</span>
+  </div>
+  <p class="flow-caption">Figure: three flows meeting at the matcher. Ticks and alert changes share the symbol key, so one matcher partition sees both in order.</p>
+  <ul>
+    <li><b>Feed handler</b> turns the vendor feed into <code>(symbol, ltp, exchange_ts, seq)</code>. It coalesces: if RELIANCE ticks 40 times in 100 ms, matching only needs the <b>min and max</b> in that window, not every print. Publish (min, max, last) per 100 ms per symbol.</li>
+    <li><b>Alert service</b> is plain Spring Boot CRUD. It writes the alert and an outbox row in one transaction; Debezium streams the outbox to <code>alert-changes</code>. No dual write.</li>
+    <li><b>Matcher</b> is a Kafka Streams / plain consumer app. Each instance owns a set of partitions; for each owned symbol it keeps the sorted threshold index. It consumes both topics, so creates and ticks for a symbol are processed in a single thread in order.</li>
+    <li><b>Fire recorder</b> inserts into <code>alert_events</code> with a unique key and flips the alert to FIRED with a conditional update. This is the exactly-once point.</li>
+    <li><b>Notifier</b> looks up device tokens, applies per-user rate limits and digesting ("5 of your alerts fired"), and calls FCM / APNs with retries. The in-app path goes through a WebSocket gateway.</li>
+  </ul>
+
+  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+
+  <h3>7.1 Matching: invert the query</h3>
+  <p>The naive loop is "for every tick, for every alert on that symbol, check the condition". With 2.5M alerts on RELIANCE and 5 ticks/s, that is 12.5M comparisons per second for one symbol. Instead, per symbol keep:</p>
+  <ul>
+    <li><code>above</code>: thresholds sorted ascending. On a tick window with max price <code>hi</code>, fire every alert with threshold ≤ <code>hi</code>, i.e. pop from the head until threshold &gt; hi.</li>
+    <li><code>below</code>: thresholds sorted descending. Fire every alert with threshold ≥ <code>lo</code>.</li>
+  </ul>
+  <p>Cost is O(log n) to find the boundary plus O(k) for the k alerts that actually fire, which you must do anyway. Using the window's min and max rather than the last price means a gap ("opened at ₹3,020 after closing at ₹2,980") still fires, and so does a spike that reverted within 100 ms.</p>
+  <pre><code>final class SymbolIndex {                       // owned by one matcher thread: no locks
+    private final TreeMap&lt;Long, List&lt;Long&gt;&gt; above = new TreeMap&lt;&gt;();   // paise → alertIds
+    private final TreeMap&lt;Long, List&lt;Long&gt;&gt; below = new TreeMap&lt;&gt;(Comparator.reverseOrder());
+
+    List&lt;Long&gt; onTick(long lo, long hi) {
+        List&lt;Long&gt; fired = new ArrayList&lt;&gt;();
+        drain(above.headMap(hi, true), fired);   // thresholds &lt;= hi
+        drain(below.headMap(lo, true), fired);   // thresholds &gt;= lo (reverse order)
+        return fired;
+    }
+    private static void drain(SortedMap&lt;Long, List&lt;Long&gt;&gt; hit, List&lt;Long&gt; out) {
+        hit.values().forEach(out::addAll);
+        hit.clear();                             // one-shot: removed from the index
+    }
+}</code></pre>
+  <p>Percentage alerts collapse into the same structure. "TCS moves more than 3% today" against previous close ₹4,000 is two absolute thresholds, ₹4,120 above and ₹3,880 below, computed when the session opens (or when the alert is created mid-session). Re-compute them at the next session's open. Redis sorted sets (<code>ZRANGEBYSCORE alerts:RELIANCE:above -inf hi</code>) are an acceptable alternative if you want shared state instead of in-process memory; you trade a network hop per tick for easier failover.</p>
+
+  <h3>7.2 Push vs pull, boundary by boundary</h3>
+  <div class="tbl"><table>
+    <tr><th>Boundary</th><th>Choice</th><th>Why</th></tr>
+    <tr><td>Exchange → system</td><td>Push (streaming feed)</td><td>Ticks are the trigger; polling quotes adds latency and misses intra-poll spikes</td></tr>
+    <tr><td>Ticks → matcher</td><td>Push via Kafka, partitioned by symbol</td><td>Ordering per symbol, replay on failure, horizontal scale</td></tr>
+    <tr><td>Alerts → matcher</td><td>Push via CDC / outbox</td><td>Matcher never queries the DB on the hot path</td></tr>
+    <tr><td>Matcher → user</td><td>Push (FCM / APNs, WebSocket when the app is open)</td><td>50M alerts polled every 5 s would be 10M req/s of mostly "nothing changed"</td></tr>
+    <tr><td>App → alert list</td><td>Pull (REST) with cache</td><td>Rare, user-initiated; not worth a socket</td></tr>
+  </table></div>
+  <p>The one place pull is right: a <b>daily-close</b> alert type ("notify me if it closes below X") can be a batch job after market close. Say this; it shows you choose per requirement, not by fashion.</p>
+
+  <h3>7.3 Fire exactly once</h3>
+  <p>Kafka gives at-least-once. A matcher can fire an alert, crash before committing its offset, restart, replay the tick and fire again. Defence in depth:</p>
+  <ol>
+    <li>Fired events carry a deterministic id: <code>alertId + ":" + fireSeq</code> (fireSeq increments on each re-arm, so a recurring alert fires once per arm).</li>
+    <li>The fire recorder does <code>INSERT INTO alert_events ... ON CONFLICT DO NOTHING</code> and <code>UPDATE alerts SET status='FIRED', version=version+1 WHERE alert_id=? AND status='ACTIVE' AND fire_seq=?</code>. Only the first wins; the replay is a no-op.</li>
+    <li>The notifier sends with the same id as a collapse key, so even a duplicate push replaces rather than stacks on the device.</li>
+  </ol>
+  <p>Hand-wave "Kafka exactly-once" and a strong interviewer will ask what happens at the FCM call. Exactly-once delivery to a phone does not exist; exactly-once <b>recording</b> plus idempotent display does.</p>
+
+  <h3>7.4 Flapping, recurring alerts and trailing stops</h3>
+  <ul>
+    <li><b>Flapping.</b> Price oscillating around ₹3,000 must not fire 40 times. One-shot alerts avoid it. Recurring alerts re-arm only after price retreats past a hysteresis band (e.g. 0.5% below the threshold) and after a cooldown (e.g. 15 min).</li>
+    <li><b>Trailing stop (Upstox).</b> Trigger = peak since creation × (1 − t). A per-alert peak cannot sit in a static sorted index. The trick: once the price makes a new high, every older alert on that symbol shares the same peak. So group trailing alerts into <b>cohorts</b> by (trail %, peak). On a new high, merge all cohorts with peak &lt; new high into one cohort at the new high and re-key it. The index stays keyed by trigger price; updates are per cohort, not per alert.</li>
+    <li><b>Corporate actions.</b> A 1:2 split halves every threshold. Run an adjustment job before the session opens and publish the updates through the same <code>alert-changes</code> topic.</li>
+  </ul>
+
+  <h3>7.5 The 10 ms variant (Groww stop-loss)</h3>
+  <p>If the action is "place an order within 10 ms", Kafka and a DB write in the hot path are too slow. Keep the same index but run it LMAX-style: one thread per symbol shard, the feed delivered by UDP multicast or shared memory, pre-validated order templates, and journaling to a local append-only log replicated asynchronously. Persistence moves off the critical path; the risk check (margin) runs on cached balances. Mention multi-exchange (same ISIN on NSE and BSE as separate symbols with a mapping) because that is exactly what the Groww feedback said was missing.</p>
+
+  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
+  <ul>
+    <li><b>Hot symbols.</b> Split a symbol's alerts into N sub-shards (<code>RELIANCE#0..7</code>) across matchers and broadcast its ticks to all of them. Ticks are cheap; alerts are the volume.</li>
+    <li><b>Matcher failover.</b> State is rebuildable: on partition assignment, load the index from a compacted <code>alert-changes</code> topic (or Kafka Streams with a RocksDB state store and a standby replica), then resume ticks from the committed offset. Standby replicas make failover take seconds instead of a full rebuild.</li>
+    <li><b>Ordering between "create" and "tick".</b> Because both topics share the symbol key and partition count, the matcher sees them in one ordered stream per partition. An alert created at 10:31:00.200 is not matched against a 10:31:00.100 tick.</li>
+    <li><b>Crash-day burst.</b> Decouple via the <code>alert-fired</code> topic, scale notifier consumers, and digest per user. Prioritise: stop-loss actions and price-cross alerts before "3% move" alerts. FCM throttles; respect 429s with backoff and keep a per-provider token bucket.</li>
+    <li><b>Stale feed.</b> If no tick arrives for a liquid symbol for N seconds during market hours, raise an alarm and mark data stale rather than silently missing alerts.</li>
+    <li><b>Multi-region.</b> Run matchers active-passive per region (the feed is from India anyway). Notifications can be served from any region; alert CRUD stays single-primary.</li>
+  </ul>
+
+  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
+  <div class="tbl"><table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
+    <tr><td>In-process TreeMap per symbol</td><td>Sub-millisecond, no network hop, no locks with single-thread ownership</td><td>Rebuild on failover; memory per node</td><td>Default for retail alerts and stop-loss</td></tr>
+    <tr><td>Redis ZSET per symbol + direction</td><td>Shared, survives matcher restarts, simple ops</td><td>Network hop per tick; big ZSETs on hot keys; Lua for atomic pop</td><td>Small team, moderate scale</td></tr>
+    <tr><td>DB query per tick (<code>WHERE symbol=? AND threshold BETWEEN</code>)</td><td>Trivial to build</td><td>50k queries/s on the source of truth; dies on crash days</td><td>Prototype only</td></tr>
+    <tr><td>Last price only</td><td>Simple</td><td>Misses spikes that revert within the coalescing window</td><td>Never; use min/max per window</td></tr>
+    <tr><td>Flink / Kafka Streams state</td><td>Managed checkpoints, exactly-once state</td><td>Operational weight, harder hot-key splitting</td><td>If the org already runs it</td></tr>
+  </table></div>
+
+  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
+  <details class="qa"><summary>Why not let clients poll for price and evaluate alerts on the device?</summary><p>Alerts must fire when the app is closed; the device is not running. Polling 3M users every few seconds is also millions of requests per second for nothing. Server-side evaluation plus push is the only design that meets both.</p></details>
+  <details class="qa"><summary>A tick jumps from ₹2,990 to ₹3,010. Does the ₹3,000 alert fire?</summary><p>Yes. The match is "threshold ≤ window max", not "price == threshold", so gaps fire. Its fired record stores the actual price ₹3,010 so the notification is honest.</p></details>
+  <details class="qa"><summary>How do you avoid firing an alert that was deleted a moment ago?</summary><p>Deletes flow through the same symbol-keyed stream as ticks, so ordering holds inside the matcher. If a fire races with a delete across the DB, the fire recorder's conditional update (<code>WHERE status='ACTIVE'</code>) fails and the notification is dropped.</p></details>
+  <details class="qa"><summary>What happens when a matcher node dies mid-market?</summary><p>Kafka reassigns its partitions. The new owner restores the index from its standby state store or the compacted alert-changes topic, then replays ticks from the last committed offset. Replayed fires are deduplicated by <code>alertId:fireSeq</code>. Target recovery under 30 seconds; alert during that window by replaying with window min/max so nothing is missed.</p></details>
+  <details class="qa"><summary>How would you support "moves more than 2% in any 15-minute window"?</summary><p>That is no longer a fixed threshold. Keep a per-symbol sliding min/max over 15 minutes (monotonic deque per symbol). Alerts sorted by percentage: fire all with pct ≤ (max − min)/min. Indexing is by percentage instead of price, but the shape is the same.</p></details>
+  <details class="qa"><summary>How do you test that no alert is missed?</summary><p>Replay a recorded trading day through the matcher and compare against a brute-force evaluator offline. Run the same comparison continuously as a shadow job on a sample of symbols in production and alert on divergence.</p></details>
+
+  <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
+  <div class="callout warn"><b>Rejected for this</b>
+    <ul>
+      <li>A cron job that runs <code>SELECT * FROM alerts</code> every few seconds and compares with the latest price. It does not scale and misses intra-interval moves.</li>
+      <li>No answer to push vs pull beyond "use WebSockets". The interviewer wanted the reasoning at each boundary.</li>
+      <li>Matching on equality or on the last price only, so gaps and spikes are missed.</li>
+      <li>Ignoring duplicates on replay or flapping; claiming "Kafka exactly-once" covers the phone.</li>
+      <li>Never mentioning hot symbols or crash-day bursts, which is what "scalability" means for this problem (the Groww feedback: "needed more focus on scalability").</li>
+    </ul>
+  </div>
+
+  <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">0–5 min</span><span>Alert types, one-shot vs recurring, latency target, channels. Write the requirements list.</span></div>
+    <div class="step"><span class="t">5–10 min</span><span>Capacity: 50M alerts, 50k ticks/s, 33k fires/s burst. Conclude: in-memory index, notification is the bottleneck.</span></div>
+    <div class="step"><span class="t">10–15 min</span><span>APIs and the alerts table; idempotency on create.</span></div>
+    <div class="step"><span class="t">15–25 min</span><span>Architecture with three flows; push vs pull at each boundary.</span></div>
+    <div class="step"><span class="t">25–35 min</span><span>Deep dive: sorted threshold index with min/max windows, percentage alerts, exactly-once firing.</span></div>
+    <div class="step"><span class="t">35–42 min</span><span>Hot symbols, matcher failover, crash-day burst, flapping and trailing stops.</span></div>
+    <div class="step"><span class="t">42–45 min</span><span>Trade-offs and what you would build next (10 ms stop-loss path).</span></div>
+  </div>
+
+  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/8476675/" target="_blank" rel="noopener">Uber SDE-II, Bengaluru, Apr 2026: HLD "Stock Price Change Alert System" (push vs pull, DB, API, trade-offs) (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/6683943/" target="_blank" rel="noopener">Groww SDE-II, Apr 2025: stock order system with buy / sell / stop-loss via queue, 10 ms SLA (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7546272/" target="_blank" rel="noopener">Upstox SDE-2: design a trailing loss system (LeetCode)</a></li>
+    <li><a href="https://www.hellointerview.com/learn/system-design/problem-breakdowns/robinhood" target="_blank" rel="noopener">Hello Interview: Robinhood problem breakdown</a></li>
+    <li><a href="https://www.techinterview.org/post/3233474990/design-mobile-trading-app-robinhood/" target="_blank" rel="noopener">Design a mobile trading app: real-time prices, coalescing ticks per symbol</a></li>
+    <li><a href="https://github.com/donnemartin/system-design-primer" target="_blank" rel="noopener">System Design Primer</a></li>
+  </ul>
+
+  <div class="foot"><a href="hld-news-feed.html">← News feed</a><a href="../index.html">Playbook</a><a href="hld-top-k-trending.html">Top-K trending →</a></div>
+</div>
+</body>
+</html>

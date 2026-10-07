@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Better Retrieval</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · AI engineering</span></div>
+  <h1>Better retrieval: hybrid, rerank, rewrite, contextualise</h1>
+  <p class="lede">Most bad RAG answers are retrieval failures: the right clause was never put in front of the model. This lesson adds the five upgrades that interviewers expect a senior to know, in the order you should add them: hybrid search with reciprocal rank fusion in SQL, cross-encoder reranking, query rewriting, Anthropic's contextual retrieval, and permission-aware filtering. It ends with multi-hop questions.</p>
+  <div class="facts">
+    <span class="fact"><b>Time:</b> 4–5 hours</span>
+    <span class="fact"><b>Stack:</b> Postgres + pgvector, Python, Voyage AI, Claude</span>
+    <span class="fact"><b>Prerequisite:</b> <a href="learn-pgvector.html">pgvector hands-on</a></span>
+  </div>
+  <div class="chips"><span class="chip hot">Avaamo (bi- vs cross-encoder)</span><span class="chip">Adobe</span><span class="chip">Mastercard</span><span class="chip">Teradata</span><span class="chip">Equinix</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#outcomes">What you'll be able to do</a></li>
+    <li><a href="#concepts">Concepts from scratch</a></li>
+    <li><a href="#handson">Hands-on: the upgraded pipeline</a></li>
+    <li><a href="#interviews">How it shows up in interviews</a></li>
+    <li><a href="#exercise">Capstone checkpoint</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <ul>
+    <li>Explain why pure vector search misses exact terms such as "Clause 14.2" or a party's name, and fix it with hybrid search.</li>
+    <li>Write reciprocal rank fusion (RRF) in one SQL statement over pgvector and Postgres full-text search, filtered by tenant.</li>
+    <li>Explain bi-encoders vs cross-encoders and add a reranker with a sensible latency budget.</li>
+    <li>Rewrite conversational questions into standalone search queries with a cheap model and structured output.</li>
+    <li>Implement Anthropic's contextual retrieval with prompt caching, and quote its measured gains.</li>
+    <li>Enforce tenant and document-level ACLs inside retrieval, with the tenant taken from the JWT.</li>
+    <li>Handle multi-hop questions with decomposition and iterative retrieval, with a hop limit.</li>
+  </ul>
+
+  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch</h2>
+
+  <h3>Why vector search alone is not enough</h3>
+  <p>An embedding captures meaning, not spelling. That is great for "can we get out of this deal early?" matching "termination for convenience". It is poor at exact tokens: clause numbers, defined terms ("Effective Date"), party names, statute references ("Section 73 of the Indian Contract Act"), invoice numbers. Those are what keyword search (BM25, or Postgres <code>ts_rank_cd</code>) is good at. Each search fails where the other succeeds, so you run both and merge.</p>
+
+  <h3>Reciprocal rank fusion</h3>
+  <p>The two searches return scores on incompatible scales (cosine distance vs <code>ts_rank_cd</code>), so you merge by <b>rank</b>, not score. Each document gets:</p>
+  <pre><code>RRF(d) = Σ over result lists  1 / (k + rank_in_that_list(d))        k = 60 by convention</code></pre>
+  <div class="tbl"><table>
+    <tr><th>Chunk</th><th>Vector rank</th><th>Keyword rank</th><th>RRF (k = 60)</th></tr>
+    <tr><td>A: "terminate on thirty days written notice"</td><td>1</td><td>3</td><td class="num">1/61 + 1/63 = 0.03226</td></tr>
+    <tr><td>B: "exit for convenience after lock-in"</td><td>2</td><td>–</td><td class="num">1/62 = 0.01613</td></tr>
+    <tr><td>C: "Clause 14.2 notice period"</td><td>–</td><td>1</td><td class="num">1/61 = 0.01639</td></tr>
+  </table></div>
+  <p>A chunk found by both lists wins; one strong hit in either list still survives. <code>k</code> damps the difference between rank 1 and rank 5 so no single list dominates. It is like merging two sorted feeds with a vote instead of comparing their raw scores.</p>
+
+  <h3>Bi-encoder vs cross-encoder (the Avaamo question)</h3>
+  <div class="grid">
+    <div class="card"><h4>Bi-encoder (embeddings)</h4><p>Query and document are encoded <b>separately</b> into vectors; relevance is a dot product. Document vectors are computed once at ingestion, so search over millions is fast via an ANN index. The model never sees query and document together, so it misses fine interactions ("liability <i>is not</i> capped").</p></div>
+    <div class="card"><h4>Cross-encoder (reranker)</h4><p>Query and one document go <b>together</b> through the transformer, and attention runs across both, producing one relevance score. Much more accurate, but nothing can be precomputed: cost is one forward pass per (query, candidate) pair. So you only run it on the top 20–100 from the first stage.</p></div>
+  </div>
+  <p>Java analogy: the bi-encoder is a <code>hashCode()</code> you precompute and index; the cross-encoder is an expensive <code>equals()</code> you only call on the shortlist. Retrieve wide and cheap, rerank narrow and expensive.</p>
+
+  <h3>Query rewriting</h3>
+  <p>Users write "and what about the other one?" in turn five of a chat. Embedding that string retrieves noise. A cheap model (Haiku) rewrites it into a standalone query using the chat history, maps lay language to contract vocabulary, extracts exact keywords for the full-text leg, and, if needed, splits it into sub-questions. Variants: multi-query (several paraphrases, fused with RRF) and HyDE (embed a hypothetical answer instead of the question).</p>
+
+  <h3>Contextual retrieval</h3>
+  <p>Chunking destroys context. A chunk saying "The Supplier's liability under this clause shall not exceed the fees paid" does not say which contract, which supplier, or which clause. Anthropic's technique: before embedding <i>and</i> before BM25 indexing, ask Claude to write 50–100 tokens of context for each chunk, given the whole document, and prepend it. Their measured results on top-20 retrieval failure rate:</p>
+  <div class="tbl"><table>
+    <tr><th>Setup</th><th>Failure rate</th><th>Reduction</th></tr>
+    <tr><td>Baseline embeddings</td><td class="num">5.7%</td><td>–</td></tr>
+    <tr><td>Contextual embeddings</td><td class="num">3.7%</td><td>35%</td></tr>
+    <tr><td>Contextual embeddings + contextual BM25</td><td class="num">2.9%</td><td>49%</td></tr>
+    <tr><td>+ reranking</td><td class="num">1.9%</td><td>67%</td></tr>
+  </table></div>
+  <p>Cost is controlled with prompt caching: the document is the same for all of its chunks, so it is cached after the first call. Anthropic put the one-off cost at $1.02 per million document tokens. They also note that if the whole knowledge base is under about 200,000 tokens (about 500 pages), you can skip RAG and put it all in the prompt with caching. A single long contract often qualifies.</p>
+
+  <h3>Permission-aware retrieval</h3>
+  <p>Filtering after generation is too late: the model has already read the forbidden chunk and can paraphrase it. Filters belong in the retrieval query. Two layers: <b>tenant</b> (hard isolation, from the JWT claim, never a request parameter) and <b>document ACL</b> (which groups inside the tenant may see a contract, for example board-only side letters). Postgres row-level security makes the tenant filter impossible to forget.</p>
+
+  <h3>Multi-hop questions</h3>
+  <p>"Which of our vendor contracts renewed in 2025 have uncapped indemnity?" needs at least two lookups: find contracts renewed in 2025, then check each one's indemnity clause. One embedding of the whole question retrieves neither well. Approaches: decompose into sub-questions up front; iterate (retrieve, ask the model what is missing, retrieve again, up to N hops); or answer the structured half with SQL over metadata (<code>renewal_date</code>) and use vectors only for the semantic half. The last option is the most reliable and is the one interviewers like to hear.</p>
+
+  <div class="flow">
+    <span class="node">Question<small>+ chat history</small></span><span class="arrow">→</span>
+    <span class="node hl">Rewrite<small>Haiku, structured</small></span><span class="arrow">→</span>
+    <span class="node store">Hybrid SQL<small>vector + FTS, RRF, tenant RLS</small></span><span class="arrow">→</span>
+    <span class="node hl">Rerank<small>top 40 → top 5</small></span><span class="arrow">→</span>
+    <span class="node">Generate<small>Sonnet, cite [doc p.N]</small></span>
+  </div>
+  <p class="flow-caption">Figure: the upgraded query path. Contextual retrieval happens at ingestion time, so it does not appear here.</p>
+
+  <h2 id="handson"><span class="n">03</span>Step-by-step hands-on</h2>
+  <p>Start from the <code>contract_chunks</code> table of the <a href="learn-pgvector.html">pgvector lesson</a>: it already has <code>content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED</code> and a GIN index on it. Install <code>uv pip install "psycopg[binary]" pgvector voyageai anthropic numpy</code>. Every Python file below compiles with <code>python -m py_compile</code>; the SQL was run against <code>pgvector/pgvector:pg18-trixie</code>.</p>
+
+  <h3>Step 1: hybrid search with RRF in one SQL statement</h3>
+  <pre><code>WITH semantic AS (
+    SELECT id, RANK() OVER (ORDER BY embedding &lt;=&gt; '[0.9,0.1,0.0]') AS rank
+    FROM contract_chunks
+    WHERE tenant_id = 'acme'
+    ORDER BY embedding &lt;=&gt; '[0.9,0.1,0.0]'
+    LIMIT 20
+),
+keyword AS (
+    SELECT id, RANK() OVER (ORDER BY ts_rank_cd(content_tsv, q) DESC) AS rank
+    FROM contract_chunks, websearch_to_tsquery('english', 'terminate notice') q
+    WHERE tenant_id = 'acme' AND content_tsv @@ q
+    ORDER BY ts_rank_cd(content_tsv, q) DESC
+    LIMIT 20
+)
+SELECT COALESCE(s.id, k.id) AS id,
+       round((COALESCE(1.0 / (60 + s.rank), 0.0) + COALESCE(1.0 / (60 + k.rank), 0.0))::numeric, 5) AS rrf_score
+FROM semantic s
+FULL OUTER JOIN keyword k ON s.id = k.id
+ORDER BY rrf_score DESC
+LIMIT 5;
+
+--  id | rrf_score
+-- ----+-----------
+--   1 |   0.03279      &lt;- rank 1 in both lists: 2/61
+--   4 |   0.01613
+--   3 |   0.01587
+--   2 |   0.01563</code></pre>
+  <p>The <code>FULL OUTER JOIN</code> keeps chunks found by only one leg; <code>COALESCE(..., 0.0)</code> gives them zero from the missing leg. <code>websearch_to_tsquery</code> accepts user-style input (quotes, <code>or</code>, <code>-</code>) without throwing syntax errors, which <code>to_tsquery</code> would. The same query from Python, parameterised, with the tenant filter in both legs:</p>
+  <pre><code>import numpy as np
+import psycopg
+
+HYBRID_SQL = """
+WITH semantic AS (
+    SELECT id, RANK() OVER (ORDER BY embedding &lt;=&gt; %(qvec)s) AS rank
+    FROM contract_chunks
+    WHERE tenant_id = %(tenant)s
+    ORDER BY embedding &lt;=&gt; %(qvec)s
+    LIMIT 40
+),
+keyword AS (
+    SELECT id, RANK() OVER (ORDER BY ts_rank_cd(content_tsv, q) DESC) AS rank
+    FROM contract_chunks, websearch_to_tsquery('english', %(qtext)s) q
+    WHERE tenant_id = %(tenant)s AND content_tsv @@ q
+    ORDER BY ts_rank_cd(content_tsv, q) DESC
+    LIMIT 40
+)
+SELECT c.id, c.source, c.page, c.content,
+       COALESCE(1.0 / (%(k)s + s.rank), 0.0) + COALESCE(1.0 / (%(k)s + kw.rank), 0.0) AS rrf
+FROM semantic s
+FULL OUTER JOIN keyword kw ON s.id = kw.id
+JOIN contract_chunks c ON c.id = COALESCE(s.id, kw.id)
+ORDER BY rrf DESC
+LIMIT %(limit)s
+"""
+
+
+def hybrid_search(conn: psycopg.Connection, tenant_id: str, question: str, qvec: np.ndarray,
+                  limit: int = 20, k: int = 60) -&gt; list[tuple]:
+    """tenant_id must come from the verified JWT, never from the request body."""
+    with conn.transaction():
+        conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")  # tenant filter shrinks HNSW results
+        return conn.execute(HYBRID_SQL, {"qvec": qvec, "qtext": question, "tenant": tenant_id,
+                                         "k": k, "limit": limit}).fetchall()</code></pre>
+  <p>I ran this against the container with a second tenant's row inserted: only the <code>acme</code> rows came back. Each leg fetches 40, so the reranker has 20–40 candidates to work with.</p>
+  <div class="callout info"><b>Postgres full-text vs real BM25</b><p><code>ts_rank_cd</code> is not BM25: it ranks by term frequency and proximity and has no inverse document frequency, so rare terms are not boosted the way BM25 boosts them. For clause-number and defined-term matching it still captures most of the benefit with no new infrastructure. If keyword quality becomes the bottleneck, a BM25 extension or OpenSearch is the upgrade; measure first.</p></div>
+
+  <h3>Step 2: rerank the candidates with a cross-encoder</h3>
+  <pre><code>import voyageai
+
+vo = voyageai.Client()
+
+
+def rerank(question: str, candidates: list[dict], top_k: int = 5) -&gt; list[dict]:
+    """candidates: dicts with a 'content' key, already tenant-filtered by the SQL."""
+    result = vo.rerank(question, [c["content"] for c in candidates], model="rerank-3-lite", top_k=top_k)
+    return [candidates[r.index] | {"rerank_score": r.relevance_score} for r in result.results]</code></pre>
+  <p><code>rerank-3</code> is Voyage's highest-accuracy reranker, <code>rerank-3-lite</code> the latency/cost option. Each result carries <code>index</code> (position in your list), <code>document</code> and <code>relevance_score</code>. Self-hosted alternative: a cross-encoder such as <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> through <code>sentence-transformers</code>, which is what pgvector-python's hybrid example uses. Budget: rerank 20–50 candidates, not 500; the cost grows linearly with the number of pairs. Rerank only the tenant-filtered candidates; never send another tenant's text to any model.</p>
+
+  <h3>Step 3: rewrite the query with structured output</h3>
+  <pre><code>import anthropic
+from pydantic import BaseModel
+
+client = anthropic.Anthropic()
+
+
+class SearchPlan(BaseModel):
+    rewritten_query: str          # standalone, legal vocabulary, no pronouns
+    keywords: list[str]           # exact terms for the full-text leg
+    sub_questions: list[str]      # empty unless the question needs several lookups
+
+
+REWRITE_SYSTEM = """You turn a user's question about their contracts into a search plan.
+Resolve pronouns using the chat history. Use contract vocabulary
+(e.g. "get out of the deal" -&gt; "termination for convenience").
+Only split into sub_questions when one search cannot answer it."""
+
+
+def plan_search(question: str, history: str = "") -&gt; SearchPlan:
+    resp = client.messages.parse(
+        model="claude-haiku-4-5-20251001",  # cheap and fast: this runs on every query
+        max_tokens=400,
+        system=REWRITE_SYSTEM,
+        messages=[{"role": "user", "content": f"&lt;history&gt;{history}&lt;/history&gt;\n&lt;question&gt;{question}&lt;/question&gt;"}],
+        output_format=SearchPlan,
+    )
+    return resp.parsed_output</code></pre>
+  <p><code>messages.parse</code> with a Pydantic model returns a validated object in <code>resp.parsed_output</code> (the SDK converts the model to a JSON schema and checks the response). Use <code>rewritten_query</code> for the vector leg and <code>" ".join(keywords)</code> for <code>websearch_to_tsquery</code>. Example: history "We're looking at the Infosys MSA", question "can they walk away early?" should become something like <code>{"rewritten_query": "termination for convenience rights of the vendor in the Infosys MSA", "keywords": ["terminate", "convenience", "notice"], "sub_questions": []}</code>. Cost: one Haiku call of a few hundred tokens, so roughly a tenth of a cent and a few hundred milliseconds. Skip it for the first turn if the question is already standalone.</p>
+
+  <h3>Step 4: contextual retrieval at ingestion, with prompt caching</h3>
+  <pre><code>import anthropic
+
+client = anthropic.Anthropic()
+
+CONTEXT_PROMPT = """Here is the chunk we want to situate within the whole document
+&lt;chunk&gt;
+{chunk}
+&lt;/chunk&gt;
+Please give a short succinct context to situate this chunk within the overall document for the purposes of improving \
+search retrieval of the chunk. Answer only with the succinct context and nothing else."""
+
+
+def contextualize(document_text: str, chunks: list[str]) -&gt; list[str]:
+    """Prepend 50-100 tokens of document context to every chunk before embedding and indexing."""
+    out = []
+    for chunk in chunks:
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{
+                "role": "user",
+                "content": [
+                    # Same document block on every call -&gt; cached after the first; later calls pay cache-read price.
+                    {"type": "text", "text": f"&lt;document&gt;\n{document_text}\n&lt;/document&gt;",
+                     "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": CONTEXT_PROMPT.format(chunk=chunk)},
+                ],
+            }],
+        )
+        context = next(b.text for b in resp.content if b.type == "text").strip()
+        out.append(f"{context}\n\n{chunk}")
+    return out</code></pre>
+  <p>The quoted instruction is Anthropic's own contextualiser prompt. <code>cache_control: {"type": "ephemeral"}</code> on the document block marks the end of a cacheable prefix; the first call writes the cache (1.25x input price for the 5-minute cache), and each later chunk of the same document reads it at 0.1x. Check <code>resp.usage.cache_read_input_tokens</code> on the second call to confirm hits. Documents shorter than the model's minimum cacheable length are not cached; that is fine, they are cheap anyway. Store both the original chunk (to show users and cite) and the contextualised text (to embed and to feed into <code>content_tsv</code>), because the context helps the keyword leg too. Run it in the ingestion worker, not at query time, and for a large back-catalogue use the Batch API at 50% off.</p>
+
+  <h3>Step 5: tenant and ACL filtering that cannot be forgotten</h3>
+  <pre><code>ALTER TABLE contract_chunks ADD COLUMN allowed_groups text[] NOT NULL DEFAULT '{}';
+CREATE INDEX ON contract_chunks USING gin (allowed_groups);
+
+ALTER TABLE contract_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contract_chunks FORCE ROW LEVEL SECURITY;   -- applies to the table owner too
+CREATE POLICY tenant_isolation ON contract_chunks
+    USING (tenant_id = current_setting('app.tenant_id', true));
+
+-- per request, inside the transaction, from the verified JWT:
+BEGIN;
+SET LOCAL app.tenant_id = 'acme';
+SELECT id, content FROM contract_chunks
+WHERE allowed_groups &amp;&amp; ARRAY['sales']::text[]          -- user's groups, also from the JWT
+ORDER BY embedding &lt;=&gt; '[1,0,0]' LIMIT 5;
+COMMIT;
+--  id |         content
+-- ----+--------------------------
+--   2 | standard MSA termination      (the legal-only side letter is excluded)
+
+SELECT count(*) FROM contract_chunks;   -- no tenant set: 0 rows, fails closed</code></pre>
+  <p>On the Spring side, a filter or aspect reads the tenant claim from the validated <code>Jwt</code> and runs <code>SET LOCAL app.tenant_id</code> (via <code>set_config('app.tenant_id', ?, true)</code> as a bind parameter) at the start of the transaction. The repository adds the group filter from the JWT's groups claim. Nothing in the request body can change either. With <code>current_setting(..., true)</code>, a missing setting returns NULL, so the policy matches no rows: it fails closed, which I verified above.</p>
+  <div class="callout warn"><b>Rejected for this</b><p>"We filter by tenant after retrieval" or "the client passes tenantId". Both leak: the first puts other tenants' text into the prompt and shrinks your top-k, the second lets anyone change a parameter. Say "tenant from the JWT, enforced in the query and by RLS, tested with a cross-tenant test".</p></div>
+
+  <h3>Step 6: multi-hop with decomposition and a hop limit</h3>
+  <pre><code>from typing import Callable
+
+import anthropic
+
+client = anthropic.Anthropic()
+MAX_HOPS = 3
+
+
+def answer_multihop(question: str, retrieve: Callable[[str], list[str]], plan_search) -&gt; str:
+    """retrieve(query) -&gt; list of chunk texts, already tenant-scoped by the caller."""
+    plan = plan_search(question)
+    queries = plan.sub_questions or [plan.rewritten_query]
+    evidence: list[str] = []
+    for hop in range(MAX_HOPS):
+        for q in queries:
+            evidence += retrieve(q)
+        joined = "\n---\n".join(evidence)
+        follow_up = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system="Reply with ONE search query for the missing fact, or exactly DONE if the evidence suffices.",
+            messages=[{"role": "user", "content":
+                       f"&lt;question&gt;{question}&lt;/question&gt;\n&lt;evidence&gt;{joined}&lt;/evidence&gt;"}],
+        )
+        nxt = next(b.text for b in follow_up.content if b.type == "text").strip()
+        if nxt == "DONE":
+            break
+        queries = [nxt]
+    joined = "\n---\n".join(evidence)
+    final = client.messages.create(
+        model="claude-sonnet-5-5",
+        max_tokens=1500,
+        system="Answer only from the evidence. Cite as [source p.N]. If the evidence is insufficient, say so.",
+        messages=[{"role": "user", "content":
+                   f"&lt;question&gt;{question}&lt;/question&gt;\n&lt;evidence&gt;{joined}&lt;/evidence&gt;"}],
+    )
+    return next(b.text for b in final.content if b.type == "text")</code></pre>
+  <p>The loop is bounded (<code>MAX_HOPS = 3</code>) so a confused model cannot spin forever and burn tokens, the cheap model decides "what is missing", and only the final answer uses Sonnet. The <code>retrieve</code> callback is the tenant-scoped hybrid plus rerank function, so every hop is permission-filtered. Production additions: dedupe evidence by chunk id, cap total evidence tokens, and log each hop's query for debugging.</p>
+
+  <h3>Latency and cost budget per question</h3>
+  <div class="tbl"><table>
+    <tr><th>Stage</th><th>Typical latency</th><th>Notes</th></tr>
+    <tr><td>Rewrite (Haiku)</td><td class="num">300–700 ms</td><td>Skip when the question is standalone</td></tr>
+    <tr><td>Query embedding</td><td class="num">50–150 ms</td><td>One API call</td></tr>
+    <tr><td>Hybrid SQL</td><td class="num">10–50 ms</td><td>HNSW + GIN, tenant-filtered</td></tr>
+    <tr><td>Rerank 40 candidates</td><td class="num">100–300 ms</td><td>Lite model if p95 matters</td></tr>
+    <tr><td>Generate (Sonnet, streamed)</td><td class="num">first token ≈ 1 s</td><td>Stream so the user sees progress</td></tr>
+  </table></div>
+  <p>These latencies are planning estimates, not measurements; measure your own p50/p95 per stage with tracing spans. The order to add upgrades is by return on effort: hybrid (cheap, big win on exact terms), then reranking, then contextual retrieval (an ingestion cost), then rewriting for chat, then multi-hop only if your golden set has such questions.</p>
+
+  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <details class="qa"><summary>Bi-encoder vs cross-encoder: what is the difference and where does each go?</summary><p>A bi-encoder embeds query and document independently, so document vectors are precomputed and searched with ANN: fast, scalable, less precise. A cross-encoder reads query and document together with full attention between them and outputs a relevance score: precise, but one model pass per pair and nothing precomputed. So: bi-encoder (plus BM25) retrieves the top 50 from millions, the cross-encoder reranks those 50 to the top 5.</p></details>
+  <details class="qa"><summary>Why hybrid search? Isn't semantic search better?</summary><p>Embeddings blur exact tokens: clause numbers, defined terms, names, IDs. BM25 nails those and misses paraphrases. Running both and fusing with RRF gets both kinds of match. In legal text, a large share of questions mention an exact term, so hybrid is the first upgrade.</p></details>
+  <details class="qa"><summary>Why RRF instead of a weighted sum of scores?</summary><p>Cosine distance and BM25 scores are on different, query-dependent scales, so a weighted sum needs normalisation and tuning and breaks when the distribution shifts. RRF uses only ranks, has one parameter (k = 60 by convention), and is robust. A weighted, normalised fusion can win once you have a golden set to tune it on.</p></details>
+  <details class="qa"><summary>What is contextual retrieval and what did it buy?</summary><p>Prepend 50–100 tokens of Claude-generated, document-aware context to each chunk before embedding and BM25 indexing. Anthropic measured top-20 retrieval failures falling from 5.7% to 3.7% (35%), to 2.9% with contextual BM25 (49%), and to 1.9% with reranking (67%). Prompt caching on the document keeps it at about $1.02 per million document tokens.</p></details>
+  <details class="qa"><summary>How do you enforce per-tenant and per-document access in RAG?</summary><p>In the retrieval query, before anything reaches the model: tenant from the JWT applied in SQL and by Postgres RLS (fail closed when unset), document ACL as an indexed array or join filtered by the user's groups from the token. Rerank and generate only on allowed chunks. Prove it with an automated cross-tenant test and audit-log the chunk ids used per answer.</p></details>
+  <details class="qa"><summary>A chat user asks "what about the second one?" How do you retrieve?</summary><p>Query rewriting with the conversation history into a standalone query, using a small model with structured output (rewritten query, keywords, optional sub-questions). Embed the rewritten query, not the raw turn.</p></details>
+  <details class="qa"><summary>How do you answer multi-hop questions?</summary><p>Prefer turning the structured part into SQL over metadata (dates, counterparties, contract type), then semantic search per result. Otherwise decompose into sub-questions or retrieve iteratively, with a hop limit, dedupe and a token cap. Evaluate multi-hop questions separately in the golden set because they fail differently.</p></details>
+  <details class="qa"><summary>Retrieval quality dropped after a deployment. How do you debug?</summary><p>Run the golden set and compare recall@k per stage: did the vector leg, keyword leg, fusion or reranker change? Common causes: a new embedding model mixed with old vectors, a chunking change, a tokenizer or language config change in <code>to_tsvector</code>, a tenant filter shrinking HNSW results (iterative scan off), or the reranker timing out and being skipped silently.</p></details>
+  <details class="qa"><summary>Where do the top-k numbers come from?</summary><p>From measurement: retrieve wide (20–50 per leg) for recall, rerank down to 3–8 for precision and context cost. Tune on a golden set by plotting recall@k and answer quality against k; more context is not free, because irrelevant chunks distract the model and cost tokens.</p></details>
+
+  <h2 id="exercise"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <ol>
+    <li>Extend the golden set from the pgvector lesson to 30 questions: 10 with exact terms (clause numbers, party names), 10 paraphrased, 5 conversational follow-ups, 5 multi-hop.</li>
+    <li>Measure recall@5 for: vector only, hybrid RRF, hybrid + rerank, and hybrid + rerank on contextualised chunks. Put the four numbers in a table in your README; it is a ready-made interview story.</li>
+    <li>Turn on RLS with the fail-closed policy and add a test that a <code>globex</code> token gets zero <code>acme</code> chunks.</li>
+    <li>For the risky-clause flagger, retrieve by <code>clause_type</code> metadata plus hybrid search for "uncapped liability", "unilateral termination", "auto-renewal", then rerank before asking Claude to classify.</li>
+  </ol>
+  <div class="callout tip"><b>Done when</b><p>You can say, with your own numbers, which upgrade moved recall the most on your contracts and what it cost per query.</p></div>
+
+  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://www.anthropic.com/news/contextual-retrieval" target="_blank" rel="noopener">Introducing Contextual Retrieval (Anthropic): prompt, failure-rate numbers, cost, 200k-token guidance</a></li>
+    <li><a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener">pgvector README: hybrid search, filtering, iterative index scans</a></li>
+    <li><a href="https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search/rrf.py" target="_blank" rel="noopener">pgvector-python RRF example (basis of the SQL above)</a> and <a href="https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search/cross_encoder.py" target="_blank" rel="noopener">cross-encoder example</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/embeddings" target="_blank" rel="noopener">Embeddings (Claude docs): Voyage embeddings and rerankers (rerank-3, rerank-3-lite)</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/structured-outputs" target="_blank" rel="noopener">Structured outputs: <code>messages.parse</code> with Pydantic</a></li>
+    <li><a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Claude pricing: prompt caching multipliers, Batch API discount</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-pgvector.html">pgvector hands-on</a> · <a href="learn-rag-fundamentals.html">RAG fundamentals</a> · <a href="ai-rag-enterprise-qa.html">RAG system design</a></span></div>
+</div>
+</body>
+</html>

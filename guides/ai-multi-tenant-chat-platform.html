@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Multi-tenant Chat Platform</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">AI system design</span></div>
+  <h1>Multi-tenant ChatGPT-style platform</h1>
+  <p class="lede">Design a chat product that many organisations share: token-by-token streamed replies, saved and searchable conversations, editable messages, strict tenant isolation, per-tenant limits and cost, and failover across LLM providers. A senior answer separates generation from the connection, treats tokens as the unit of capacity and money, and makes provider failure a normal event.</p>
+  <div class="facts">
+    <span class="fact"><b>Time-box:</b> 45–60 min</span>
+    <span class="fact"><b>Seen:</b> Tekion, Amazon, Uber, Microsoft in 2026; circuit breaker as machine coding</span>
+  </div>
+  <div class="chips"><span class="chip hot">Tekion</span><span class="chip hot">Amazon</span><span class="chip">Uber</span><span class="chip">Microsoft</span><span class="chip">Emergent Labs</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#graded">What's graded</a></li>
+    <li><a href="#scope">Clarify and scope</a></li>
+    <li><a href="#capacity">Capacity estimation</a></li>
+    <li><a href="#api">API design</a></li>
+    <li><a href="#data">Data model</a></li>
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#deep">Deep dives</a></li>
+    <li><a href="#scale">Scaling and failure</a></li>
+    <li><a href="#tradeoffs">Trade-offs</a></li>
+    <li><a href="#followups">Follow-up questions</a></li>
+    <li><a href="#mistakes">Rejection reasons</a></li>
+    <li><a href="#plan">45-minute plan</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
+  <p>Tekion's Staff (AI) round, Sep 2026, gave the full prompt: users converse with an AI assistant, replies stream token by token, conversations are saved, users search their history, many tenants each with isolated data, and users can edit messages. Microsoft's SDE-2 AI-team loop split the same space into an LLD on caching to cut AI cost plus LLM observability, and an HLD to design an AI application and then evaluate the design. Emergent Labs turned provider failover into a machine-coding problem with exact thresholds.</p>
+  <div class="grid">
+    <div class="card"><h4>Streaming done right</h4><p>SSE vs WebSocket, what happens on disconnect, how a reply resumes, how "stop generating" works.</p></div>
+    <div class="card"><h4>Conversation model</h4><p>Edits create branches; context is the path from root to the current leaf; history is trimmed or summarised to fit the window.</p></div>
+    <div class="card"><h4>Isolation and fairness</h4><p>Tenant from the JWT, row-level isolation, per-tenant keys, token-based rate limits so one tenant cannot starve others.</p></div>
+    <div class="card"><h4>Cost and reliability</h4><p>Tokens per turn in rupees or dollars, caching layers, model tiering, multi-provider routing with a circuit breaker.</p></div>
+  </div>
+
+  <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
+  <ul>
+    <li><b>Who are tenants?</b> B2B organisations whose employees chat (like an enterprise ChatGPT). Do tenants bring their own system prompts, models or API keys?</li>
+    <li><b>Search scope?</b> A user searches only their own conversations, or also shared ones? Keyword or semantic?</li>
+    <li><b>Edit semantics?</b> Editing an earlier message regenerates from that point. Keep the old branch (ChatGPT does) or discard?</li>
+    <li><b>Attachments and tools?</b> Files, web search, RAG over tenant docs? (Scope out, note the hook.)</li>
+    <li><b>Retention and residency?</b> Per-tenant retention policy, region pinning, DPDP erasure.</li>
+    <li><b>Providers?</b> One provider or several (Anthropic, OpenAI, a self-hosted model)? Failover allowed across providers for every tenant?</li>
+  </ul>
+  <div class="grid">
+    <div class="card"><h4>Functional</h4><ul><li>Create conversation, send message, stream reply</li><li>Stop, regenerate, edit (branching)</li><li>List conversations, full-text search history</li><li>Per-tenant config: models, system prompt, limits</li><li>Usage and cost reports per tenant</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>2,000 tenants, 1M DAU, 15 messages/user/day</li><li>Time to first token p95 &lt; 1.5 s (plus provider)</li><li>No lost messages; reply survives a dropped connection</li><li>99.95% for send/stream; search can lag a few seconds</li><li>Zero cross-tenant reads</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Training or hosting frontier models</li><li>Voice and image generation</li><li>Real-time multi-user shared chats</li></ul></div>
+  </div>
+
+  <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
+  <div class="tbl"><table>
+    <tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr>
+    <tr><td>Turns per day</td><td>1M DAU × 15</td><td class="num">15M turns</td></tr>
+    <tr><td>Send QPS</td><td>15M ÷ 86,400; peak 3.5×</td><td class="num">~175 avg, ~600 peak</td></tr>
+    <tr><td>Concurrent streams</td><td>600/s × 12 s avg generation (400 tokens at ~35 tok/s)</td><td class="num">~7,200 open SSE streams</td></tr>
+    <tr><td>Message writes</td><td>30M messages/day (user + assistant)</td><td class="num">~350/s avg</td></tr>
+    <tr><td>Storage</td><td>30M × 1.5 KB</td><td class="num">45 GB/day ≈ 16 TB/yr (×3 replicas)</td></tr>
+    <tr><td>Input tokens</td><td>15M × 6k (1k system + 5k history)</td><td class="num">90B/day</td></tr>
+    <tr><td>Output tokens</td><td>15M × 400</td><td class="num">6B/day</td></tr>
+    <tr><td>Cost, no caching</td><td>90,000 M × $3 + 6,000 M × $15</td><td class="num">$270k + $90k = $360k/day</td></tr>
+    <tr><td>Cost with prompt caching</td><td>80% of input read from cache at 0.1×: 90B × (0.2 + 0.08) = 25.2B equivalent → $75.6k + $90k</td><td class="num">~$166k/day ≈ $0.011/turn</td></tr>
+  </table></div>
+  <p>Say the conclusions: storage and QPS are ordinary; the system is bound by LLM tokens, provider rate limits and open connections. History re-sent every turn dominates input cost, so a stable prompt prefix (for provider caching) and summarisation matter more than any database choice. Routing simple turns to a smaller model is the next biggest lever.</p>
+
+  <h2 id="api"><span class="n">04</span>API design</h2>
+  <pre><code>POST /v1/conversations                         → { "conversationId": "c_01J..", "title": null }
+GET  /v1/conversations?cursor=..&amp;limit=20       # sidebar, newest first
+
+POST /v1/conversations/{cid}/messages          # Idempotency-Key: 6f1c..
+{ "parentId": "m_01J..A", "content": "Summarise clause 12", "model": "auto" }
+→ 202 { "userMessageId": "m_..B", "assistantMessageId": "m_..C",
+        "streamUrl": "/v1/messages/m_..C/stream" }
+
+GET  /v1/messages/{mid}/stream                 # Accept: text/event-stream; Last-Event-ID: 41
+→ id: 42  event: delta  data: {"text":" the notice"}
+→ id: 43  event: done   data: {"finish":"stop","usage":{"in":5980,"out":388}}
+
+POST /v1/messages/{mid}/cancel                 # stop generating
+POST /v1/messages/{mid}/edit                   { "content": "Summarise clause 14 instead" }
+→ 202 { "userMessageId": "m_..D", "assistantMessageId": "m_..E", "streamUrl": "..." }
+PUT  /v1/conversations/{cid}/leaf              { "leafId": "m_..C" }   # switch branch
+GET  /v1/search?q=termination+notice&amp;cursor=..</code></pre>
+  <p>Send and stream are separate calls, so a reconnect is just another GET with <code>Last-Event-ID</code>. The idempotency key makes a retried send return the same message ids instead of starting a second, billed generation. Event ids are per-message sequence numbers.</p>
+
+  <h2 id="data"><span class="n">05</span>Data model</h2>
+  <div class="tbl"><table>
+    <tr><th>Store</th><th>Table / key</th><th>Notes</th></tr>
+    <tr><td>Postgres (sharded by tenant_id, e.g. Citus)</td><td><code>tenant(tenant_id, plan, models_allowed, rpm, tpm, monthly_budget, region, kms_key_id)</code><br><code>conversation(tenant_id, conversation_id, user_id, title, current_leaf_id, summary, summary_upto_id, updated_at)</code></td><td>Index <code>(tenant_id, user_id, updated_at DESC)</code> for the sidebar. RLS on tenant_id.</td></tr>
+    <tr><td>Cassandra / ScyllaDB (or partitioned Postgres)</td><td><code>message</code>: partition <code>(tenant_id, conversation_id)</code>, clustering <code>message_id</code> (ULID, time-ordered); <code>parent_id, role, content (encrypted), status, model, tokens_in, tokens_out, created_at</code></td><td>Append-heavy, read by conversation. Conversation size is bounded, so no hot partitions.</td></tr>
+    <tr><td>Redis</td><td>Stream <code>gen:{message_id}</code> (tokens, TTL 15 min); rate-limit buckets <code>rl:{tenant}:{minute}</code>; cancel flags</td><td>Ephemeral; DB is the durable copy</td></tr>
+    <tr><td>OpenSearch</td><td>Index of messages, routing key tenant_id, fields tenant_id, user_id, conversation_id, branch_active, text, created_at</td><td>Fed from Kafka; dedicated index for very large tenants</td></tr>
+    <tr><td>ClickHouse</td><td><code>usage_event(tenant_id, user_id, message_id, provider, model, tokens_in, cached_in, tokens_out, cost_micros, ttft_ms, ts)</code></td><td>Cost attribution, dashboards, invoices</td></tr>
+  </table></div>
+  <p>Status moves <code>PENDING → STREAMING → COMPLETE | CANCELLED | FAILED</code>. Content is encrypted with a per-tenant data key (envelope encryption via KMS), which also gives crypto-shredding when a tenant leaves. Discord's move of trillions of messages to Cassandra and then ScyllaDB is the reference for the partition-by-channel design; Postgres is fine at this guide's 16 TB/yr if sharded, and simpler if the team knows it.</p>
+
+  <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
+  <div class="flow">
+    <span class="node">Web / mobile<small>SSE client</small></span><span class="arrow">→</span>
+    <span class="node">API gateway<small>JWT, tenant, RPM</small></span><span class="arrow">→</span>
+    <span class="node hl">Chat service<small>persist, idempotency</small></span><span class="arrow">→</span>
+    <span class="node store">Kafka<small>generation.requested</small></span><span class="arrow">→</span>
+    <span class="node hl">Generation workers<small>context builder</small></span><span class="arrow">→</span>
+    <span class="node hl">LLM gateway<small>TPM, router, breaker</small></span><span class="arrow">→</span>
+    <span class="node">Anthropic / OpenAI / self-hosted</span>
+  </div>
+  <div class="flow">
+    <span class="node">Generation workers</span><span class="arrow">→<small>XADD tokens</small></span>
+    <span class="node store">Redis Streams<small>gen:{mid}</small></span><span class="arrow">→<small>XREAD</small></span>
+    <span class="node">Stream service<small>WebFlux SSE</small></span><span class="arrow">→</span>
+    <span class="node">Client</span>
+  </div>
+  <div class="flow">
+    <span class="node">Workers</span><span class="arrow">→<small>message.completed</small></span>
+    <span class="node store">Kafka</span><span class="arrow">→</span>
+    <span class="node">Search indexer<small>OpenSearch</small></span>
+    <span class="node">Usage consumer<small>ClickHouse</small></span>
+    <span class="node">Summariser<small>async</small></span>
+  </div>
+  <p class="flow-caption">Figure: send path, token path and post-completion fan-out. The browser connection is never on the generation's critical path.</p>
+  <ul>
+    <li><b>API gateway</b>: validates JWT, derives tenant and user, applies request-per-minute limits and concurrent-stream caps.</li>
+    <li><b>Chat service</b>: writes the user message and a <code>PENDING</code> assistant placeholder, then emits <code>generation.requested</code> through an outbox. Returns 202 immediately.</li>
+    <li><b>Generation workers</b>: build the context (system prompt, summary, branch path, recent turns), call the LLM gateway with streaming, append each delta to the Redis stream, flush partial content to the DB every ~2 s, write the final message and emit <code>message.completed</code>.</li>
+    <li><b>LLM gateway</b>: per-tenant token budget, model tiering, provider routing, circuit breaker, retries before the first token only, prompt-cache markers, usage metering. Spring AI's <code>ChatClient.stream()</code> returning <code>Flux&lt;ChatResponse&gt;</code> fits here; LiteLLM or Portkey are the off-the-shelf equivalents in Python land.</li>
+    <li><b>Stream service</b>: stateless SSE endpoint on Netty; reads from the Redis stream after <code>Last-Event-ID</code> and blocks for new entries. Any node can serve any stream, so no sticky sessions.</li>
+    <li><b>Async consumers</b>: search indexing, usage and cost, title generation, rolling summaries, eval sampling.</li>
+  </ul>
+
+  <h2 id="deep"><span class="n">07</span>Deep dives</h2>
+
+  <h3>7.1 Streaming that survives disconnects</h3>
+  <div class="tbl"><table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td>Proxy provider stream straight to the client</td><td>Simplest, lowest latency</td><td>Tab close or mobile network switch kills generation or loses tokens; the pod holding the stream is a single point</td></tr>
+    <tr><td>SSE + decoupled worker + Redis Streams (chosen)</td><td>Resume with Last-Event-ID; multi-device viewing; generation completes even if user leaves</td><td>One more hop (~1–3 ms); Redis memory for in-flight streams</td></tr>
+    <tr><td>WebSocket</td><td>Bidirectional (cancel, typing, presence on one socket)</td><td>Harder through proxies and load balancers, manual reconnect and resume protocol; overkill for one-way token flow</td></tr>
+  </table></div>
+  <p>Memory check: 7,200 in-flight streams × ~3 KB of tokens = ~22 MB in Redis, trivial. Cancel sets <code>cancel:{mid}</code>; the worker checks between deltas, aborts the upstream HTTP call (which stops billing for further output), saves the partial with status <code>CANCELLED</code> and bills consumed tokens. SSE runs fine over HTTP/2, which removes the browser's six-connections-per-host limit.</p>
+
+  <h3>7.2 Editing, branching and building the context</h3>
+  <p>Messages form a tree through <code>parent_id</code>. Editing message B (parent A) creates a new user message B' with parent A, then a new assistant reply; <code>conversation.current_leaf_id</code> moves to the new leaf. Old branches stay so the user can flip between "1/2" and "2/2". The context for a turn is the path from the leaf to the root, which the worker reads with one partition scan and walks in memory.</p>
+  <p><b>Context-window management</b>: budget = model window − max output − system prompt − tool schemas. Strategy:</p>
+  <ol>
+    <li>Keep the last N turns verbatim (most relevant, and cheap thanks to caching).</li>
+    <li>When the path exceeds ~70% of the budget, an async job writes a rolling summary of older turns into <code>conversation.summary</code> and records <code>summary_upto_id</code>. Summaries advance in large steps so the cached prefix changes rarely.</li>
+    <li>Optionally embed old turns and retrieve the few relevant ones ("as I said earlier about clause 14").</li>
+    <li>Order the prompt as tools → system → summary → older turns → recent turns → new message, so the provider's prefix cache (Anthropic caches in the order tools, system, messages) hits on everything but the tail.</li>
+  </ol>
+  <p>Spring AI's <code>MessageWindowChatMemory</code> (default 20 messages, keeps system messages) with <code>JdbcChatMemoryRepository</code> is the starter version; the branching tree and summaries are what you add on top.</p>
+
+  <h3>7.3 Provider routing and the circuit breaker (Emergent Labs)</h3>
+  <p>The question: all calls go to Claude; if Claude's error rate exceeds 5%, send 95% to OpenAI; if it exceeds 90%, fail fast except for 5% to Claude and 5% to OpenAI as probes. The interviewer pushed on how to pick the provider per request; the candidate landed on hashing the request id mod 100. That is deterministic percentage bucketing, the same trick as feature-flag rollouts: stateless across gateway nodes, no coordination, and a retry of the same request id lands in the same bucket.</p>
+  <pre><code>public final class ProviderRouter {
+    public enum Mode { HEALTHY, DEGRADED, FAILING }
+
+    private final ErrorRateWindow claude;          // 60 one-second buckets of (ok, error) counters
+    private final AtomicReference&lt;Mode&gt; mode = new AtomicReference&lt;&gt;(Mode.HEALTHY);
+
+    public ProviderRouter(ErrorRateWindow claude) { this.claude = claude; }
+
+    public Optional&lt;Provider&gt; route(String requestId) {
+        int bucket = Math.floorMod(Hashing.murmur3_32_fixed().hashUnencodedChars(requestId).asInt(), 100);
+        return switch (mode.get()) {
+            case HEALTHY  -&gt; Optional.of(Provider.CLAUDE);
+            case DEGRADED -&gt; Optional.of(bucket &lt; 5 ? Provider.CLAUDE : Provider.OPENAI);
+            case FAILING  -&gt; bucket &lt; 5 ? Optional.of(Provider.CLAUDE)
+                           : bucket &lt; 10 ? Optional.of(Provider.OPENAI) : Optional.empty(); // caller returns 503
+        };
+    }
+
+    public void record(Provider p, boolean success) {
+        if (p != Provider.CLAUDE) return;
+        claude.record(success);
+        if (claude.total() &lt; 100) return;           // too few samples to judge
+        double rate = claude.errorRate();
+        Mode next = rate &gt; 0.90 ? Mode.FAILING : rate &gt; 0.05 ? Mode.DEGRADED
+                  : rate &lt; 0.02 ? Mode.HEALTHY : mode.get();   // hysteresis band 2–5% avoids flapping
+        mode.set(next);
+    }
+}</code></pre>
+  <p>Patterns to name: State (the three modes), Strategy (provider clients behind one <code>LlmProvider</code> interface), Decorator (retry and metering around a provider). In production, keep the window per provider and per model, count only provider faults (5xx, 429, timeouts, not 400s caused by bad prompts), share counters through Redis or accept per-node windows, and alert on mode changes. Resilience4j's <code>CircuitBreaker</code> gives you the window and state machine for the single-provider case.</p>
+  <div class="callout warn"><b>Failover is not free</b><p>Prompts tuned for one model may behave differently on another; tool-call formats differ; tenants may have contracted for one provider or region only. Store per-tenant allowed providers, keep a prompt variant per provider, and run the golden eval set on the fallback model before enabling it. Retry only before the first token is sent; after that, the user has already seen part of a reply.</p></div>
+
+  <h3>7.4 Per-tenant rate limits, budgets and cost attribution</h3>
+  <ul>
+    <li>Limits are in <b>tokens per minute</b> as well as requests, because one 100k-token request costs more than a thousand short ones. Also cap concurrent streams per user and per tenant.</li>
+    <li>Reserve before the call: estimated input tokens (tokeniser count) + <code>max_tokens</code>, taken atomically from a Redis token bucket via a Lua script. Reconcile after completion with actual usage and refund the difference.</li>
+    <li>Provider quotas are pooled across tenants; a weighted fair queue in the gateway gives each tenant a share proportional to plan so a burst from one tenant queues behind its own quota, not everyone's.</li>
+    <li>Every completion emits a usage event (tenant, user, feature, model, input, cached input, output, price-table version) to Kafka, then ClickHouse. Alerts at 80% of monthly budget; at 100% either hard-stop or downgrade to a cheaper model, per tenant policy.</li>
+  </ul>
+
+  <h3>7.5 Search across chat history</h3>
+  <p>A Kafka consumer indexes completed messages into OpenSearch with <code>routing=tenant_id</code>; every query carries a mandatory filter on tenant_id and user_id built server-side. Edits mark superseded branches <code>branch_active=false</code> (searchable but ranked lower). Lag is seconds, which is acceptable. For semantic search add a k-NN vector field and fuse with BM25; for big tenants give them their own index so a noisy tenant does not affect relevance statistics or latency. Deleting a conversation deletes from the DB, index and caches in one saga, which the DPDP erasure path reuses.</p>
+
+  <h3>7.6 Caching to cut cost (Microsoft LLD)</h3>
+  <div class="tbl"><table>
+    <tr><th>Layer</th><th>Key</th><th>Saves</th><th>Risk</th></tr>
+    <tr><td>Provider prompt cache</td><td>Identical prefix (tools, system, history)</td><td>Cache reads at ~0.1× input price on Anthropic; lower TTFT</td><td>Writes cost 1.25× (5-min TTL); any change to an early block invalidates the rest</td></tr>
+    <tr><td>Exact response cache</td><td>hash(tenant, model, params, full prompt)</td><td>100% for repeated deterministic prompts (temperature 0, templates)</td><td>Low hit rate in open chat</td></tr>
+    <tr><td>Semantic cache</td><td>Embedding of standalone question, cosine ≥ 0.95, tenant-scoped</td><td>FAQ-style tenant bots</td><td>Wrong answer on near-duplicates; never across tenants or users with different data</td></tr>
+    <tr><td>Model tiering</td><td>Classifier picks small vs large model</td><td>3–10× on easy turns</td><td>Quality dips; measure with evals</td></tr>
+  </table></div>
+
+  <h3>7.7 Observability and evaluating the design</h3>
+  <ul>
+    <li><b>Traces</b> (OpenTelemetry): gateway → chat service → worker → LLM call span with model, provider, input/cached/output tokens, TTFT, finish reason, cost. Use the GenAI semantic-convention attribute names so tools understand them.</li>
+    <li><b>Metrics</b>: TTFT p50/p95, tokens/s, provider error and 429 rates, breaker mode, cache hit rate, queue depth, concurrent streams, cost per tenant per hour.</li>
+    <li><b>Prompt and response logs</b>: sampled, PII-redacted, retained per tenant policy, access-audited.</li>
+    <li><b>Quality</b>: offline golden conversations scored by LLM-as-judge (calibrated against human labels) before any model or prompt change; online regenerate rate, edit rate, thumbs-down rate, abandonment mid-stream; A/B by tenant cohort.</li>
+  </ul>
+  <div class="callout warn"><b>Guardrails</b><p><b>Prompt injection</b>: tenant system prompts and uploaded files are untrusted; tools that write anything need user confirmation. <b>PII and DPDP</b>: detect and mask identifiers (Aadhaar, PAN, phone) before logging; in-region inference for tenants that need it; zero-retention provider terms; erasure across DB, index, caches and analytics; breach reporting to the Board without delay and in detail within 72 hours once the DPDP Rules' core obligations apply (13 May 2027). <b>Tenant isolation</b>: tenant id only from the JWT, RLS and mandatory filters, per-tenant keys, no shared caches, automated cross-tenant leak tests.</p></div>
+
+  <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
+  <ul>
+    <li><b>First to break at 10×</b>: provider rate limits and spend. Add providers and regions, more model tiering, bigger cache share; negotiate provisioned throughput.</li>
+    <li><b>Connections</b>: 72k concurrent SSE streams at 10× is ~10–15 Netty nodes; scale on open connections, not CPU.</li>
+    <li><b>Worker crash mid-stream</b>: the Kafka offset is committed only after the final write. Another worker picks the request up, sees status <code>STREAMING</code> with partial content, and either restarts generation (emitting a <code>reset</code> event so clients clear the partial) or marks it <code>FAILED</code> with a retry button. Never silently append a second generation to the first.</li>
+    <li><b>Duplicate sends</b>: idempotency key unique per (tenant, user, key) returns the original ids.</li>
+    <li><b>Backpressure</b>: when provider capacity is exhausted, queue with a short deadline and tell the user ("high demand, using a faster model") rather than time out.</li>
+    <li><b>Consistency</b>: messages strongly consistent within a conversation (single partition); search and usage eventually consistent.</li>
+    <li><b>Multi-region</b>: tenant pinned to a home region (data residency); active-passive per tenant with async replication; providers chosen per region.</li>
+  </ul>
+
+  <h2 id="tradeoffs"><span class="n">09</span>Trade-offs</h2>
+  <div class="tbl"><table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
+    <tr><td>Postgres for messages</td><td>One system, RLS, transactions, team knows it</td><td>Sharding work beyond a few TB per node</td><td>Up to tens of TB with Citus; most B2B products</td></tr>
+    <tr><td>Cassandra / ScyllaDB</td><td>Linear write scale, natural partition per conversation</td><td>No joins, limited secondary indexes, ops expertise</td><td>Consumer scale, hundreds of TB</td></tr>
+    <tr><td>Shared tables + tenant_id</td><td>Cheap, simple ops</td><td>Noisy neighbours, isolation relies on code and RLS</td><td>Long tail of small tenants</td></tr>
+    <tr><td>Database or cluster per tenant</td><td>Strong isolation, per-tenant residency and keys</td><td>Cost, migrations across thousands of DBs</td><td>Large or regulated tenants (hybrid model)</td></tr>
+    <tr><td>Self-hosted open model (vLLM)</td><td>Data control, predictable cost at high volume</td><td>GPU ops, lower quality than frontier models</td><td>Strict residency, high-volume simple tasks</td></tr>
+    <tr><td>Build gateway vs buy (LiteLLM, Portkey)</td><td>Build: full control in your Spring stack</td><td>Build: maintain provider adapters</td><td>Buy to start; build when routing and billing are core IP</td></tr>
+  </table></div>
+
+  <h2 id="followups"><span class="n">10</span>Follow-up questions interviewers asked</h2>
+  <details class="qa"><summary>Why SSE and not WebSockets?</summary><p>Tokens flow one way; the user's input is a normal POST. SSE is plain HTTP, works through corporate proxies, has built-in reconnect with Last-Event-ID, and multiplexes over HTTP/2. Choose WebSockets when you need frequent client-to-server messages on the same channel (collaborative editing, voice).</p></details>
+  <details class="qa"><summary>The user edits a message from ten turns ago. What happens to search, context and billing?</summary><p>A new branch is created from that message's parent; context is the new path, so later turns from the old branch are excluded. Old-branch messages stay in search with branch_active=false. The regeneration is billed like any turn; prompt caching still helps because the prefix up to the edit point is unchanged.</p></details>
+  <details class="qa"><summary>How do you count tokens before calling the provider?</summary><p>Use the provider's tokeniser or token-count endpoint for an estimate, reserve estimate + max_tokens from the budget, and reconcile with the usage block the provider returns at the end of the stream. Never trust a client-side count.</p></details>
+  <details class="qa"><summary>One tenant runs a script that sends 10,000 long prompts. What protects others?</summary><p>Tenant TPM bucket rejects or queues beyond its quota, concurrent-stream cap per tenant, weighted fair queue in the gateway so provider capacity is shared by plan weight, and a budget hard stop. Alert the tenant admin.</p></details>
+  <details class="qa"><summary>Why hash the request id instead of random() &lt; 0.95?</summary><p>Both give the right proportions. Hashing is deterministic, so retries and debugging are reproducible, and you can pin a request or user to a provider across gateway nodes without shared state. Hash the user or conversation id instead if you want a whole conversation to stay on one provider for consistent style and cache hits.</p></details>
+  <details class="qa"><summary>How would you evaluate this design? (Microsoft)</summary><p>Against the requirements: TTFT and availability SLOs measured end to end, cost per turn against target, isolation verified by leak tests, quality by golden set and online signals, and a failure-mode review (provider down, Redis down, worker crash, region loss) showing each has a defined behaviour.</p></details>
+  <details class="qa"><summary>Redis goes down. What breaks?</summary><p>Live token streaming and rate limiting. Workers keep generating and flushing partials to the DB, so clients fall back to polling the message; rate limiting fails closed for heavy tenants or falls back to per-node local buckets. Run Redis with replicas and keep it off the durability path.</p></details>
+
+  <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
+  <div class="callout warn"><b>Rejected for this</b><ul>
+    <li>Tying generation to the HTTP connection, so a dropped network loses the reply.</li>
+    <li>Rate limiting only by requests; ignoring tokens and cost.</li>
+    <li>No tenant isolation story beyond "add tenant_id"; taking tenant id from the request.</li>
+    <li>Treating edits as overwrites, which breaks history and the context the model saw.</li>
+    <li>Sending the whole history every turn with no window management, then being unable to explain the bill.</li>
+    <li>In the Emergent machine-coding round: spending too long on the routing debate and leaving AI-generated code with bugs. Settle the bucketing quickly, then drive the code and test the thresholds.</li>
+  </ul></div>
+
+  <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
+  <div class="timeline">
+    <div class="step"><span class="t">0–5 min</span><span>Clarify tenants, edits, search scope, providers, retention.</span></div>
+    <div class="step"><span class="t">5–9 min</span><span>Capacity: QPS, concurrent streams, storage, tokens and cost per turn.</span></div>
+    <div class="step"><span class="t">9–17 min</span><span>APIs (send vs stream split) and data model (message tree, tenant keys).</span></div>
+    <div class="step"><span class="t">17–25 min</span><span>Architecture: chat service, workers, Redis Streams, LLM gateway, async consumers.</span></div>
+    <div class="step"><span class="t">25–37 min</span><span>Deep dives: resumable streaming, context window, router and breaker, token rate limits.</span></div>
+    <div class="step"><span class="t">37–43 min</span><span>Search, caching, observability, guardrails, failure modes.</span></div>
+    <div class="step"><span class="t">43–45 min</span><span>Trade-offs and how you would evaluate the design.</span></div>
+  </div>
+
+  <h2 id="sources"><span class="n">13</span>Sources</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/8542635/" target="_blank" rel="noopener">Tekion Staff Software Engineer (AI), Sep 2026: multi-tenant ChatGPT-style platform (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7494384/" target="_blank" rel="noopener">Microsoft SDE-2 AI team, Jan 2026: caching to cut AI cost, LLM observability, evaluate the design (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7923477/" target="_blank" rel="noopener">Emergent Labs machine coding, Apr 2026: multi-provider LLM circuit breaker (LeetCode)</a></li>
+    <li><a href="https://docs.spring.io/spring-ai/reference/api/chat-memory.html" target="_blank" rel="noopener">Spring AI reference: Chat Memory</a></li>
+    <li><a href="https://dev.to/avaneeshyadav/how-to-stream-llm-responses-in-spring-ai-server-sent-events-3bio" target="_blank" rel="noopener">Streaming LLM responses in Spring AI with SSE (dev.to)</a></li>
+    <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching" target="_blank" rel="noopener">Claude docs: Prompt caching (pricing multipliers, prefix order)</a></li>
+    <li><a href="https://www.hlc.com/en/publications/indias-digital-personal-data-protection-act-2023-brought-into-force-" target="_blank" rel="noopener">Hogan Lovells: India's DPDP Act brought into force</a></li>
+    <li><a href="https://dev.to/anshulprakash/i-added-genai-system-design-to-my-interviews-then-i-tried-to-pass-one-myself-2eag" target="_blank" rel="noopener">How a GenAI design interviewer grades (dev.to)</a></li>
+  </ul>
+
+  <div class="foot"><a href="ai-rag-enterprise-qa.html">← RAG over enterprise documents</a><a href="../index.html">Playbook</a><a href="ai-durable-agent-runtime.html">Durable agent runtime →</a></div>
+</div>
+</body>
+</html>

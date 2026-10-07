@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Python for Java Devs</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · AI engineering</span></div>
+  <h1>Python for a Java engineer</h1>
+  <p class="lede">Almost every AI library ships Python first, and AI interview rounds increasingly hand you a Python editor. This lesson maps what you already know from Java and Spring Boot onto Python, then has you build the exact thing EPAM asked a Senior AI Engineer candidate to build live: a FastAPI service with Pydantic validation, retries, timeouts and proper error handling.</p>
+  <div class="facts">
+    <span class="fact"><b>Time to do:</b> 1 evening + 1 weekend morning</span>
+    <span class="fact"><b>Stack:</b> Python 3.12+, uv, FastAPI, Pydantic v2, httpx</span>
+    <span class="fact"><b>Asked live:</b> EPAM Senior AI Engineer, Apr 2026</span>
+  </div>
+  <div class="chips"><span class="chip hot">EPAM</span><span class="chip">AI engineer rounds</span><span class="chip">FastAPI</span><span class="chip">Pydantic</span><span class="chip">asyncio</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#outcomes">What you'll be able to do</a></li>
+    <li><a href="#concepts">Concepts, mapped to Java</a></li>
+    <li><a href="#handson">Hands-on: build the service</a></li>
+    <li><a href="#interviews">How this shows up in interviews</a></li>
+    <li><a href="#exercise">Exercise / capstone checkpoint</a></li>
+    <li><a href="#sources">Sources / go deeper</a></li>
+  </ol></nav>
+
+  <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
+  <ul>
+    <li>Read and write idiomatic Python without translating Java line by line: type hints, dataclasses, comprehensions, exceptions, context managers, generators.</li>
+    <li>Choose between a <code>@dataclass</code> and a Pydantic <code>BaseModel</code>, and explain why the boundary of a service uses Pydantic.</li>
+    <li>Set up a project with <code>uv</code> (the Gradle-plus-SDKMAN of Python), run it, and add dependencies reproducibly.</li>
+    <li>Explain <code>async</code>/<code>await</code> in terms of <code>CompletableFuture</code> and Reactor, and know the one rule that breaks it (never block the event loop).</li>
+    <li>Build, in under an hour, a FastAPI service that validates input, calls a downstream over HTTP with per-phase timeouts, retries only transient failures with backoff and jitter, and maps failures to clean HTTP errors. Then test it without a network.</li>
+  </ul>
+
+  <h2 id="concepts"><span class="n">02</span>Concepts explained from scratch, mapped to Java</h2>
+
+  <h3>The mental shift</h3>
+  <p>Python is dynamically typed at runtime, but modern Python is written with type hints that tools (mypy, pyright, your IDE) check statically and libraries (Pydantic, FastAPI) read at runtime. Think of it as Java where the compiler is optional and runs as a linter, while frameworks use the annotations the way Spring uses reflection. There are no checked exceptions, no <code>public/private</code> keywords (a leading underscore means "internal, please don't"), and indentation is syntax.</p>
+
+  <div class="tbl"><table>
+    <tr><th>Java / Spring</th><th>Python</th><th>Note</th></tr>
+    <tr><td><code>List&lt;String&gt; ids = new ArrayList&lt;&gt;();</code></td><td><code>ids: list[str] = []</code></td><td>Hints use built-in generics since 3.9.</td></tr>
+    <tr><td><code>Map&lt;String, Integer&gt;</code></td><td><code>dict[str, int]</code></td><td>Dicts keep insertion order (like <code>LinkedHashMap</code>).</td></tr>
+    <tr><td><code>Optional&lt;String&gt;</code> / nullable</td><td><code>str | None</code></td><td><code>None</code> is <code>null</code>; check with <code>is None</code>.</td></tr>
+    <tr><td><code>record Clause(String id, String type)</code></td><td><code>@dataclass(frozen=True) class Clause</code></td><td>Equals, hash, repr generated.</td></tr>
+    <tr><td>Bean Validation DTO (<code>@NotNull @Pattern</code>)</td><td>Pydantic <code>BaseModel</code> + <code>Field(...)</code></td><td>Validates and coerces at runtime.</td></tr>
+    <tr><td><code>stream().filter().map().toList()</code></td><td><code>[f(x) for x in xs if p(x)]</code></td><td>List comprehension.</td></tr>
+    <tr><td><code>try (var r = open()) {}</code></td><td><code>with open() as r:</code></td><td>Context manager.</td></tr>
+    <tr><td><code>Iterator&lt;T&gt;</code> implementation</td><td>function with <code>yield</code></td><td>Generator, lazy.</td></tr>
+    <tr><td><code>CompletableFuture.allOf(...)</code></td><td><code>await asyncio.gather(...)</code></td><td>Single-threaded event loop.</td></tr>
+    <tr><td><code>future.get(2, SECONDS)</code></td><td><code>await asyncio.wait_for(coro, 2)</code></td><td>Raises <code>TimeoutError</code>.</td></tr>
+    <tr><td>Gradle + <code>build.gradle</code> + lockfile</td><td><code>uv</code> + <code>pyproject.toml</code> + <code>uv.lock</code></td><td>Per-project virtualenv in <code>.venv</code>.</td></tr>
+    <tr><td><code>RestClient</code> / <code>WebClient</code></td><td><code>httpx.Client</code> / <code>httpx.AsyncClient</code></td><td>Reuse one client: it owns the connection pool.</td></tr>
+    <tr><td><code>@RestController</code> + <code>@ControllerAdvice</code></td><td>FastAPI path functions + <code>@app.exception_handler</code></td><td>Validation errors become 422 automatically.</td></tr>
+    <tr><td><code>@Bean</code> init / <code>@PreDestroy</code></td><td>FastAPI <code>lifespan</code> context manager</td><td>Code before <code>yield</code> = startup.</td></tr>
+  </table></div>
+
+  <h3>Type hints</h3>
+  <p>Hints are not enforced by the interpreter: <code>def f(x: int) -&gt; str</code> still accepts a string at runtime. They earn their keep in three places: your IDE, a static checker in CI (<code>mypy</code> or <code>pyright</code>, the equivalent of compiling), and libraries that read them at runtime. FastAPI reads the hint on a parameter to decide whether it is a path variable, a query parameter or a JSON body; Pydantic reads field hints to build validators. <code>Annotated[int, Field(ge=1)]</code> attaches metadata to a type, which is how you put a constraint on a type rather than a field, much like a Bean Validation annotation.</p>
+
+  <h3>Dataclasses vs Pydantic models</h3>
+  <p>A <code>@dataclass</code> is a Java record: a plain container with generated <code>__init__</code>, <code>__eq__</code> and <code>__repr__</code>. It does not validate anything. Pass <code>page="three"</code> and it stores the string. A Pydantic <code>BaseModel</code> is a DTO with Bean Validation and Jackson built in: it coerces <code>"3"</code> to <code>3</code>, rejects <code>0</code> when you declared <code>ge=1</code>, produces structured error lists, and serialises to and from JSON (<code>model_validate</code>, <code>model_dump_json</code>). Rule of thumb: Pydantic at trust boundaries (HTTP bodies, LLM outputs, config, messages off Kafka), dataclasses for internal values where validation cost and ceremony buy nothing.</p>
+  <div class="callout tip"><b>Why AI engineers care</b><p>Pydantic is how you turn an LLM's JSON into a typed object and reject it when it is malformed. The Anthropic SDK's <code>client.messages.parse(..., output_format=MyModel)</code> takes a Pydantic class, and FastAPI uses the same classes for request bodies. One model definition serves the API contract, the LLM output contract and the OpenAPI docs.</p></div>
+
+  <h3>Comprehensions, exceptions, context managers, generators</h3>
+  <p><b>Comprehensions</b> replace most stream pipelines: <code>[c.clause_id for c in clauses if c.clause_type == "termination"]</code> for a list, <code>{k: v for ...}</code> for a dict, <code>{x for ...}</code> for a set. Keep them to one condition; past that, write a loop.</p>
+  <p><b>Exceptions</b> are all unchecked. Catch the narrowest type (<code>except httpx.ConnectError</code>), never a bare <code>except:</code>, and use <code>raise NewError(...) from exc</code> to keep the cause chain, the equivalent of passing the cause to an exception constructor. <code>try/except/else/finally</code> exists; <code>else</code> runs only when no exception was raised.</p>
+  <p><b>Context managers</b> are try-with-resources. Anything with <code>__enter__</code>/<code>__exit__</code> works with <code>with</code>; the <code>@contextmanager</code> decorator lets you write one as a generator with a single <code>yield</code>. The async version is <code>async with</code>, and FastAPI's <code>lifespan</code> is an async context manager.</p>
+  <p><b>Generators</b> are functions that <code>yield</code>. Calling one returns an iterator that produces values lazily, so you can stream a 500-page contract chunk by chunk without holding every chunk in memory. Streaming LLM output in Python is generator-shaped too: <code>for text in stream.text_stream:</code>.</p>
+
+  <h3>async/await vs CompletableFuture</h3>
+  <p>Python's <code>asyncio</code> runs coroutines on a single-threaded event loop, like a Netty event loop or Reactor's non-blocking scheduler, not like a thread pool. <code>await</code> is a point where the coroutine yields control until I/O completes. <code>asyncio.gather(a(), b(), c())</code> is <code>CompletableFuture.allOf</code>: three HTTP calls overlap and the total time is roughly the slowest one. The trap is the same as calling a blocking JDBC driver inside a WebFlux handler: a synchronous call (<code>requests.get</code>, <code>time.sleep</code>, a sync database driver) inside an <code>async def</code> freezes every request on that worker. Use async libraries (<code>httpx.AsyncClient</code>, <code>asyncpg</code>/<code>psycopg</code> async), or declare the endpoint with plain <code>def</code> so FastAPI runs it on a thread pool.</p>
+  <div class="flow">
+    <span class="node">Request A<small>await upstream</small></span><span class="arrow">→</span>
+    <span class="node hl">Event loop<small>1 thread</small></span><span class="arrow">→</span>
+    <span class="node">Request B runs<small>while A waits</small></span><span class="arrow">→</span>
+    <span class="node store">Socket ready<small>A resumes</small></span>
+  </div>
+  <p class="flow-caption">Figure: one event loop interleaves many requests at their <code>await</code> points. A blocking call anywhere stops all of them.</p>
+  <p>The GIL (global interpreter lock) means CPU-bound Python code does not run in parallel across threads; for I/O-bound services, which is what LLM gateways and RAG APIs are, asyncio or threads both work well. For CPU-heavy work (local embedding models, PDF parsing at scale) use processes or push it to a worker.</p>
+
+  <h3>Packaging with uv and virtual environments</h3>
+  <p>Each project gets its own virtual environment (<code>.venv</code>), an isolated interpreter plus site-packages, so two projects can pin different library versions. <code>uv</code> (from Astral) replaces <code>pip</code>, <code>venv</code>, <code>pip-tools</code> and <code>pyenv</code> with one fast binary: <code>uv init</code> creates <code>pyproject.toml</code> (your <code>build.gradle</code>), <code>uv add</code> adds a dependency and updates <code>uv.lock</code> (commit it), and <code>uv run</code> executes inside the project's environment, creating it if needed. If a team still uses plain pip: <code>python3 -m venv .venv &amp;&amp; source .venv/bin/activate &amp;&amp; pip install -r requirements.txt</code>.</p>
+
+  <h3>httpx: the HTTP client</h3>
+  <p><code>httpx</code> has a <code>requests</code>-style API with sync and async clients. Create one client per application (it pools connections, like a single <code>WebClient</code> bean), close it on shutdown, and always set a timeout. <code>httpx.Timeout(connect=1.0, read=3.0, write=3.0, pool=1.0)</code> sets each phase separately; <code>pool</code> is how long to wait for a free connection from the pool, the setting people forget until the pool is exhausted under load. Timeouts raise <code>httpx.ConnectTimeout</code>, <code>httpx.ReadTimeout</code> and friends (all subclasses of <code>httpx.TimeoutException</code>); <code>resp.raise_for_status()</code> raises <code>httpx.HTTPStatusError</code> for 4xx/5xx.</p>
+
+  <h2 id="handson"><span class="n">03</span>Step-by-step hands-on</h2>
+
+  <h3>Step 1: create the project</h3>
+  <pre><code># install uv once (macOS/Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+uv init contract-svc &amp;&amp; cd contract-svc
+uv add fastapi "uvicorn[standard]" httpx pydantic
+uv add --dev pytest
+uv run python --version</code></pre>
+
+  <h3>Step 2: the language warm-up</h3>
+  <p>Save as <code>basics.py</code> and run <code>uv run python basics.py</code>. Every construct from section 02 appears once.</p>
+  <pre><code>import asyncio
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Iterator
+
+from pydantic import BaseModel, Field, ValidationError
+
+
+@dataclass(frozen=True)
+class Clause:
+    clause_id: str
+    clause_type: str
+    text: str
+    tags: list[str] = field(default_factory=list)
+
+
+class ClauseIn(BaseModel):
+    clause_id: str
+    clause_type: str
+    page: int = Field(ge=1)
+
+
+clauses = [
+    Clause("c1", "termination", "Either party may terminate on 30 days notice."),
+    Clause("c2", "liability", "Liability is capped at fees paid in 12 months."),
+    Clause("c3", "termination", "Termination for cause is immediate."),
+]
+
+# Comprehensions (Java: stream().filter().map().collect())
+termination_ids = [c.clause_id for c in clauses if c.clause_type == "termination"]
+by_type: dict[str, list[str]] = {}
+for c in clauses:
+    by_type.setdefault(c.clause_type, []).append(c.clause_id)
+lengths = {c.clause_id: len(c.text) for c in clauses}
+print(termination_ids, by_type, lengths)
+
+# Pydantic coerces and validates
+print(ClauseIn.model_validate({"clause_id": "c9", "clause_type": "ip", "page": "3"}))
+try:
+    ClauseIn.model_validate({"clause_id": "c9", "clause_type": "ip", "page": 0})
+except ValidationError as e:
+    print(e.error_count(), "error:", e.errors()[0]["msg"])
+
+
+# Generators: lazy, like an Iterator you never have to write
+def read_chunks(text: str, size: int) -&gt; Iterator[str]:
+    for start in range(0, len(text), size):
+        yield text[start:start + size]
+
+
+print(list(read_chunks("abcdefghij", 4)))
+
+
+# Context managers: try-with-resources
+@contextmanager
+def timed(label: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        print(f"{label} took {(time.perf_counter() - start) * 1000:.0f} ms")
+
+
+# async/await vs CompletableFuture.allOf
+async def fetch(name: str, delay: float) -&gt; str:
+    await asyncio.sleep(delay)
+    return name
+
+
+async def main() -&gt; None:
+    with timed("gather"):
+        results = await asyncio.gather(fetch("a", 0.1), fetch("b", 0.1), fetch("c", 0.1))
+    print(results)
+    try:
+        await asyncio.wait_for(fetch("slow", 1.0), timeout=0.05)
+    except TimeoutError:
+        print("timed out")
+
+
+asyncio.run(main())</code></pre>
+  <p>Expected output (the timing varies by a millisecond or two):</p>
+  <pre><code>['c1', 'c3'] {'termination': ['c1', 'c3'], 'liability': ['c2']} {'c1': 45, 'c2': 46, 'c3': 35}
+clause_id='c9' clause_type='ip' page=3
+1 error: Input should be greater than or equal to 1
+['abcd', 'efgh', 'ij']
+gather took 102 ms
+['a', 'b', 'c']
+timed out</code></pre>
+  <p>Notice <code>gather took 102 ms</code> for three 100 ms waits: they overlapped. And <code>page="3"</code> became the integer <code>3</code>; Pydantic coerces in its default "lax" mode. Use <code>model_config = ConfigDict(strict=True)</code> if you want type mismatches rejected instead.</p>
+
+  <h3>Step 3: the service (the EPAM round)</h3>
+  <p>The service accepts a summary request for a contract, validates it, fetches the contract's clauses from a downstream document service, filters them, and returns a typed response. The parts an interviewer grades are the validation model, the shared client with per-phase timeouts, a retry loop that retries only transient failures with exponential backoff and jitter, and an exception handler that turns downstream failure into a clean 502/504 instead of a stack trace.</p>
+  <pre><code>"""Contract summary service: FastAPI + Pydantic + httpx with timeouts, retries and error mapping."""
+import asyncio
+import logging
+import random
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+
+log = logging.getLogger("contract-svc")
+
+UPSTREAM_URL = "http://docs-service.internal"
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+class SummaryRequest(BaseModel):
+    contract_id: Annotated[str, Field(pattern=r"^CTR-\d{6}$")]
+    max_clauses: Annotated[int, Field(ge=1, le=50)] = 10
+    clause_types: list[str] = []
+
+    @field_validator("clause_types")
+    @classmethod
+    def lower_and_dedupe(cls, v: list[str]) -&gt; list[str]:
+        return sorted({t.strip().lower() for t in v if t.strip()})
+
+
+class Clause(BaseModel):
+    clause_id: str
+    clause_type: str
+    text: str
+
+
+class SummaryResponse(BaseModel):
+    contract_id: str
+    clause_count: int
+    clauses: list[Clause]
+
+
+class UpstreamError(Exception):
+    def __init__(self, status: int, detail: str):
+        self.status = status
+        self.detail = detail
+
+
+async def get_with_retry(client: httpx.AsyncClient, url: str, *, attempts: int = 3,
+                         base_delay: float = 0.2) -&gt; httpx.Response:
+    """GET with exponential backoff + full jitter. Retries only transient failures."""
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = await client.get(url)
+            if resp.status_code not in RETRYABLE_STATUS:
+                return resp
+            reason = f"HTTP {resp.status_code}"
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.PoolTimeout) as exc:
+            reason = type(exc).__name__
+        if attempt == attempts:
+            raise UpstreamError(504 if "Timeout" in reason else 502, f"upstream failed after {attempts} tries: {reason}")
+        delay = random.uniform(0, base_delay * 2 ** (attempt - 1))
+        log.warning("attempt %d failed (%s); retrying in %.2fs", attempt, reason, delay)
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # One pooled client for the whole app, like a singleton WebClient bean.
+    timeout = httpx.Timeout(connect=1.0, read=3.0, write=3.0, pool=1.0)
+    app.state.http = httpx.AsyncClient(base_url=UPSTREAM_URL, timeout=timeout)
+    yield
+    await app.state.http.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(UpstreamError)
+async def upstream_error_handler(request: Request, exc: UpstreamError) -&gt; JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"error": "upstream_unavailable", "detail": exc.detail})
+
+
+@app.post("/v1/summaries", response_model=SummaryResponse)
+async def create_summary(req: SummaryRequest, request: Request) -&gt; SummaryResponse:
+    client: httpx.AsyncClient = request.app.state.http
+    resp = await get_with_retry(client, f"/contracts/{req.contract_id}/clauses")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"contract {req.contract_id} not found")
+    resp.raise_for_status()
+    clauses = [Clause.model_validate(c) for c in resp.json()]
+    if req.clause_types:
+        clauses = [c for c in clauses if c.clause_type in req.clause_types]
+    clauses = clauses[: req.max_clauses]
+    return SummaryResponse(contract_id=req.contract_id, clause_count=len(clauses), clauses=clauses)</code></pre>
+  <p>What each piece is doing, in Spring terms:</p>
+  <ul>
+    <li><code>SummaryRequest</code> is your request DTO with Bean Validation. A bad <code>contract_id</code> never reaches your code; FastAPI returns 422 with a field-level error list, like <code>MethodArgumentNotValidException</code> handled for you. The <code>field_validator</code> normalises input (trim, lower-case, de-duplicate), like a custom <code>@JsonDeserialize</code> or a compact-constructor in a record.</li>
+    <li><code>lifespan</code> is your <code>@Bean</code> plus <code>@PreDestroy</code>: one <code>AsyncClient</code> for the whole process, closed on shutdown.</li>
+    <li><code>get_with_retry</code> is what <code>@Retryable(maxRetries = 2, delay = 200, multiplier = 2, jitter = ...)</code> would do. It retries 429 and 5xx and connection or read timeouts, but never 400/401/404, which will fail identically on every attempt. Full jitter (<code>random.uniform(0, cap)</code>) spreads retries from many pods so they do not hit the recovering downstream in lockstep.</li>
+    <li><code>UpstreamError</code> plus <code>@app.exception_handler</code> is <code>@ControllerAdvice</code>: domain exception in, consistent JSON error out. Timeouts map to 504, other upstream failures to 502.</li>
+    <li><code>response_model=SummaryResponse</code> validates and filters your own output, so you cannot leak a field by accident.</li>
+  </ul>
+  <div class="callout warn"><b>Retries need a budget</b><p>Three attempts with a 3-second read timeout can hold a request for over 9 seconds. In production, wrap the whole call in an overall deadline (<code>asyncio.timeout(5)</code> in Python 3.11+) so retries never exceed what your own caller will wait, and only retry idempotent requests. A GET is safe; a POST that creates something needs an idempotency key first.</p></div>
+
+  <h3>Step 4: run it</h3>
+  <pre><code>uv run uvicorn app:app --reload --port 8000
+
+# validation failure: never touches the downstream
+curl -s -X POST localhost:8000/v1/summaries \
+  -H 'content-type: application/json' \
+  -d '{"contract_id":"bad","max_clauses":0}'</code></pre>
+  <p>The 422 body lists both errors, each with <code>loc</code> (for example <code>["body","contract_id"]</code>), <code>msg</code> and <code>type</code>. Open <code>http://localhost:8000/docs</code> to see the generated OpenAPI UI. With no downstream running, a valid request returns <code>502</code> with <code>{"error":"upstream_unavailable", ...}</code> after the retries: the connection is refused immediately, so the retry delays are short.</p>
+
+  <h3>Step 5: test without a network</h3>
+  <p><code>httpx.MockTransport</code> swaps the network layer for a function, the same idea as <code>MockRestServiceServer</code> or WireMock. <code>TestClient</code> calls the app in-process, and entering it runs the lifespan.</p>
+  <pre><code>import httpx
+from fastapi.testclient import TestClient
+
+import app as svc
+
+calls = {"n": 0}
+
+
+def flaky_upstream(request: httpx.Request) -&gt; httpx.Response:
+    calls["n"] += 1
+    if "CTR-000404" in request.url.path:
+        return httpx.Response(404)
+    if "CTR-000503" in request.url.path:
+        return httpx.Response(503)
+    if calls["n"] == 1:  # first call fails, retry succeeds
+        return httpx.Response(503)
+    return httpx.Response(200, json=[
+        {"clause_id": "c1", "clause_type": "termination", "text": "Either party may terminate..."},
+        {"clause_id": "c2", "clause_type": "liability", "text": "Liability is capped at..."},
+    ])
+
+
+def make_client() -&gt; TestClient:
+    client = TestClient(svc.app)
+    client.__enter__()  # runs lifespan
+    svc.app.state.http = httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(flaky_upstream))
+    return client
+
+
+def test_all():
+    c = make_client()
+    r = c.post("/v1/summaries", json={"contract_id": "CTR-000123", "clause_types": [" Termination "]})
+    assert r.status_code == 200, r.text
+    assert r.json()["clause_count"] == 1 and calls["n"] == 2
+    assert c.post("/v1/summaries", json={"contract_id": "bad"}).status_code == 422
+    assert c.post("/v1/summaries", json={"contract_id": "CTR-000404"}).status_code == 404
+    r = c.post("/v1/summaries", json={"contract_id": "CTR-000503"})
+    assert r.status_code == 502 and r.json()["error"] == "upstream_unavailable"
+    print("200 -&gt;", c.post("/v1/summaries", json={"contract_id": "CTR-000123"}).json()["clause_count"], "clauses")
+    print("422 -&gt;", c.post("/v1/summaries", json={"contract_id": "bad", "max_clauses": 0}).json()["detail"][0]["msg"])
+    print("502 -&gt;", r.json())
+
+
+if __name__ == "__main__":
+    test_all()
+    print("all checks passed")</code></pre>
+  <p>Run with <code>uv run python test_app.py</code> (or <code>uv run pytest</code>, which picks up <code>test_all</code>). Actual output:</p>
+  <pre><code>attempt 1 failed (HTTP 503); retrying in 0.10s
+attempt 1 failed (HTTP 503); retrying in 0.08s
+attempt 2 failed (HTTP 503); retrying in 0.10s
+200 -&gt; 2 clauses
+422 -&gt; String should match pattern '^CTR-\d{6}$'
+502 -&gt; {'error': 'upstream_unavailable', 'detail': 'upstream failed after 3 tries: HTTP 503'}
+all checks passed</code></pre>
+  <p>The first line is the flaky first call being retried; the next two are the permanently failing contract exhausting its three attempts. The retry delays are random, so your numbers will differ.</p>
+  <div class="callout info"><b>Library option</b><p>For the interview, hand-writing the loop shows you understand it. In a codebase, <code>tenacity</code> gives you the same thing declaratively (<code>@retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=0.2, max=2), retry=retry_if_exception_type(...))</code>), the way Resilience4j does in Spring. The Anthropic SDK also retries 429, 5xx and connection errors itself (twice by default, configurable with <code>max_retries</code>), so do not stack your own retry loop on top of it blindly.</p></div>
+
+  <h2 id="interviews"><span class="n">04</span>How this shows up in interviews</h2>
+  <p>EPAM's Senior AI Engineer loop (April 2026) had a hands-on round to build "a FastAPI service with proper request validation using Pydantic, along with implementing retry logic, timeout handling, and robust error handling", and the first round included an async programming problem. Expect follow-ups like these.</p>
+  <details class="qa"><summary>Why Pydantic for the request body and not a dataclass?</summary><p>A dataclass does not validate or coerce, so bad input would flow into business logic. Pydantic validates types and constraints at the boundary, returns structured errors that FastAPI turns into a 422, and generates the JSON Schema that appears in OpenAPI. Internal value objects that are already trusted can stay dataclasses.</p></details>
+  <details class="qa"><summary>Which failures do you retry, and which not?</summary><p>Retry transient ones: connection errors, timeouts, 429 and 502/503/504 (and 500 if the downstream is known to be flaky). Do not retry 400, 401, 403, 404 or 422; they fail the same way every time. Honour <code>Retry-After</code> on 429/503 if present. Only retry idempotent operations, or make them idempotent with a key the downstream de-duplicates on.</p></details>
+  <details class="qa"><summary>Why jitter?</summary><p>Without it, every client that failed at the same moment retries at the same moment, producing synchronised waves that keep an overloaded downstream down (the thundering herd). Full jitter, a random delay between zero and the exponential cap, spreads the load.</p></details>
+  <details class="qa"><summary>What timeouts do you set, and where?</summary><p>Per phase on the client: a short connect timeout (about 1 s), a read timeout sized to the downstream's p99 plus margin, and a pool timeout so requests fail fast when the pool is exhausted instead of queueing forever. Then an overall deadline around the whole retry loop that is shorter than my own caller's timeout. For LLM calls the read timeout is much longer, or I stream, because generation can take tens of seconds.</p></details>
+  <details class="qa"><summary>What happens if you call requests.get inside an async def endpoint?</summary><p>It blocks the event loop thread, so every other request on that worker stalls until it returns. Throughput collapses under load. Fix it with an async client (<code>httpx.AsyncClient</code>), by declaring the endpoint as plain <code>def</code> (FastAPI then runs it in a thread pool), or with <code>await asyncio.to_thread(blocking_fn)</code>.</p></details>
+  <details class="qa"><summary>asyncio.gather vs CompletableFuture.allOf: what's different?</summary><p>Both wait for several concurrent operations. <code>gather</code> runs coroutines on one thread and switches at <code>await</code> points, so there is no parallel CPU work and no need for locks around plain in-memory state between awaits. By default, the first exception propagates to the caller, but the other coroutines keep running; pass <code>return_exceptions=True</code> to collect failures as values, or use <code>asyncio.TaskGroup</code> (3.11+), which cancels the siblings when one fails, the structured-concurrency behaviour you usually want.</p></details>
+  <details class="qa"><summary>How do you share an HTTP client across requests, and why?</summary><p>Create it in the lifespan handler, store it on <code>app.state</code> (or provide it through a dependency), and close it on shutdown. A client per request throws away the connection pool, so every call pays a TCP and TLS handshake and you can run out of sockets.</p></details>
+  <details class="qa"><summary>How would you add observability?</summary><p>Structured JSON logs with a request ID propagated to the downstream as a header, Prometheus metrics for request latency, retries and upstream status codes (or OpenTelemetry auto-instrumentation for FastAPI and httpx), and a <code>/healthz</code> endpoint. For LLM calls, also log model, input/output tokens and latency per request.</p></details>
+  <details class="qa"><summary>What is the GIL and does it matter here?</summary><p>The global interpreter lock lets only one thread execute Python bytecode at a time in the standard CPython build. It does not matter for I/O-bound services, because the lock is released while waiting on sockets. It matters for CPU-bound work, which you move to processes, native libraries (NumPy releases the GIL) or a separate worker.</p></details>
+
+  <h2 id="exercise"><span class="n">05</span>Exercise / checkpoint for the capstone</h2>
+  <p>The capstone is a contract Q&amp;A service plus a risky-clause flagger. This lesson's service becomes its skeleton. In 45–60 minutes:</p>
+  <ol>
+    <li>Add an overall deadline: wrap the retry loop in <code>async with asyncio.timeout(5):</code> and map <code>TimeoutError</code> to a 504.</li>
+    <li>Honour <code>Retry-After</code>: if a 429 or 503 response carries the header, sleep for that many seconds (capped at 2) instead of the computed backoff. Add a MockTransport case that proves it.</li>
+    <li>Add <code>POST /v1/flags</code> taking <code>{"contract_id": ..., "clause_text": ...}</code> with <code>clause_text</code> limited to 1–8,000 characters. For now return a hard-coded <code>{"risk": "low", "reasons": []}</code> from a Pydantic <code>FlagResult</code> model whose <code>risk</code> is a <code>Literal["low","medium","high"]</code>. In the prompt-engineering and first-LLM-calls lessons you will replace the stub with a Claude call that returns this same model.</li>
+    <li>Propagate an <code>X-Request-ID</code> header (generate one if absent) to the downstream and include it in every log line.</li>
+  </ol>
+  <p>Checkpoint: all tests pass offline, <code>/docs</code> shows both endpoints with their schemas, and you can explain every retry and timeout decision out loud in two minutes.</p>
+
+  <h2 id="sources"><span class="n">06</span>Sources / go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/7876633/" target="_blank" rel="noopener">EPAM Systems, Senior AI Engineer interview experience, Apr 2026 (LeetCode Discuss)</a></li>
+    <li><a href="https://fastapi.tiangolo.com/advanced/events/" target="_blank" rel="noopener">FastAPI: lifespan events</a></li>
+    <li><a href="https://fastapi.tiangolo.com/tutorial/handling-errors/" target="_blank" rel="noopener">FastAPI: handling errors and custom exception handlers</a></li>
+    <li><a href="https://docs.pydantic.dev/latest/concepts/models/" target="_blank" rel="noopener">Pydantic v2: models, validation and strict mode</a></li>
+    <li><a href="https://www.python-httpx.org/advanced/timeouts/" target="_blank" rel="noopener">httpx: timeouts</a> and <a href="https://www.python-httpx.org/advanced/transports/" target="_blank" rel="noopener">mock transports</a></li>
+    <li><a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener">uv documentation</a></li>
+    <li><a href="https://docs.python.org/3/library/asyncio-task.html" target="_blank" rel="noopener">Python docs: asyncio tasks, gather, TaskGroup, timeout</a></li>
+    <li><a href="https://platform.claude.com/docs/en/api/errors" target="_blank" rel="noopener">Claude API errors (SDK retry behaviour)</a></li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="learn-prompt-engineering.html">Prompt engineering</a> · <a href="learn-first-llm-calls.html">First LLM calls</a></span></div>
+</div>
+</body>
+</html>

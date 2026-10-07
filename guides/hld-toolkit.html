@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>HLD Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · Java &amp; backend</span></div>
+  <h1>System design toolkit</h1>
+  <p class="lede">The building blocks every HLD answer is made of, a repeatable 45-minute framework, and the numbers to estimate with. Learn this once and each design guide becomes "which blocks, and why".</p>
+  <div class="facts">
+    <span class="fact"><b>Study time:</b> 6–8 hours</span>
+    <span class="fact"><b>Exercise:</b> one timed 45-min mock</span>
+    <span class="fact"><b>Decides:</b> your level, not just pass/fail</span>
+  </div>
+  <div class="chips"><span class="chip hot">Amazon</span><span class="chip hot">Atlassian</span><span class="chip">Goldman Sachs</span><span class="chip">Freshworks</span><span class="chip">Kotak</span><span class="chip">CleverTap</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#why">Why interviewers ask this</a></li>
+    <li><a href="#concepts">Core concepts</a></li>
+    <li><a href="#internals">How it works internally</a></li>
+    <li><a href="#patterns">Patterns and production gotchas</a></li>
+    <li><a href="#qa">Interview questions</a></li>
+    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
+  <p>At SDE-2 and above, the system design round sets your level. A weak HLD rarely means rejection outright; it means an offer one level down:</p>
+  <ul>
+    <li><b>Amazon SDE-2 (Aug 2026)</b>: the candidate got "Design an inventory management system", expected LLD, realised late it was HLD, and struggled on the concurrency follow-ups (one unit left, two simultaneous orders). Result: an SDE-1 offer, because the HLD and Bar Raiser rounds did not convince the panel of SDE-2 level.</li>
+    <li><b>Atlassian P50 (8 YOE)</b>: a Web Crawler design the candidate thought went well. Feedback: down-levelled, partly for not asking enough clarifying questions. Down-levelled in two rounds, the recruiter offered P40 or withdrawal.</li>
+    <li><b>Goldman Sachs Associate</b>: caching strategies in detail (write-back, write-through, write-around and when to prefer each), then serving a German user with low latency from a US data source: partitioning, consistent hashing, multi-master, read replicas, SQL versus NoSQL.</li>
+    <li><b>Freshworks SDE-2</b>: what is sharding, what is the celebrity problem, what happens when the number of servers changes, and partitioning versus sharding.</li>
+    <li><b>Kotak SDE-2</b>: when to favour consistency over availability, strong versus eventual consistency, idempotency keys for placing an order.</li>
+  </ul>
+  <div class="callout warn"><b>How down-levelling happens</b><ul><li>Jumping to boxes without scoping (the Atlassian feedback). Clarifying questions are graded even when the problem feels obvious.</li><li>Naming components without numbers or trade-offs ("add Redis, add Kafka").</li><li>No depth when the interviewer pushes on one component, especially concurrency and failure.</li><li>Letting the interviewer drive. A senior candidate proposes the deep dives.</li></ul></div>
+
+  <h2 id="concepts"><span class="n">02</span>Core concepts, built up</h2>
+
+  <h3>A repeatable 45-minute framework</h3>
+  <div class="timeline">
+    <div class="step"><span class="t">0–5 min</span><span><b>Clarify and scope.</b> Users and use cases, the 3–4 core features, explicit non-goals. Non-functional: scale (DAU, read/write ratio), latency SLO, availability, consistency needs, data retention, multi-region, compliance. Write them down.</span></div>
+    <div class="step"><span class="t">5–10 min</span><span><b>Estimate.</b> QPS (average and peak), storage per year, bandwidth, cache size. Only the numbers that change a decision.</span></div>
+    <div class="step"><span class="t">10–15 min</span><span><b>API.</b> 3–5 endpoints with request/response shape, pagination, idempotency keys on writes.</span></div>
+    <div class="step"><span class="t">15–20 min</span><span><b>Data model.</b> Entities, access patterns, database choice, partition key.</span></div>
+    <div class="step"><span class="t">20–30 min</span><span><b>High-level diagram.</b> Walk one read and one write request end to end.</span></div>
+    <div class="step"><span class="t">30–42 min</span><span><b>Deep dives.</b> Pick the 2–3 hardest parts yourself: hot keys, consistency, failure, scale bottleneck. Compare alternatives.</span></div>
+    <div class="step"><span class="t">42–45 min</span><span><b>Wrap up.</b> What breaks at 10x, monitoring, what you would do with more time.</span></div>
+  </div>
+
+  <h3>Back-of-envelope estimation</h3>
+  <div class="grid">
+    <div class="card"><h4>Conversions</h4><ul><li>1 day ≈ 86,400 s ≈ 10<sup>5</sup> s</li><li>1 M requests/day ≈ 12 QPS</li><li>1 B requests/day ≈ 12k QPS</li><li>Peak ≈ 2–3× average (10× for flash sales, IPL toss, Diwali)</li><li>1 KB × 1 M = 1 GB; 1 KB × 1 B = 1 TB</li></ul></div>
+    <div class="card"><h4>Rough capacity (order of magnitude)</h4><ul><li>Spring Boot pod, simple I/O-bound API: 1–5k RPS</li><li>Redis single node: ~100k ops/s, sub-ms</li><li>PostgreSQL primary: several thousand to tens of thousands of simple writes/s, depending on hardware</li><li>Kafka broker: tens to hundreds of MB/s</li><li>Little's law: concurrency = throughput × latency (2,000 RPS × 0.2 s = 400 in-flight requests)</li></ul></div>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>Latency numbers (classic reference)</th><th class="num">Time</th></tr>
+    <tr><td>L1 cache reference</td><td class="num">0.5 ns</td></tr>
+    <tr><td>Main memory reference</td><td class="num">100 ns</td></tr>
+    <tr><td>Compress 1 KB with a fast codec</td><td class="num">~10 µs</td></tr>
+    <tr><td>SSD random read</td><td class="num">~150 µs</td></tr>
+    <tr><td>Read 1 MB sequentially from memory</td><td class="num">~250 µs</td></tr>
+    <tr><td>Round trip within a data centre</td><td class="num">~500 µs</td></tr>
+    <tr><td>Read 1 MB sequentially from SSD</td><td class="num">~1 ms</td></tr>
+    <tr><td>Disk seek (spinning)</td><td class="num">~10 ms</td></tr>
+    <tr><td>Packet California → Netherlands → California</td><td class="num">~150 ms</td></tr>
+  </table></div>
+  <p>Practical translations: a Redis GET in the same zone is well under a millisecond, an indexed Postgres point query a few milliseconds, a cross-continent call from Mumbai to US East around 200 ms round trip. A 200 ms p99 budget therefore allows about one cross-region hop or dozens of in-region calls.</p>
+  <div class="tbl"><table>
+    <tr><th>Worked example: e-sign audit trail</th><th>Arithmetic</th><th class="num">Result</th></tr>
+    <tr><td>Writes</td><td>10 M documents/day × 20 events each = 200 M/day ÷ 10<sup>5</sup></td><td class="num">2k QPS avg, ~6k peak</td></tr>
+    <tr><td>Reads</td><td>Read:write 5:1</td><td class="num">10k QPS avg</td></tr>
+    <tr><td>Storage</td><td>200 M × 500 B = 100 GB/day × 365</td><td class="num">~36 TB/year (+RF 3 ≈ 110 TB)</td></tr>
+    <tr><td>Cache</td><td>20% of last 7 days' hot documents' metadata, 2 KB each, 14 M docs</td><td class="num">~6 GB: fits one Redis node</td></tr>
+  </table></div>
+  <p>The decision it drives: 36 TB/year of append-only events wants a partitioned table or an LSM store with time-based retention, not a single unpartitioned Postgres table.</p>
+
+  <h3>Load balancing</h3>
+  <div class="grid">
+    <div class="card"><h4>L4 (transport)</h4><p>Routes TCP/UDP connections by IP and port, without reading the payload. Very fast, cheap, protocol-agnostic. Examples: AWS NLB. Cannot route by path or header.</p></div>
+    <div class="card"><h4>L7 (application)</h4><p>Terminates TLS and reads HTTP: routes by path, host, header, cookie; can retry, rewrite, rate-limit, and do canary splits. Examples: AWS ALB, NGINX, Envoy, Spring Cloud Gateway. More CPU per request.</p></div>
+  </div>
+  <p>Algorithms: round robin (equal servers), weighted round robin (mixed sizes), least connections (long-lived or uneven requests, such as WebSockets), least response time, IP or consistent hash (affinity, for example a cache shard per key), and power of two random choices (pick two servers at random, send to the less loaded one; near-optimal with no global state). Health checks remove dead backends; connection draining lets deploys finish in-flight requests. Avoid sticky sessions; keep services stateless and put session state in Redis or a JWT.</p>
+
+  <h3>Caching</h3>
+  <div class="tbl"><table>
+    <tr><th>Strategy</th><th>How it works</th><th>Use when</th><th>Risk</th></tr>
+    <tr><td>Cache-aside (lazy loading)</td><td>App reads cache; on miss reads DB and fills cache. On write, update DB then delete the cache key.</td><td>Default for read-heavy data</td><td>First read after expiry is slow; stale data window</td></tr>
+    <tr><td>Read-through</td><td>Cache library loads from DB on miss (Caffeine <code>LoadingCache</code>)</td><td>Same as cache-aside, logic in one place</td><td>Same</td></tr>
+    <tr><td>Write-through</td><td>Every write goes to cache and DB synchronously</td><td>Data read soon after writing; cache must not be stale</td><td>Write latency; caches data nobody reads</td></tr>
+    <tr><td>Write-back (write-behind)</td><td>Write to cache, acknowledge, flush to DB asynchronously in batches</td><td>Very high write rates where small loss is acceptable (view counters, likes)</td><td>Data loss if the cache node dies before flushing</td></tr>
+    <tr><td>Write-around</td><td>Writes go to DB only; cache is filled on read</td><td>Data written once and rarely re-read (logs, bulk imports)</td><td>First read is always a miss</td></tr>
+  </table></div>
+  <p><b>Eviction</b>: LRU (recency), LFU (frequency; better for skewed popularity), TTL. Redis uses <code>maxmemory-policy</code> such as <code>allkeys-lru</code> or <code>allkeys-lfu</code>; Caffeine uses W-TinyLFU. <b>Stampede</b> (many requests miss the same hot key at once and all hit the DB): request coalescing so one caller loads and others wait (Caffeine does this per key in-process; across pods use a short Redis lock with <code>SET key NX PX</code>), serve stale while one request refreshes, probabilistic early refresh before expiry, and random jitter on TTLs so keys do not expire together. <b>Penetration</b> (lookups for keys that do not exist): cache negative results briefly or use a Bloom filter.</p>
+
+  <h3>CDNs</h3>
+  <p>Edge servers close to users cache static and cacheable responses. Pull CDN fetches from origin on first miss (the common choice); push CDN is pre-loaded (large files, predictable releases). Control with <code>Cache-Control</code>, <code>ETag</code> and versioned file names so you never need to purge. For private content (signed contracts), serve via short-lived signed URLs from object storage behind the CDN rather than making it public.</p>
+
+  <h3>SQL or NoSQL</h3>
+  <div class="tbl"><table>
+    <tr><th>Need</th><th>Choose</th></tr>
+    <tr><td>Transactions across rows, joins, ad hoc queries, strong constraints (payments, bookings, ledgers)</td><td>PostgreSQL / MySQL; shard later by tenant or ID if needed</td></tr>
+    <tr><td>Huge write volume, known query patterns, time-ordered data (events, messages, IoT)</td><td>Cassandra / ScyllaDB / DynamoDB (wide-column, LSM)</td></tr>
+    <tr><td>Flexible documents read as a whole (product catalogue, form templates)</td><td>MongoDB, or Postgres <code>jsonb</code></td></tr>
+    <tr><td>Sub-millisecond key lookups, counters, leaderboards, rate limits</td><td>Redis</td></tr>
+    <tr><td>Full-text search, faceting</td><td>Elasticsearch / OpenSearch (fed from the primary via CDC)</td></tr>
+    <tr><td>Relationship traversal</td><td>Graph DB, or recursive SQL if shallow</td></tr>
+  </table></div>
+  <p>Say why in terms of access patterns, consistency and scale. "NoSQL scales better" alone is a red flag; Postgres with partitioning and read replicas handles most SDE-2 interview scales.</p>
+
+  <h3>Sharding and shard keys</h3>
+  <p><b>Partitioning</b> splits a table into pieces (often inside one database: Postgres declarative partitioning by range or hash). <b>Sharding</b> places partitions on different database servers. Freshworks asked exactly this distinction.</p>
+  <div class="tbl"><table>
+    <tr><th>Strategy</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td>Range (by date, by ID range)</td><td>Range scans are local; easy archival</td><td>Hot spot on the latest range for time-ordered writes</td></tr>
+    <tr><td>Hash (hash(key) → shard)</td><td>Even distribution</td><td>Range queries hit every shard; resharding moves data unless you use consistent hashing</td></tr>
+    <tr><td>Directory / lookup table</td><td>Move a big tenant to its own shard any time</td><td>Lookup service is on every request path; must be cached and highly available</td></tr>
+    <tr><td>Geo</td><td>Data residency (India's DPDP Act), low latency</td><td>Cross-region users and queries are hard</td></tr>
+  </table></div>
+  <p>A good shard key has high cardinality, spreads load evenly, and keeps the common query on one shard. For multi-tenant SaaS, <code>tenant_id</code> keeps each tenant's queries local, but one huge tenant becomes a hot shard: use a directory so that tenant can be isolated, or shard large tenants by <code>(tenant_id, document_id)</code>.</p>
+
+  <h3>The celebrity (hot key) problem</h3>
+  <p>A key with far more traffic than others: a celebrity's profile or posts, a viral product, one giant tenant. Hashing spreads keys, not load, so that one key's shard melts.</p>
+  <ul>
+    <li><b>Hot reads</b>: an in-process cache (Caffeine, a few seconds TTL) in front of Redis; replicate the hot key under several names (<code>post:42#0..7</code>) and read a random copy; serve from the CDN.</li>
+    <li><b>Hot writes</b>: split the counter into N sub-keys and sum on read; buffer increments in memory and flush every second; append events and aggregate asynchronously.</li>
+    <li><b>Feeds</b>: push (fan-out on write) for normal users, pull (fan-out on read) for celebrities with millions of followers, merged at read time.</li>
+    <li><b>Detect</b> it: per-key metrics or Redis <code>--hotkeys</code> sampling, so you can react before the shard falls over.</li>
+  </ul>
+
+  <h3>Consistent hashing</h3>
+  <p>With <code>hash(key) mod N</code>, changing N from 4 to 5 moves about 80% of keys, which empties every cache at once. Consistent hashing places servers and keys on a ring; a key belongs to the next server clockwise. Adding or removing a server moves only about 1/N of keys, the ones between it and its predecessor. Each physical server gets 100–200 <b>virtual nodes</b> on the ring so load evens out and a failed server's keys spread across many others. Used by Cassandra and DynamoDB partitioning, client-side memcached sharding and some load balancers. (Redis Cluster uses a related idea: 16,384 fixed hash slots assigned to nodes.)</p>
+
+  <h3>Replication</h3>
+  <div class="tbl"><table>
+    <tr><th>Model</th><th>How</th><th>Trade-off</th><th>Examples</th></tr>
+    <tr><td>Leader-follower</td><td>All writes to one leader; followers replay its log; reads can go to followers</td><td>Simple; replica lag gives stale reads; failover can lose async writes</td><td>Postgres, MySQL, Redis, Kafka partitions</td></tr>
+    <tr><td>Multi-leader</td><td>Several leaders accept writes (often one per region) and replicate to each other</td><td>Local write latency; write conflicts need resolution (last-write-wins, merge, CRDTs)</td><td>Multi-region active-active setups, collaborative editors</td></tr>
+    <tr><td>Leaderless (quorum)</td><td>Write to W of N replicas, read from R; if R + W &gt; N the sets overlap</td><td>No failover; tunable; read repair and hinted handoff fix divergence</td><td>Cassandra, DynamoDB-style stores</td></tr>
+  </table></div>
+
+  <h3>CAP and PACELC</h3>
+  <p><b>CAP</b>: when a network partition happens, a replicated system must choose between consistency (refuse or block some requests) and availability (answer, possibly with stale data). Partitions are not optional, so the real choice is CP or AP <i>during a partition</i>. <b>PACELC</b> adds the everyday case: <i>else</i>, with no partition, you trade latency against consistency (synchronous replication is consistent but slower).</p>
+  <ul>
+    <li>Payments, inventory decrements, seat booking: choose consistency; refuse the write if the leader is unreachable.</li>
+    <li>Likes, view counts, feed, presence: choose availability; converge later.</li>
+    <li>Cassandra and DynamoDB default to PA/EL (tunable per query); a single-leader Postgres with synchronous standby is PC/EC.</li>
+  </ul>
+
+  <h3>Consistency models (strongest to weakest)</h3>
+  <div class="tbl"><table>
+    <tr><th>Model</th><th>Guarantee</th><th>Example need</th></tr>
+    <tr><td>Linearizable (strong)</td><td>Every read sees the latest committed write, as if there were one copy</td><td>Account balance, unique username, leader election</td></tr>
+    <tr><td>Causal</td><td>Effects are seen after their causes (a reply after its comment)</td><td>Comment threads, chat</td></tr>
+    <tr><td>Read-your-writes</td><td>A user always sees their own updates</td><td>Profile edits, "my documents" list after upload</td></tr>
+    <tr><td>Monotonic reads</td><td>A user never sees data go back in time (pin them to one replica)</td><td>Paginated lists, status pages</td></tr>
+    <tr><td>Eventual</td><td>Replicas converge if writes stop</td><td>Counters, search index, analytics</td></tr>
+  </table></div>
+
+  <h3>Queues and backpressure</h3>
+  <p>A queue decouples producers from consumers and absorbs bursts, but an unbounded queue only hides overload until memory or latency explodes. Backpressure means slowing the producer: bounded queues and thread pools (<code>ThreadPoolExecutor</code> with a bounded queue and <code>CallerRunsPolicy</code>), Kafka consumers that pause partitions, HTTP 429 or 503 with <code>Retry-After</code>, and load shedding of low-priority traffic first. Size queues with Little's law: if consumers process 500/s and the SLO allows 10 s of waiting, a backlog over 5,000 means shed or scale.</p>
+
+  <h3>Idempotency</h3>
+  <p>Networks time out after the server has done the work, so clients retry and servers see duplicates. Make writes idempotent: the client sends an <code>Idempotency-Key</code> (Stripe's pattern); the server stores key → result with a unique constraint, in the same transaction as the business write, and returns the stored result for repeats. Consumers de-duplicate on event ID. Natural idempotency (<code>PUT</code> full state, <code>SET status = 'PAID' WHERE status = 'PENDING'</code>) is even better. See <a href="distributed-transactions.html">Distributed transactions</a> for the full payment flow.</p>
+
+  <h3>Rate limiting</h3>
+  <p>Token bucket (burst up to bucket size, refill at a steady rate; the default choice), leaky bucket (smooth output rate), fixed window (simple, double burst at window edges), sliding window log (exact, memory-heavy) and sliding window counter (weighted blend of two windows; good accuracy, cheap). Distributed: a Redis Lua script that checks and updates atomically, keyed by tenant or API key, enforced at the gateway. Return 429 with <code>Retry-After</code> and rate-limit headers. Full design in <a href="hld-distributed-rate-limiter.html">Distributed rate limiter</a>.</p>
+
+  <h3>Observability</h3>
+  <ul>
+    <li><b>Metrics</b>: RED for services (rate, errors, duration) and USE for resources (utilisation, saturation, errors). Micrometer → Prometheus → Grafana. Alert on percentiles (p99), not averages.</li>
+    <li><b>Logs</b>: structured JSON with <code>traceId</code>, <code>tenantId</code>, <code>requestId</code>; never log PII or document contents.</li>
+    <li><b>Traces</b>: OpenTelemetry / Micrometer Tracing across HTTP and Kafka hops to find which service owns the latency.</li>
+    <li><b>SLOs</b>: SLI = what you measure (successful requests under 300 ms); SLO = the target (99.9% over 30 days); error budget = what you may burn. 99.9% allows 43.2 minutes of downtime a month; 99.99% allows 4.3 minutes. Alert on burn rate.</li>
+  </ul>
+
+  <h2 id="internals"><span class="n">03</span>How it works internally</h2>
+
+  <h3>Quorum arithmetic</h3>
+  <p>N = 3 replicas. Write succeeds after W = 2 acknowledgements; a read asks R = 2 replicas and takes the newest version. Because 2 + 2 &gt; 3, at least one replica in any read set saw the latest write. W = 1, R = 1 is fast and available but may return stale data. W = 3 is consistent but any one node down blocks writes. Versions are compared by timestamps (last-write-wins, which can drop concurrent writes when clocks skew) or by version vectors.</p>
+
+  <h3>Consistent hashing, step by step</h3>
+  <div class="flow">
+    <span class="node">key "doc:981"</span><span class="arrow">→<small>hash</small></span>
+    <span class="node">position 0.37 on ring</span><span class="arrow">→<small>next clockwise</small></span>
+    <span class="node hl">vnode B#17 at 0.41</span><span class="arrow">→</span>
+    <span class="node store">Server B<small>+ next 2 distinct servers as replicas</small></span>
+  </div>
+  <p class="flow-caption">Figure: lookup is a binary search over sorted vnode positions (a Java <code>TreeMap.ceilingEntry</code>). Replicas are the next distinct physical servers clockwise.</p>
+  <pre><code>final class ConsistentHashRing {
+    private final NavigableMap&lt;Long, String&gt; ring = new TreeMap&lt;&gt;();
+    private final int vnodes;
+
+    ConsistentHashRing(Collection&lt;String&gt; servers, int vnodes) {
+        this.vnodes = vnodes;
+        servers.forEach(this::add);
+    }
+
+    void add(String server) {
+        for (int i = 0; i &lt; vnodes; i++) ring.put(hash(server + "#" + i), server);
+    }
+
+    void remove(String server) {
+        for (int i = 0; i &lt; vnodes; i++) ring.remove(hash(server + "#" + i));
+    }
+
+    String serverFor(String key) {
+        Map.Entry&lt;Long, String&gt; e = ring.ceilingEntry(hash(key));
+        return (e != null ? e : ring.firstEntry()).getValue();   // wrap around the ring
+    }
+
+    private static long hash(String s) {
+        byte[] d = sha256(s);   // any well-distributed hash; MurmurHash3 in practice
+        return ByteBuffer.wrap(d).getLong() &amp; Long.MAX_VALUE;
+    }
+}</code></pre>
+
+  <h3>Cache stampede protection inside one JVM and across pods</h3>
+  <pre><code>// In-process: Caffeine runs the loader once per key; concurrent callers wait for that result
+LoadingCache&lt;String, Document&gt; local = Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .expireAfterWrite(Duration.ofSeconds(30))
+    .refreshAfterWrite(Duration.ofSeconds(20))   // serve stale while one async refresh runs
+    .build(this::loadFromRedisOrDb);
+
+// Across pods: only the holder of a short Redis lock rebuilds; others serve stale or retry briefly
+Boolean won = redis.opsForValue().setIfAbsent("lock:" + key, podId, Duration.ofSeconds(5));
+// TTL with jitter so hot keys do not expire together
+Duration ttl = Duration.ofMinutes(10).plusSeconds(ThreadLocalRandom.current().nextInt(0, 120));</code></pre>
+
+  <h2 id="patterns"><span class="n">04</span>Practical patterns and production gotchas</h2>
+  <ul>
+    <li><b>Cache invalidation order</b>: update the database, then delete the cache key (not set it). Setting can race: an older read can overwrite a newer value. Do the delete after the transaction commits (<code>@TransactionalEventListener(phase = AFTER_COMMIT)</code>), or drive invalidation from CDC.</li>
+    <li><b>Read replicas break read-your-writes</b>: route a user's reads to the primary briefly after their write.</li>
+    <li><b>Retries amplify outages</b>: three layers retrying three times is 27 calls per user click. Retry at one layer, with exponential back-off, jitter and a retry budget.</li>
+    <li><b>Timeouts everywhere</b>: set connect and read timeouts on every <code>RestClient</code>/<code>WebClient</code>, a Hikari <code>connectionTimeout</code>, a Postgres <code>statement_timeout</code>. The default for many clients is effectively infinite.</li>
+    <li><b>Thundering herd after recovery</b>: when a dependency returns, every queued retry fires at once. Jitter and gradual ramp-up (circuit breaker half-open state) prevent a second outage.</li>
+    <li><b>Multi-tenancy</b>: tenant ID from the JWT, never from a request parameter; per-tenant rate limits and quotas so one tenant's bulk import cannot starve others.</li>
+    <li><b>Data residency</b>: India's DPDP Act and customer contracts can require Indian data to stay in India. Region-pinned shards are easier than retrofitting.</li>
+  </ul>
+
+  <h2 id="qa"><span class="n">05</span>Interview questions with senior answers</h2>
+  <details class="qa"><summary>Write-through, write-back or write-around: when each? (Goldman)</summary><p>Write-through when data is read right after it is written and staleness is unacceptable, at the cost of write latency. Write-back for very high write rates where a little loss is acceptable (counters, analytics), flushing in batches. Write-around for write-once data that is rarely re-read, so it does not pollute the cache. For most CRUD services I use cache-aside with delete-on-write after commit.</p></details>
+  <details class="qa"><summary>What is the celebrity problem and how do you solve it? (Freshworks)</summary><p>One key gets disproportionate traffic, so its shard or cache node saturates even though keys are evenly hashed. For reads: local caches plus replicating the key under several suffixes and reading a random copy. For writes: split counters and aggregate. For feeds: fan-out on write for normal users and fan-out on read for celebrities.</p></details>
+  <details class="qa"><summary>What happens when the number of servers changes?</summary><p>With mod-N hashing nearly every key remaps, causing a cache miss storm or a massive data migration. Consistent hashing with virtual nodes moves only about 1/N of keys and spreads them across all remaining servers. Pre-splitting into many fixed slots (Redis Cluster's 16,384) achieves the same by moving whole slots.</p></details>
+  <details class="qa"><summary>Partitioning versus sharding?</summary><p>Partitioning splits a dataset into pieces by some key; sharding is partitioning where the pieces live on different machines. A Postgres table partitioned by month on one server is partitioned but not sharded.</p></details>
+  <details class="qa"><summary>When do you favour consistency over availability? (Kotak)</summary><p>When a wrong answer costs money or trust and cannot be compensated cheaply: debiting a wallet, decrementing the last unit of inventory, issuing a unique ID. There I would rather return an error during a partition. Where staleness is harmless and recoverable (likes, feed ordering, notification counts), I choose availability.</p></details>
+  <details class="qa"><summary>How do you serve a user in Germany fast when the data lives in the US? (Goldman)</summary><p>Static and cacheable content through a CDN; read replicas or a regional cache in the EU for reads; route writes to the home region (or partition users by home region so their writes are local); accept replica lag and give read-your-writes for the user's own changes. Multi-leader only if writes must be local, and then design conflict resolution. Mention GDPR data-residency constraints.</p></details>
+  <details class="qa"><summary>L4 or L7 load balancer?</summary><p>L7 at the edge for HTTP services: path routing, TLS termination, retries, canaries, rate limiting. L4 when you need raw throughput, non-HTTP protocols, or to preserve the client connection end-to-end (TLS passthrough). Often both: an L4 NLB in front of an L7 gateway fleet.</p></details>
+  <details class="qa"><summary>How do you prevent a cache stampede?</summary><p>Coalesce concurrent misses so one request loads the value (per-key futures in-process, a short Redis lock across pods), serve stale data while refreshing, refresh hot keys early, and add jitter to TTLs. For keys that do not exist, cache the negative result briefly.</p></details>
+  <details class="qa"><summary>Explain PACELC with an example.</summary><p>If there is a Partition, choose Availability or Consistency; Else, choose Latency or Consistency. Cassandra at consistency level ONE is PA/EL: available in partitions and low-latency otherwise, possibly stale. A Postgres primary with a synchronous standby is PC/EC: it blocks if the standby is unreachable and pays a round trip on every commit.</p></details>
+  <details class="qa"><summary>How would you choose a shard key for a multi-tenant SaaS?</summary><p><code>tenant_id</code> keeps each tenant's queries on one shard and makes tenant deletion and residency easy. The risk is a giant tenant. Use a directory mapping tenant → shard so big tenants can be moved or given dedicated shards, and inside very large tenants sub-shard by document ID.</p></details>
+  <details class="qa"><summary>Your service's p99 jumped from 200 ms to 2 s. What do you look at?</summary><p>Traces to find which span grew; then saturation of that dependency (DB connection pool waits, CPU, GC pauses, thread pool queue); recent deploys and traffic mix (one tenant's bulk job); slow-query logs; downstream timeouts causing retries. Mitigate first (roll back, shed load, raise pool size only if the DB has headroom), then root-cause.</p></details>
+  <details class="qa"><summary>What are SLI, SLO and error budget?</summary><p>SLI is the measured indicator (fraction of requests served successfully under 300 ms). SLO is the target (99.9% over 30 days). The error budget is the 0.1% you may fail; when it is spent, you slow feature releases and fix reliability. Alert on budget burn rate rather than every spike.</p></details>
+
+  <h2 id="exercise"><span class="n">06</span>Hands-on exercise (one timed mock)</h2>
+  <ol>
+    <li>Set a 45-minute timer and design "document upload and e-signing for 5,000 enterprise tenants, 2 M signatures/day, 99.95% availability". Follow the framework above out loud or on paper.</li>
+    <li>Produce: five clarifying questions, an estimation table (QPS, storage per year, cache size), three APIs with idempotency, a data model with shard key, a diagram, and two deep dives (hot tenant; signing-step consistency).</li>
+    <li>Self-review against the down-levelling list: did you scope before drawing, did every component have a reason and a number, did you volunteer the deep dives?</li>
+    <li>Code the <code>ConsistentHashRing</code> above with 3 servers × 150 vnodes; hash 100,000 keys; print keys per server; add a fourth server and print how many keys moved (expect about 25%). Compare with mod-N (expect about 75%).</li>
+  </ol>
+
+  <h2 id="sources"><span class="n">07</span>Sources and go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://leetcode.com/discuss/post/8512004/" target="_blank" rel="noopener">Amazon SDE-2, Aug 2026: offered SDE-1 after HLD and Bar Raiser (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/8293408/" target="_blank" rel="noopener">Atlassian P50/P40: down-levelled in system design (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/8358080/" target="_blank" rel="noopener">Goldman Sachs Associate: write-back, write-through, write-around; multi-region reads (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7225569/" target="_blank" rel="noopener">Freshworks SDE-2: sharding, celebrity problem, partitioning (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/8525726/" target="_blank" rel="noopener">Kotak SDE-2: consistency vs availability, idempotency keys (LeetCode)</a></li>
+    <li><a href="https://leetcode.com/discuss/post/7164795/" target="_blank" rel="noopener">CleverTap Senior Backend: availability, SLA, load balancer, replication (LeetCode)</a></li>
+    <li><a href="https://github.com/donnemartin/system-design-primer" target="_blank" rel="noopener">The System Design Primer (latency numbers, CAP, caching, sharding)</a></li>
+    <li><a href="https://stripe.com/blog/idempotency" target="_blank" rel="noopener">Stripe: Designing robust and predictable APIs with idempotency</a></li>
+    <li><a href="https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/" target="_blank" rel="noopener">AWS Architecture Blog: Exponential backoff and jitter</a></li>
+    <li>Go deeper: Martin Kleppmann, <i>Designing Data-Intensive Applications</i>, chapters 5, 6 and 9 (replication, partitioning, consistency).</li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="hld-distributed-rate-limiter.html">Distributed rate limiter</a> · <a href="hld-news-feed.html">News feed</a> · <a href="career-whiteboard-your-system.html">Whiteboard your system</a></span></div>
+</div>
+</body>
+</html>

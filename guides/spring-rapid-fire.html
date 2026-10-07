@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Spring Rapid Fire</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><span class="kind">Lesson · Java &amp; backend</span></div>
+  <h1>Spring Rapid Fire</h1>
+  <p class="lede">The Spring and Spring Boot questions asked of engineers with 4–8 years of experience, each with the answer a senior gives in under a minute: IoC and bean lifecycle, auto-configuration, @Transactional pitfalls, JPA N+1 and open-session-in-view, exception handling, validation, Spring Security with JWT, observability and virtual threads.</p>
+  <div class="facts">
+    <span class="fact"><b>Study time:</b> 4–5 hours</span>
+    <span class="fact"><b>Round:</b> Java/Spring tech screen, HM round</span>
+    <span class="fact"><b>Stack:</b> Spring Boot 3.x, Java 21</span>
+  </div>
+  <div class="chips"><span class="chip hot">PayPal</span><span class="chip hot">Swiggy</span><span class="chip">Paytm</span><span class="chip">Apple</span><span class="chip">Truemeds</span></div>
+
+  <nav class="toc"><b>On this page</b><ol>
+    <li><a href="#why">Why interviewers ask this</a></li>
+    <li><a href="#concepts">Core concepts</a></li>
+    <li><a href="#internals">Proxies and transactions internally</a></li>
+    <li><a href="#practical">Production patterns and gotchas</a></li>
+    <li><a href="#qa">Rapid-fire questions (30)</a></li>
+    <li><a href="#exercise">Hands-on exercise</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol></nav>
+
+  <h2 id="why"><span class="n">01</span>Why interviewers ask this</h2>
+  <p>For a Java backend engineer, Spring is where interviewers check that your experience is real. The questions are short and fast, and a vague answer ("Spring manages the beans") costs more than silence. From the reports:</p>
+  <ul>
+    <li><b>Swiggy</b>: autowiring, IoC, SOLID principles.</li>
+    <li><b>Paytm</b>: Spring Boot, authentication, SQL.</li>
+    <li><b>Apple</b>: IoC, Spring MVC versus Spring Boot, OAuth and JWT.</li>
+    <li><b>Truemeds</b>: Spring Boot fundamentals in a rapid-fire format.</li>
+    <li><b>PayPal</b>: the hiring-manager round had the candidate build Spring Boot endpoints live. The candidate was rejected for <b>missing exception handling and idempotency</b>. Section 04 shows both.</li>
+  </ul>
+  <div class="callout tip"><b>How to answer rapid-fire</b><p>One sentence of definition, one sentence of mechanism, one sentence of "where it bit me / how I use it". Example: "@Transactional is applied by a proxy, so a call from another method in the same class skips it; we hit this when a batch job's inner method never rolled back, and fixed it by moving the method to its own bean."</p></div>
+
+  <h2 id="concepts"><span class="n">02</span>Core concepts, from scratch</h2>
+  <h3>IoC and dependency injection</h3>
+  <p>Inversion of control: your classes do not create their collaborators; the container (<code>ApplicationContext</code>) creates objects (beans), wires their dependencies, and manages their lifecycle. Dependency injection is how it wires them: through constructors, setters or fields. The payoff is that classes depend on interfaces, are testable with fakes, and cross-cutting behaviour (transactions, security, caching, metrics) can be added by wrapping beans in proxies without changing your code.</p>
+  <pre><code>@Service
+public class EnvelopeService {
+    private final EnvelopeRepository repo;          // final: required and immutable
+    private final Clock clock;
+
+    public EnvelopeService(EnvelopeRepository repo, Clock clock) {   // single constructor: no @Autowired needed
+        this.repo = repo;
+        this.clock = clock;
+    }
+}</code></pre>
+  <p><b>Constructor injection</b> is the recommended default: dependencies are explicit and final, the object is never half-built, tests can call <code>new</code> without a container, and circular dependencies fail fast at startup. <b>Field injection</b> (<code>@Autowired private Repo repo;</code>) hides dependencies, needs reflection to test, allows nulls and makes it easy to grow a class with 12 collaborators without noticing. Setter injection is for genuinely optional dependencies.</p>
+
+  <h3>Bean lifecycle</h3>
+  <div class="flow">
+    <span class="node">Load bean definitions<small>scan, @Bean, auto-config</small></span><span class="arrow">→</span>
+    <span class="node">Instantiate<small>constructor injection</small></span><span class="arrow">→</span>
+    <span class="node">Populate<small>setter / field injection</small></span><span class="arrow">→</span>
+    <span class="node">Aware callbacks<small>BeanNameAware, ApplicationContextAware</small></span><span class="arrow">→</span>
+    <span class="node hl">BPP before-init<small>@PostConstruct runs here</small></span><span class="arrow">→</span>
+    <span class="node">afterPropertiesSet / init-method</span><span class="arrow">→</span>
+    <span class="node hl">BPP after-init<small>AOP proxy created here</small></span><span class="arrow">→</span>
+    <span class="node store">Ready in context</span><span class="arrow">→</span>
+    <span class="node">@PreDestroy / destroy</span>
+  </div>
+  <p class="flow-caption">Figure: lifecycle of a singleton bean. BPP = BeanPostProcessor.</p>
+  <p>Two consequences people get asked about: the object your other beans receive is often the <em>proxy</em> created in the last post-processing step, not your class; and <code>@PostConstruct</code> runs before that proxy exists, so calling a <code>@Transactional</code> method of the same bean from <code>@PostConstruct</code> runs without a transaction. Use an <code>ApplicationReadyEvent</code> listener for start-up work that needs proxies.</p>
+
+  <h3>Bean scopes</h3>
+  <div class="tbl"><table>
+    <tr><th>Scope</th><th>Instances</th><th>Notes</th></tr>
+    <tr><td>singleton (default)</td><td>One per container</td><td>Must be stateless or thread-safe: every request thread shares it.</td></tr>
+    <tr><td>prototype</td><td>New per lookup</td><td>Spring does not call destroy callbacks. Injected into a singleton, it is created once; use <code>ObjectProvider&lt;T&gt;.getObject()</code> or <code>@Lookup</code> for a fresh one each time.</td></tr>
+    <tr><td>request / session</td><td>Per HTTP request / session</td><td>Injected into singletons through a scoped proxy (default for these annotations in Boot).</td></tr>
+    <tr><td>application, websocket</td><td>Per ServletContext / WebSocket session</td><td>Rare.</td></tr>
+  </table></div>
+
+  <h3>What @SpringBootApplication does</h3>
+  <p>It combines three annotations: <code>@SpringBootConfiguration</code> (a <code>@Configuration</code>), <code>@ComponentScan</code> (scan this package and below) and <code>@EnableAutoConfiguration</code>. Auto-configuration loads the classes listed in <code>META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports</code> of every jar on the classpath. Each is a <code>@AutoConfiguration</code> class guarded by conditions:</p>
+  <pre><code>@AutoConfiguration
+@ConditionalOnClass(DataSource.class)                 // only if the JDBC classes are on the classpath
+@EnableConfigurationProperties(DataSourceProperties.class)
+public class DataSourceAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean                         // back off if the app defined its own
+    DataSource dataSource(DataSourceProperties props) { ... }
+}</code></pre>
+  <p><b>Starters</b> (<code>spring-boot-starter-web</code>, <code>-data-jpa</code>, <code>-security</code>) are dependency bundles with no code: they put the right libraries on the classpath so the conditions fire. Other conditions: <code>@ConditionalOnProperty</code>, <code>@ConditionalOnBean</code>, <code>@ConditionalOnWebApplication</code>, <code>@Profile</code> (itself a <code>@Conditional</code>). To see why something did or did not configure: start with <code>--debug</code> for the condition evaluation report, or call <code>/actuator/conditions</code>.</p>
+  <p><b>Spring MVC versus Spring Boot</b> (Apple): Spring MVC is the web framework: <code>DispatcherServlet</code>, handler mappings, <code>@Controller</code>, message converters. Spring Boot is an opinionated layer over the whole Spring ecosystem: auto-configuration, starters, embedded Tomcat/Jetty, externalised configuration, Actuator. A Boot web app is a Spring MVC app that configured itself.</p>
+
+  <h2 id="internals"><span class="n">03</span>Proxies and transactions internally</h2>
+  <div class="flow">
+    <span class="node">Controller</span><span class="arrow">→</span>
+    <span class="node hl">Proxy of PaymentService<small>CGLIB subclass</small></span><span class="arrow">→</span>
+    <span class="node">TransactionInterceptor<small>begin / commit / rollback</small></span><span class="arrow">→</span>
+    <span class="node">PaymentService.pay()<small>your code</small></span><span class="arrow">→</span>
+    <span class="node store">DataSource<small>connection bound to thread</small></span>
+  </div>
+  <p class="flow-caption">Figure: a @Transactional call goes through the proxy; this.otherMethod() inside pay() does not.</p>
+  <p>Spring AOP creates a proxy around beans that have advice: a JDK dynamic proxy if you ask for interface-based proxying, otherwise (Boot's default) a CGLIB subclass. The proxy's interceptor asks the <code>PlatformTransactionManager</code> to start or join a transaction, binds the connection to the current thread via <code>TransactionSynchronizationManager</code> (a ThreadLocal), calls your method, then commits or rolls back. Everything about @Transactional's behaviour follows from that:</p>
+  <ul>
+    <li><b>Self-invocation</b>: <code>this.inner()</code> calls the target directly, so <code>inner()</code>'s annotation is ignored. Fixes: move the method to another bean (best), inject the bean's own proxy lazily, or use <code>TransactionTemplate</code> programmatically.</li>
+    <li><b>Visibility</b>: private methods are never intercepted. Since Spring 6.0, protected and package-private methods work for class-based (CGLIB) proxies; interface proxies need public interface methods. Final methods and final classes cannot be proxied by CGLIB.</li>
+    <li><b>Thread-bound</b>: work done in another thread (<code>@Async</code>, <code>CompletableFuture.supplyAsync</code>, a parallel stream) is outside the transaction.</li>
+    <li><b>Rollback rules</b>: by default it rolls back on <code>RuntimeException</code> and <code>Error</code> only. A checked exception (an <code>IOException</code> from a vendor call) commits. Use <code>@Transactional(rollbackFor = Exception.class)</code> or throw unchecked. Catching the exception inside the method and not rethrowing also commits.</li>
+    <li><b>UnexpectedRollbackException</b>: an inner <code>REQUIRED</code> method throws, marks the shared transaction rollback-only, and the outer method catches and carries on; at commit Spring throws <code>UnexpectedRollbackException</code>. Use <code>REQUIRES_NEW</code> or <code>NESTED</code> if the inner work should fail independently.</li>
+  </ul>
+  <div class="tbl"><table>
+    <tr><th>Propagation</th><th>Behaviour</th><th>Use for</th></tr>
+    <tr><td>REQUIRED (default)</td><td>Join the current transaction or start one</td><td>Almost everything</td></tr>
+    <tr><td>REQUIRES_NEW</td><td>Suspend the current one, start an independent one on a second connection</td><td>Audit log or outbox row that must persist even if the caller rolls back. Costs a second pool connection per call; nested in a loop under load it can exhaust Hikari and deadlock the pool.</td></tr>
+    <tr><td>NESTED</td><td>Savepoint inside the current transaction (JDBC only, not JPA's default manager)</td><td>Partial rollback of one step in a batch</td></tr>
+    <tr><td>SUPPORTS / NOT_SUPPORTED / NEVER</td><td>Join if present / suspend / fail if present</td><td>Reads that do not need a transaction</td></tr>
+    <tr><td>MANDATORY</td><td>Fail if no transaction exists</td><td>Repository-level methods that must be called inside one</td></tr>
+  </table></div>
+  <p><b>Isolation</b> defaults to the database's level: READ COMMITTED on Postgres, REPEATABLE READ on MySQL InnoDB. Raising it per method (<code>isolation = Isolation.SERIALIZABLE</code>) means you must retry on serialisation failures. <b>readOnly = true</b> is a hint: Hibernate sets flush mode to manual and skips dirty-checking snapshots (less memory and CPU for big reads), the JDBC connection is marked read-only (Postgres runs <code>SET TRANSACTION READ ONLY</code>), and a routing <code>DataSource</code> can send it to a replica. It does not stop you calling a write method.</p>
+
+  <h2 id="practical"><span class="n">04</span>Production patterns and gotchas</h2>
+  <h3>JPA N+1 and how to fix it</h3>
+  <p>Loading 50 envelopes and then touching <code>envelope.getSigners()</code> on each lazy collection runs 1 query plus 50. It hides in tests with 3 rows and shows up as p99 latency in production. Detect with <code>spring.jpa.properties.hibernate.generate_statistics=true</code>, a datasource-proxy query counter in tests, or APM spans.</p>
+  <pre><code>public interface EnvelopeRepository extends JpaRepository&lt;Envelope, Long&gt; {
+    @Query("select distinct e from Envelope e join fetch e.signers where e.tenantId = :tenantId")
+    List&lt;Envelope&gt; findWithSigners(@Param("tenantId") Long tenantId);      // 1 query
+
+    @EntityGraph(attributePaths = "signers")                                  // same, declaratively
+    List&lt;Envelope&gt; findByTenantIdAndStatus(Long tenantId, Status status);
+}</code></pre>
+  <ul>
+    <li><b>Fetch join with pagination</b>: <code>join fetch</code> on a collection plus <code>Pageable</code> makes Hibernate fetch everything and paginate in memory, logging a warning (HHH000104 in Hibernate 5, HHH90003004 in Hibernate 6). Fix: page the IDs first, then fetch those IDs with the join; or skip the join and set <code>hibernate.default_batch_fetch_size=50</code> so lazy loads go out as <code>IN (...)</code> batches.</li>
+    <li>Two collection fetch joins on one entity cause a <code>MultipleBagFetchException</code> or a Cartesian product. Fetch one collection per query.</li>
+    <li>For read-only list screens, project into a DTO or interface projection (<code>select new ...Dto(...)</code>): no entities, no dirty checking, only the columns you need.</li>
+    <li>Pagination: <code>Page&lt;T&gt;</code> runs an extra <code>count(*)</code>; use <code>Slice&lt;T&gt;</code> when you only need "has next". Deep <code>OFFSET</code> scans skipped rows; for large tables use keyset pagination (<code>where id &gt; :lastId order by id limit 50</code>).</li>
+  </ul>
+  <h3>Open session in view</h3>
+  <p><code>spring.jpa.open-in-view</code> defaults to <code>true</code> (Boot logs a warning about it at start-up). It keeps the persistence context and a database connection open for the whole HTTP request, including view rendering and JSON serialisation, so lazy loading "just works" in controllers. The cost: connections held during slow serialisation or downstream calls, hidden N+1 queries from Jackson walking lazy associations, and pool exhaustion under load. Set it to <code>false</code>, fetch what you need in the service layer, and return DTOs.</p>
+
+  <h3>Exception handling and idempotency (the PayPal rejection)</h3>
+  <pre><code>@RestControllerAdvice
+public class ApiExceptionHandler {
+    @ExceptionHandler(EnvelopeNotFoundException.class)
+    ProblemDetail notFound(EnvelopeNotFoundException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());   // RFC 9457 body
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    ProblemDetail invalid(MethodArgumentNotValidException ex) {
+        ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        pd.setProperty("errors", ex.getBindingResult().getFieldErrors().stream()
+                .map(e -&gt; e.getField() + ": " + e.getDefaultMessage()).toList());
+        return pd;
+    }
+
+    @ExceptionHandler(Exception.class)
+    ProblemDetail unexpected(Exception ex) {
+        log.error("Unhandled", ex);                                                  // log once, here
+        return ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);          // no stack trace to client
+    }
+}
+
+@PostMapping("/payments")
+ResponseEntity&lt;PaymentResponse&gt; pay(@RequestHeader("Idempotency-Key") String key,
+                                    @Valid @RequestBody PaymentRequest req) {
+    return idempotency.execute(key, req, () -&gt; paymentService.pay(req));
+}</code></pre>
+  <p>Idempotency in one paragraph: the client sends a unique <code>Idempotency-Key</code> per logical operation. The server inserts <code>(tenant_id, key, request_hash, status=IN_PROGRESS)</code> into a table with a unique constraint before doing the work. A duplicate key with the same hash returns the stored response; with a different hash returns 422; while still in progress returns 409. On success store the response; expire keys after 24 hours. The database constraint, not an in-memory check, is what makes it safe across instances. Mention this unprompted whenever you build a POST that moves money or sends a document.</p>
+
+  <h3>Validation</h3>
+  <pre><code>public record PaymentRequest(
+        @NotBlank String payerId,
+        @Positive @Digits(integer = 12, fraction = 2) BigDecimal amount,
+        @NotNull @Size(min = 3, max = 3) String currency) { }</code></pre>
+  <p><code>@Valid</code> on a <code>@RequestBody</code> triggers Bean Validation (Hibernate Validator from <code>spring-boot-starter-validation</code>) and throws <code>MethodArgumentNotValidException</code> → 400. Path variables and request params are validated through method validation (<code>@Validated</code> on the class, or built in for controllers since Spring 6.1). Custom rules: a <code>ConstraintValidator</code>; cross-field rules: a class-level constraint. Validation at the edge does not replace database constraints.</p>
+
+  <h3>Spring Security filter chain and JWT</h3>
+  <div class="flow">
+    <span class="node">Request</span><span class="arrow">→</span>
+    <span class="node">DelegatingFilterProxy<small>servlet filter</small></span><span class="arrow">→</span>
+    <span class="node hl">FilterChainProxy<small>picks a SecurityFilterChain</small></span><span class="arrow">→</span>
+    <span class="node">BearerTokenAuthenticationFilter<small>verify JWT signature, exp, iss</small></span><span class="arrow">→</span>
+    <span class="node">AuthorizationFilter<small>URL rules</small></span><span class="arrow">→</span>
+    <span class="node">DispatcherServlet<small>@PreAuthorize on methods</small></span>
+  </div>
+  <p class="flow-caption">Figure: a request through Spring Security 6 as an OAuth2 resource server.</p>
+  <pre><code>@Configuration
+@EnableMethodSecurity                                   // enables @PreAuthorize
+class SecurityConfig {
+    @Bean
+    SecurityFilterChain api(HttpSecurity http) throws Exception {
+        return http
+                .csrf(csrf -&gt; csrf.disable())                         // stateless API with bearer tokens
+                .sessionManagement(s -&gt; s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(a -&gt; a
+                        .requestMatchers("/actuator/health/**").permitAll()
+                        .anyRequest().authenticated())
+                .oauth2ResourceServer(o -&gt; o.jwt(Customizer.withDefaults()))   // JWKS from issuer-uri
+                .build();
+    }
+}
+// application.yml: spring.security.oauth2.resourceserver.jwt.issuer-uri: https://auth.example.com
+
+@PreAuthorize("hasAuthority('SCOPE_envelope:write')")
+public Envelope create(...) { ... }</code></pre>
+  <p>JWT basics: header.payload.signature, base64url-encoded, signed not encrypted. Verify the signature with the issuer's public key (RS256/ES256 via JWKS, cached and rotated by <code>kid</code>), then <code>exp</code>, <code>nbf</code>, <code>iss</code> and <code>aud</code>. Keep access tokens short-lived (5–15 minutes) because they cannot be revoked without a denylist; use refresh tokens for longevity. Take tenant and user identity from the validated token, never from a request parameter. OAuth2 is the delegation protocol (authorization code + PKCE for user apps, client credentials for service-to-service); JWT is just the token format often used with it.</p>
+
+  <h3>Observability with Actuator</h3>
+  <ul>
+    <li><code>/actuator/health</code> with <code>liveness</code> and <code>readiness</code> groups for Kubernetes probes. Do not put downstream dependencies in liveness, or a DB blip restarts every pod.</li>
+    <li>Micrometer metrics (<code>http.server.requests</code>, Hikari pool, JVM, custom counters and timers) exported via <code>/actuator/prometheus</code>.</li>
+    <li>Micrometer Tracing (replaced Spring Cloud Sleuth in Boot 3) with an OpenTelemetry or Brave bridge; trace and span IDs in the log pattern.</li>
+    <li>Expose only what you need: <code>management.endpoints.web.exposure.include=health,info,prometheus</code>, on a separate management port, behind auth. <code>/env</code>, <code>/heapdump</code> and <code>/threaddump</code> leak secrets and data.</li>
+  </ul>
+
+  <h3>Virtual threads in Spring Boot 3.2+</h3>
+  <p><code>spring.threads.virtual.enabled=true</code> on Java 21 runs Tomcat request handling, <code>@Async</code>, the application task executor and scheduling on virtual threads. Good for I/O-heavy services with blocking JDBC and HTTP clients. Caveats: the Hikari pool size is still your real concurrency limit for DB work; on Java 21 avoid <code>synchronized</code> around blocking calls (pinning, fixed in JDK 24); rate-limit downstream calls with a <code>Semaphore</code> because there is no longer a thread pool acting as an accidental limiter; check your libraries' ThreadLocal usage.</p>
+
+  <h2 id="qa"><span class="n">05</span>Rapid-fire questions with senior answers</h2>
+  <h3>Container and configuration</h3>
+  <details class="qa"><summary>1. What is IoC and why does Spring use it?</summary><p>The container creates and wires objects instead of the objects creating their dependencies. It decouples classes from concrete implementations, makes them testable, and lets Spring add behaviour (transactions, security, caching) by proxying beans.</p></details>
+  <details class="qa"><summary>2. BeanFactory versus ApplicationContext?</summary><p>BeanFactory is the basic DI container with lazy creation. ApplicationContext extends it with eager singleton creation, events, internationalisation, environment and profiles, and automatic registration of BeanPostProcessors. Applications always use ApplicationContext.</p></details>
+  <details class="qa"><summary>3. Constructor or field injection, and why?</summary><p>Constructor: dependencies are explicit and final, the object is never partially built, unit tests need no container, and cycles fail at start-up. Field injection hides dependencies and needs reflection. With a single constructor, @Autowired is optional.</p></details>
+  <details class="qa"><summary>4. How do you fix a circular dependency?</summary><p>Spring Boot 2.6+ refuses circular references by default, and constructor-injection cycles never resolve. Fix the design: extract the shared logic into a third bean, or replace the back-call with an application event. Tactical fixes are <code>@Lazy</code> on one constructor parameter (injects a proxy) or setter injection. Setting <code>spring.main.allow-circular-references=true</code> hides the smell.</p></details>
+  <details class="qa"><summary>5. Two beans implement the same interface. How does Spring choose?</summary><p>It fails with NoUniqueBeanDefinitionException unless you mark one <code>@Primary</code>, use <code>@Qualifier("name")</code> at the injection point, or match by parameter name. Inject <code>List&lt;PaymentGateway&gt;</code> or <code>Map&lt;String, PaymentGateway&gt;</code> to get all of them, which is how you build a strategy registry.</p></details>
+  <details class="qa"><summary>6. @Component versus @Bean?</summary><p>@Component (and @Service, @Repository, @Controller) marks your own class for component scanning. @Bean is a factory method in a @Configuration class, used for third-party classes or when construction needs logic. In a full @Configuration class, calls between @Bean methods are intercepted by CGLIB and return the singleton; with <code>proxyBeanMethods = false</code> they are plain calls.</p></details>
+  <details class="qa"><summary>7. What does @SpringBootApplication do?</summary><p>@SpringBootConfiguration + @ComponentScan of the package and below + @EnableAutoConfiguration, which imports the auto-configuration classes listed in each jar's AutoConfiguration.imports file and applies them when their @Conditional checks pass.</p></details>
+  <details class="qa"><summary>8. How does auto-configuration back off when I define my own bean?</summary><p>Auto-configured beans are usually guarded by <code>@ConditionalOnMissingBean</code>, and auto-configurations are processed after user configuration. If you define a DataSource, the auto-configured one is skipped. <code>--debug</code> or /actuator/conditions shows each decision.</p></details>
+  <details class="qa"><summary>9. What is a starter?</summary><p>A dependency descriptor that pulls in a consistent set of libraries (for example spring-boot-starter-web brings Spring MVC, Jackson and embedded Tomcat). It contains no logic; it makes the auto-configuration conditions true.</p></details>
+  <details class="qa"><summary>10. How do you write your own auto-configuration?</summary><p>An <code>@AutoConfiguration</code> class with <code>@ConditionalOnClass</code>/<code>@ConditionalOnProperty</code> guards and <code>@ConditionalOnMissingBean</code> beans, bound to a <code>@ConfigurationProperties</code> class, listed in <code>META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports</code>, shipped in a starter. That is how platform teams share an audit-logging or tenant-context library across microservices.</p></details>
+  <details class="qa"><summary>11. How do @Profile and profile-specific configuration work?</summary><p><code>spring.profiles.active=prod</code> activates <code>application-prod.yml</code> on top of <code>application.yml</code> and enables beans annotated <code>@Profile("prod")</code>; <code>@Profile("!prod")</code> negates. Use profiles for environment wiring (a fake SMS gateway locally), not for business feature flags. Secrets come from the environment or a vault, not profile files.</p></details>
+  <details class="qa"><summary>12. Singleton bean scope versus the Singleton pattern?</summary><p>Spring's singleton is one instance per container per bean definition; you can still create others with <code>new</code> or define two beans of the same class. The GoF Singleton is one per class loader. Singleton beans are shared by all threads, so they must be stateless or thread-safe.</p></details>
+  <details class="qa"><summary>13. How do you inject a prototype bean into a singleton?</summary><p>Plain injection creates it once. Inject <code>ObjectProvider&lt;T&gt;</code> and call <code>getObject()</code> each time, use a <code>@Lookup</code> method, or a scoped proxy.</p></details>
+  <details class="qa"><summary>14. What are BeanPostProcessor and BeanFactoryPostProcessor?</summary><p>BeanFactoryPostProcessor modifies bean <em>definitions</em> before any bean is created (property placeholder resolution, configuration class parsing). BeanPostProcessor modifies bean <em>instances</em> around initialisation (@Autowired processing, @PostConstruct, AOP proxy creation).</p></details>
+  <h3>Transactions and data</h3>
+  <details class="qa"><summary>15. Why did my @Transactional method not roll back?</summary><p>Usual causes, in order: it threw a checked exception (no rollback by default); the exception was caught inside the method; it was called from the same class (self-invocation bypasses the proxy); the method is private or final; the work ran on another thread; or the table engine does not support transactions.</p></details>
+  <details class="qa"><summary>16. When do you use REQUIRES_NEW?</summary><p>When a write must commit regardless of the caller's outcome: audit records, failure logs, an idempotency-key status update. It suspends the outer transaction and takes a second connection, so never use it inside a loop on a hot path; it can exhaust the pool.</p></details>
+  <details class="qa"><summary>17. What does readOnly = true actually do?</summary><p>Hibernate skips dirty checking and flushing, the JDBC connection is flagged read-only (Postgres enforces it), and routing datasources can send the query to a replica. It is an optimisation and a guard, not a security control.</p></details>
+  <details class="qa"><summary>18. @Repository versus @Service?</summary><p>Both are @Component stereotypes. @Repository additionally enables persistence exception translation: a post-processor wraps the bean and converts vendor exceptions (SQLException, Hibernate exceptions) into Spring's <code>DataAccessException</code> hierarchy, such as <code>DataIntegrityViolationException</code> for a unique constraint. Spring Data repositories get this automatically. @Service is semantic only.</p></details>
+  <details class="qa"><summary>19. What is the N+1 problem and how do you fix it?</summary><p>One query for the parents and one per parent for a lazy association. Fix with a fetch join or @EntityGraph for that use case, batch fetching (<code>default_batch_fetch_size</code>), or DTO projections. Never switch associations to EAGER globally; that moves the N+1 everywhere.</p></details>
+  <details class="qa"><summary>20. Should open-session-in-view be on?</summary><p>No for APIs. It holds a DB connection for the whole request and hides lazy loading in serialisation. Turn it off, load data in @Transactional service methods, return DTOs, and fix LazyInitializationExceptions by fetching explicitly.</p></details>
+  <details class="qa"><summary>21. How do you paginate a large table efficiently?</summary><p>Pageable with a Slice when you do not need the total, keyset pagination (<code>where (created_at, id) &lt; (:ts, :id)</code> with an index) for deep pages and infinite scroll, and never a collection fetch join with a page; fetch IDs first.</p></details>
+  <details class="qa"><summary>22. Optimistic or pessimistic locking in JPA?</summary><p>Optimistic (<code>@Version</code> column, OptimisticLockException on conflict, retry) for low-contention updates such as editing a document's metadata. Pessimistic (<code>@Lock(PESSIMISTIC_WRITE)</code>, SELECT ... FOR UPDATE) when contention is high and retries are expensive, such as decrementing a credit balance. Always keep pessimistic transactions short.</p></details>
+  <h3>Web, security and operations</h3>
+  <details class="qa"><summary>23. How do you handle exceptions globally?</summary><p>A <code>@RestControllerAdvice</code> with <code>@ExceptionHandler</code> methods that map domain exceptions to status codes and return <code>ProblemDetail</code> (RFC 9457) bodies, plus a catch-all that logs once and returns 500 without internals. Set <code>spring.mvc.problemdetails.enabled=true</code> so Spring's own exceptions use the same format.</p></details>
+  <details class="qa"><summary>24. How does request validation work?</summary><p><code>@Valid @RequestBody</code> runs Bean Validation and raises MethodArgumentNotValidException (400). Constraint annotations on records or DTOs, custom ConstraintValidators for domain rules, groups for create versus update. Map the errors to a field list in the advice.</p></details>
+  <details class="qa"><summary>25. Walk through the Spring Security filter chain for a JWT request.</summary><p>DelegatingFilterProxy hands the request to FilterChainProxy, which picks the first matching SecurityFilterChain. BearerTokenAuthenticationFilter extracts the token, JwtDecoder verifies signature (JWKS) and claims, JwtAuthenticationConverter maps scopes to authorities, and the Authentication is stored in the SecurityContext. AuthorizationFilter applies URL rules, then @PreAuthorize applies method rules (enabled by @EnableMethodSecurity).</p></details>
+  <details class="qa"><summary>26. JWT versus server sessions; how do you log out a JWT user?</summary><p>JWTs are stateless and scale without shared session storage, but cannot be revoked before expiry. Keep them short-lived, rotate refresh tokens and revoke those server-side, and for urgent revocation keep a small denylist of token IDs (<code>jti</code>) in Redis until expiry.</p></details>
+  <details class="qa"><summary>27. What is the difference between OAuth2 and JWT?</summary><p>OAuth2 is an authorisation framework defining flows to obtain access tokens (authorization code with PKCE, client credentials). JWT is a token format. OAuth2 tokens are often JWTs, but they can be opaque tokens checked by introspection. OpenID Connect adds identity (the ID token) on top of OAuth2.</p></details>
+  <details class="qa"><summary>28. What do you expose through Actuator in production?</summary><p>Health (liveness and readiness groups), info, and Prometheus metrics, on a management port, secured. Not env, heapdump, threaddump or loggers on the public port. Custom health indicators for critical dependencies go in readiness, not liveness.</p></details>
+  <details class="qa"><summary>29. Should we enable virtual threads in our Spring Boot service?</summary><p>If it is on Java 21+, Boot 3.2+, I/O-bound with blocking JDBC/HTTP, and thread pool size is the bottleneck, yes, behind a load test. Check for synchronized around blocking I/O (pinning on Java 21), size Hikari deliberately, and add semaphores for downstream rate limits. CPU-bound or already reactive services gain nothing.</p></details>
+  <details class="qa"><summary>30. How do SOLID principles show up in a Spring codebase?</summary><p>Single responsibility: thin controllers, services per use case. Open/closed: a new payment gateway is a new bean implementing <code>PaymentGateway</code>, picked from an injected map, with no edits to existing code. Liskov: implementations honour the interface's contract (same exceptions, same idempotency). Interface segregation: small ports (<code>DocumentStore</code>, <code>Notifier</code>), not one god interface. Dependency inversion: services depend on interfaces and receive implementations through constructor injection.</p></details>
+  <details class="qa"><summary>31. @Async: what can go wrong?</summary><p>Same proxy rules as @Transactional (self-invocation is ignored), plain Spring without Boot falls back to SimpleAsyncTaskExecutor, which starts a new thread per task, exceptions from void methods are lost unless you configure an AsyncUncaughtExceptionHandler, and the async work runs outside the caller's transaction and security context unless you propagate it. Configure a bounded ThreadPoolTaskExecutor or virtual threads, and return CompletableFuture when the caller needs the result.</p></details>
+  <details class="qa"><summary>32. How do you publish an event only after the transaction commits?</summary><p><code>@TransactionalEventListener(phase = AFTER_COMMIT)</code>. For guaranteed delivery to Kafka, write an outbox row in the same transaction and relay it, because an after-commit listener can still fail after the commit.</p></details>
+
+  <h2 id="exercise"><span class="n">06</span>Hands-on exercise (60 minutes)</h2>
+  <p>Build a tiny Spring Boot 3 service, the PayPal HM round in miniature:</p>
+  <ol>
+    <li><code>POST /payments</code> with a validated record body and an <code>Idempotency-Key</code> header. Store keys in a table with a unique constraint on <code>(tenant_id, idempotency_key)</code>. Send the same request twice and confirm one payment row and identical responses.</li>
+    <li>Add a <code>@RestControllerAdvice</code> returning ProblemDetail for not found, validation errors, duplicate key conflicts (catch <code>DataIntegrityViolationException</code>) and the catch-all.</li>
+    <li>Write a test that proves self-invocation: a <code>@Transactional</code> method called through <code>this</code> does not roll back on a RuntimeException. Fix it by moving the method to a second bean.</li>
+    <li>Create a <code>Payment</code> entity with a lazy <code>List&lt;Refund&gt;</code>, list 20 payments with refunds, and count queries with Hibernate statistics. Fix the N+1 with <code>@EntityGraph</code> and show the count drop from 21 to 1.</li>
+    <li>Set <code>spring.jpa.open-in-view=false</code> and <code>spring.threads.virtual.enabled=true</code>; check <code>/actuator/health</code> and <code>/actuator/prometheus</code>.</li>
+  </ol>
+
+  <h2 id="sources"><span class="n">07</span>Sources and go deeper</h2>
+  <ul class="sources">
+    <li><a href="https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html" target="_blank" rel="noopener">Spring Framework reference: Using @Transactional (proxy mode, method visibility)</a></li>
+    <li><a href="https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html" target="_blank" rel="noopener">Spring Framework reference: Transaction propagation</a></li>
+    <li><a href="https://docs.spring.io/spring-framework/reference/core/aop/proxying.html" target="_blank" rel="noopener">Spring Framework reference: Proxying mechanisms (self-invocation)</a></li>
+    <li><a href="https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html" target="_blank" rel="noopener">Spring Framework reference: Bean scopes</a></li>
+    <li><a href="https://docs.spring.io/spring-boot/reference/using/auto-configuration.html" target="_blank" rel="noopener">Spring Boot reference: Auto-configuration</a> and <a href="https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html" target="_blank" rel="noopener">Creating your own auto-configuration</a></li>
+    <li><a href="https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html" target="_blank" rel="noopener">Spring MVC: Error responses and ProblemDetail</a>; <a href="https://docs.spring.io/spring-boot/reference/io/validation.html" target="_blank" rel="noopener">Spring Boot: Validation</a></li>
+    <li><a href="https://docs.spring.io/spring-security/reference/servlet/architecture.html" target="_blank" rel="noopener">Spring Security reference: Servlet architecture (filter chain)</a></li>
+    <li><a href="https://docs.spring.io/spring-boot/reference/actuator/index.html" target="_blank" rel="noopener">Spring Boot reference: Actuator</a>; <a href="https://docs.spring.io/spring-boot/reference/features/spring-application.html" target="_blank" rel="noopener">SpringApplication (virtual threads)</a></li>
+    <li><a href="https://vladmihalcea.com/n-plus-1-query-problem/" target="_blank" rel="noopener">Vlad Mihalcea: N+1 query problem</a> and <a href="https://vladmihalcea.com/the-open-session-in-view-anti-pattern/" target="_blank" rel="noopener">The Open Session in View anti-pattern</a></li>
+    <li>Interview reports in section 01 are from the playbook's verified 2025–26 notes (Swiggy, Paytm, Apple, Truemeds, PayPal).</li>
+  </ul>
+
+  <div class="foot"><a href="../index.html">← Back to the playbook</a><span><a href="java-concurrency.html">Java concurrency</a> · <a href="db-isolation-locking-indexes.html">DB isolation and locking</a> · <a href="hld-payment-service.html">Payment service HLD</a></span></div>
+</div>
+</body>
+</html>
