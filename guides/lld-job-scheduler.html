@@ -12,22 +12,32 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>In-Process Job / Task Scheduler</h1>
-  <p class="lede">You will be able to code a job queue with leases, retries and a DLQ where no two workers ever finish the same job, and adapt it to the DAG and scheduler variants.</p>
+  <p class="lede">A job queue holds background work, like "send this email" or "resize this photo", for worker threads to pick up. By the end, you can code one where no two workers ever finish the same job. Failed jobs are retried, and jobs that keep failing are parked for a human. You will also be able to adapt it to the dependency and scheduler variants.</p>
   <div class="facts">
-    <span class="fact"><b>Time-box:</b> 60–90 min (Razorpay: 75 min agentic + 15 min manual)</span>
-    <span class="fact"><b>Seen:</b> ~8 reports, 2025–26</span>
-    <span class="fact"><b>Format:</b> IDE / AI-assisted with PLAN.md and git log</span>
+    <span class="fact"><b>Time-box:</b> 60–90 min (Razorpay: 75 min with an AI coding agent, then 15 min by hand)</span>
+    <span class="fact"><b>Seen:</b> about 8 interview reports, 2025–26</span>
+    <span class="fact"><b>Format:</b> IDE, or AI-assisted with a PLAN.md file and the git log</span>
   </div>
   <div class="chips"><span class="chip hot">Razorpay</span><span class="chip hot">Media.net</span><span class="chip hot">Uber</span><span class="chip">Walmart</span><span class="chip">Rubrik</span><span class="chip">Goldman Sachs</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Explicit state machine; every transition happens under one lock.</li>
-    <li>Workers <dfn title="Borrow a job for a limited time; if not renewed, it goes back to the queue">lease</dfn> jobs and renew; expiry re-queues the job.</li>
-    <li>A token per lease stops a stale worker finishing someone else's job.</li>
-    <li>Retry with exponential backoff and full jitter; DLQ after max retries.</li>
+    <li>Write down every job status and the allowed moves between them. Every move happens under one lock.</li>
+    <li>Workers <dfn title="Borrow a job for a limited time; if not renewed, it goes back to the queue">lease</dfn> a job for a short time and keep renewing it. If the lease runs out, the job goes back in the queue.</li>
+    <li>Each lease gets a new number (a token). A slow, old worker can't finish a job that now belongs to someone else.</li>
+    <li>Retry after a growing, randomised wait. After the last retry, move the job to a dead-letter queue.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A Swiggy order board. A rider takes an order for 30 minutes and must ping to keep it. If they go silent, the order is reassigned with a new ticket number, and the old rider's "delivered" tap is ignored.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a Swiggy order board. A rider takes an order for 30 minutes and must check in to keep it. If they go silent, the order goes to another rider with a new ticket number. If the first rider later taps "delivered", the app ignores it, because their ticket number is old.</p></div>
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Job</dt><dd>One piece of background work, like "send the welcome email to user 42".</dd>
+    <dt>Worker</dt><dd>A thread that takes jobs from the queue and runs them.</dd>
+    <dt>Lease</dt><dd>A worker borrows a job for a set time, say 30 seconds. It must renew the lease, or the job returns to the queue.</dd>
+    <dt>Fencing token</dt><dd>A number that goes up with every new lease. The queue rejects any call that carries an older number.</dd>
+    <dt>At-least-once</dt><dd>Every job runs at least one time, but may run twice. So the job's code must be safe to run twice.</dd>
+    <dt>Backoff with jitter</dt><dd>Wait longer after each failure (backoff), and pick a random wait inside that limit (jitter). Failed jobs then don't all retry at once.</dd>
+    <dt>DLQ (dead-letter queue)</dt><dd>A separate parking area for jobs that failed too many times. A human can look at them and send them back.</dd>
+    <dt>DAG</dt><dd>Directed acyclic graph. Tasks with "run B after A" arrows and no loops.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -48,73 +58,73 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>State machine</h4><p>Every transition named and guarded; illegal ones throw. Draw it first.</p></div>
-    <div class="key"><h4>Concurrency</h4><p>No job held by two workers; a stale worker cannot complete a lost job.</p></div>
-    <div class="key"><h4>Failure semantics</h4><p>At-least-once, idempotent handlers, jittered backoff, DLQ.</p></div>
-    <div class="key"><h4>Process</h4><p>Agentic rounds: PLAN.md, small commits, green tests, absorb the minute-70 extension.</p></div>
+    <div class="key"><h4>State machine</h4><p>Name every status change and guard it. A move that is not allowed throws an error. Draw this first.</p></div>
+    <div class="key"><h4>Concurrency</h4><p>No job is held by two workers. An old worker can't complete a job it has lost.</p></div>
+    <div class="key"><h4>Failure semantics</h4><p>Jobs may run twice, so handlers must be safe to repeat. Retry with random waits. Park repeat failures in the DLQ.</p></div>
+    <div class="key"><h4>Process</h4><p>In AI-assisted rounds: write PLAN.md, make small commits, keep tests passing, and handle the new feature at minute 70.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: how the rounds ran and the full grading list</summary>
-  <p>Razorpay's June 2026 agentic round is the clearest spec in the reports: build an in-process background job service ("a minimal Sidekiq / Celery / SQS-with-workers") with <code>submit(job_spec) -&gt; job_id</code>, priority 0–9, <code>max_retries</code>, workers registering for job types and pulling jobs under a lease (visibility timeout) that they must renew, and the lifecycle <code>pending → claimed → succeeded | failed (DLQ) | retry_scheduled → pending</code>, with lease expiry returning claimed jobs to pending. Process rules: write PLAN.md first and walk the interviewer through it, commit incrementally (the git log is a deliverable), "no done without green tests", tests must exercise concurrency, and an extension arrives around minute 70. The candidate finished everything and was still rejected; their own read was that how you drive the agent (plan, parallelise, verify) is graded as much as the result.</p>
-  <p>Media.net's version (Nov 2025) asked for dependencies, priority, retry after failure (5 attempts), cancel, parallel execution, history and circular-dependency protection; the candidate could not get the code running and expected a reject. Walmart's SDE-III round wanted one-time and recurring jobs, status, retry, cancel, multiple workers and priority, and discussed <code>PriorityBlockingQueue</code> vs <code>DelayQueue</code> and exponential backoff with jitter.</p>
-  <p>Three prompts share one skeleton: a background job queue with leases and retries (Razorpay), a dependency-aware task runner with priorities and cycle detection (Media.net), and a ScheduledExecutorService built from scratch (Uber, Goldman Sachs, Rubrik). A senior answer has an explicit state machine, one place where state changes under a lock, lease tokens that stop stale workers, backoff with jitter, and tests that actually exercise concurrency.</p>
+  <p>Razorpay's June 2026 round, done with an AI coding agent, is the clearest spec in the reports. You build a background job service inside one process. They described it as "a minimal Sidekiq / Celery / SQS-with-workers". It has <code>submit(job_spec) -&gt; job_id</code>, priority 0–9 and <code>max_retries</code>. Workers register for job types. They pull jobs under a lease, also called a visibility timeout, which they must renew. The lifecycle is <code>pending → claimed → succeeded | failed (DLQ) | retry_scheduled → pending</code>. If a lease expires, the claimed job goes back to pending. There were process rules too. Write PLAN.md first and walk the interviewer through it. Commit in small steps, because the git log is part of what you hand in. Nothing counts as "done" without passing tests. Tests must exercise concurrency. A new feature arrives around minute 70. The candidate finished everything and was still rejected. Their own view was this. How you drive the agent (plan, run things in parallel, check the output) is graded as much as the result.</p>
+  <p>Media.net's version (Nov 2025) asked for dependencies, priority, and retry after failure (5 attempts). It also wanted cancel, parallel running, history, and protection against circular dependencies. The candidate could not get the code running and expected a reject. Walmart's SDE-III round wanted one-time and repeating jobs, status, retry, cancel, several workers and priority. They discussed <code>PriorityBlockingQueue</code> vs <code>DelayQueue</code>, and exponential backoff with jitter.</p>
+  <p>Three prompts share one skeleton. The first is a background job queue with leases and retries (Razorpay). The second is a task runner that respects dependencies, with priorities and loop detection (Media.net). The third is a ScheduledExecutorService built from scratch (Uber, Goldman Sachs, Rubrik). A senior answer has a clear state machine and one place where state changes under a lock. It has lease tokens that stop old workers, backoff with jitter, and tests that really exercise concurrency.</p>
   <ul>
-    <li><b>State machine.</b> Every transition named and guarded; illegal ones throw. Draw it before coding.</li>
-    <li><b>Correct under concurrency.</b> Two workers never hold the same job; a stale worker cannot complete a job it lost.</li>
-    <li><b>Failure semantics.</b> At-least-once stated plainly; idempotent handlers; backoff with jitter; DLQ.</li>
-    <li><b>Testability.</b> Injected clock and random; no <code>Thread.sleep</code> in tests except the explicit concurrency test.</li>
-    <li><b>Observability.</b> Queue depth per state, oldest pending age, DLQ size, stuck (expired-lease) count.</li>
-    <li><b>Process (agentic rounds).</b> Plan first, small commits, tests as the unit of progress, absorb the minute-70 extension cleanly.</li>
+    <li><b>State machine.</b> Name and guard every status change. Moves that are not allowed throw. Draw it before coding.</li>
+    <li><b>Correct under concurrency.</b> Two workers never hold the same job. An old worker can't complete a job it lost.</li>
+    <li><b>Failure semantics.</b> Say plainly that a job runs at least once, maybe twice. Handlers must be safe to repeat. Use backoff with jitter and a DLQ.</li>
+    <li><b>Testability.</b> Pass in the clock and the random generator. Tests never call <code>Thread.sleep</code>, except the one concurrency test.</li>
+    <li><b>Observability.</b> Track how many jobs are in each status and how long the oldest one has waited. Also track the DLQ size and how many leases expired (stuck jobs).</li>
+    <li><b>Process (AI-assisted rounds).</b> Plan first, make small commits, and measure progress in passing tests. Fit the minute-70 feature in cleanly.</li>
   </ul></details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>At-least-once or at-most-once?</td><td>At-least-once forces idempotent handlers.</td></tr>
-    <tr><td>Does lease expiry count as an attempt?</td><td>If not, a poison job loops forever.</td></tr>
-    <tr><td>Strict priority, or with ageing?</td><td>Strict starves low priority.</td></tr>
-    <tr><td>FIFO within one priority?</td><td>Needs a sequence tie-breaker.</td></tr>
-    <tr><td>Backoff formula and cap?</td><td>Exponential, full jitter, capped.</td></tr>
-    <tr><td>Cancel a running job?</td><td>Cooperative cancel vs queued only.</td></tr>
-    <tr><td>Parent fails: children?</td><td>Mark them SKIPPED transitively.</td></tr>
-    <tr><td>Recurring: fixed rate or delay?</td><td>Fixed rate can pile up.</td></tr>
+    <tr><td>Must each job run at least once, or at most once?</td><td>"At least once" means handlers must be safe to run twice.</td></tr>
+    <tr><td>Does an expired lease count as an attempt?</td><td>If not, a job that always crashes loops forever.</td></tr>
+    <tr><td>Strict priority, or do old jobs move up over time?</td><td>With strict priority, low-priority jobs may never run.</td></tr>
+    <tr><td>First in, first out within one priority?</td><td>You need a sequence number to break ties.</td></tr>
+    <tr><td>How fast does the retry wait grow, and what is the cap?</td><td>Usually it doubles each time, with a random wait, up to a cap.</td></tr>
+    <tr><td>Can you cancel a running job?</td><td>Either the job checks a cancel flag, or only queued jobs can be cancelled.</td></tr>
+    <tr><td>If a parent task fails, what happens to its children?</td><td>Mark them, and their children, SKIPPED.</td></tr>
+    <tr><td>Repeating jobs: fixed rate or fixed delay?</td><td>A fixed rate can pile up runs if a job is slow.</td></tr>
   </table></div>
   <details class="deep"><summary>Go deeper: the full "why it matters" notes</summary><ul>
-    <li>At-least-once (leases + redelivery) forces idempotent handlers. Exactly-once is not achievable in general; say so.</li>
-    <li>If lease expiry does not count as a failed attempt, a job that crashes its worker every time loops forever (poison job).</li>
-    <li>Strict priority starves low-priority jobs under sustained load.</li>
-    <li>FIFO within a priority needs a sequence number tie-breaker; <code>PriorityQueue</code> is not stable.</li>
-    <li>Backoff: exponential with full jitter, capped; make base and cap configurable.</li>
-    <li>Cancel: cooperative cancel (flag + interrupt) vs only cancelling queued jobs.</li>
-    <li>Dependencies: if a parent fails permanently, usually mark children SKIPPED / UPSTREAM_FAILED transitively.</li>
-    <li>Recurring jobs: fixed rate can pile up if the job is slower than the period. Ask whether overlap is allowed.</li>
+    <li>At-least-once (leases plus re-delivery) means handlers must be idempotent, safe to run twice. Exactly-once is not possible in general. Say so.</li>
+    <li>A poison job crashes its worker every time. If an expired lease does not count as a failed attempt, that job loops forever.</li>
+    <li>Under steady heavy load, strict priority starves low-priority jobs. They never get a turn.</li>
+    <li>First in, first out within a priority needs a sequence number to break ties. <code>PriorityQueue</code> does not keep insertion order for equal items.</li>
+    <li>Backoff: grow the wait exponentially, add full jitter, and cap it. Make the base and the cap configurable.</li>
+    <li>Cancel: either cooperative cancel (set a flag and interrupt the thread), or only cancel queued jobs.</li>
+    <li>Dependencies: if a parent fails for good, usually mark all its descendants SKIPPED or UPSTREAM_FAILED.</li>
+    <li>Repeating jobs: with a fixed rate, runs can pile up if the job is slower than the period. Ask whether two runs may overlap.</li>
   </ul></details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li><code>submit(spec)</code> → id.</li>
-      <li><code>claim</code> leases the best due job.</li>
-      <li><code>renew</code>, <code>complete</code>, <code>fail</code> take the token.</li>
-      <li>Retry, DLQ, redrive, cancel, stats.</li>
+      <li><code>submit(spec)</code> returns a job id.</li>
+      <li><code>claim</code> leases the best job that is due.</li>
+      <li><code>renew</code>, <code>complete</code> and <code>fail</code> need the lease token.</li>
+      <li>Retry, DLQ, send back from DLQ, cancel, stats.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>Never two live leases on one job.</li>
-      <li>O(log n) claim; no busy-wait.</li>
-      <li>Graceful shutdown; injected clock.</li>
+      <li>A job never has two live leases.</li>
+      <li>Claim in O(log n). Workers never spin in a loop waiting.</li>
+      <li>Clean shutdown. The clock is passed in.</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>Persistence, multi-process.</li>
-      <li>Exactly-once; cron parsing.</li>
+      <li>Saving to disk, many processes.</li>
+      <li>Exactly-once, cron syntax.</li>
     </ul></div>
   </div>
   <details class="deep"><summary>Go deeper: full requirement list</summary><ul>
-    <li><code>submit(spec)</code> returns id; spec has type, payload, priority, maxRetries, optional runAt and dependsOn.</li>
-    <li>Workers register types; <code>claim</code> leases the highest-priority due job of those types.</li>
-    <li><code>renew</code>, <code>complete</code>, <code>fail</code> take the lease token.</li>
-    <li>Retry with backoff; DLQ after retries are exhausted; redrive from DLQ.</li>
-    <li>Cancel; status and history per job; queue stats.</li>
-    <li>No job held by two live leases. O(log n) claim; no busy-waiting. Graceful shutdown: stop claiming, finish or release in-flight jobs. Deterministic tests via <code>Clock</code> and seeded <code>RandomGenerator</code>.</li>
-    <li>Out of scope (say so): persistence and multi-process workers (describe the Postgres <code>SKIP LOCKED</code> or SQS version instead); exactly-once side effects; cron expression parsing (accept a fixed period).</li>
+    <li><code>submit(spec)</code> returns an id. The spec has a type, payload, priority and maxRetries. It may also have runAt (a start time) and dependsOn.</li>
+    <li>Workers register the job types they handle. <code>claim</code> leases the highest-priority due job among those types.</li>
+    <li><code>renew</code>, <code>complete</code> and <code>fail</code> all take the lease token.</li>
+    <li>Retry with backoff. Move to the DLQ once retries run out. Allow sending jobs back from the DLQ ("redrive").</li>
+    <li>Cancel. Status and history per job. Queue stats.</li>
+    <li>No job is held by two live leases. Claim runs in O(log n), with no busy-waiting. Shut down cleanly. Stop claiming, then finish or release jobs in progress. Make tests repeatable with a <code>Clock</code> and a seeded <code>RandomGenerator</code>.</li>
+    <li>Out of scope (say so): saving to disk and workers in many processes. Describe the Postgres <code>SKIP LOCKED</code> or SQS version instead. Also out of scope: side effects that happen exactly once, and cron expression parsing. Accept a fixed period instead.</li>
   </ul></details>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
@@ -132,27 +142,27 @@
     <span class="arrow">|</span><span class="node">RETRY_SCHEDULED<small>runAt = now + backoff</small></span><span class="arrow">→</span><span class="node">PENDING</span>
     <span class="arrow">|</span><span class="node store">FAILED<small>DLQ</small></span>
   </div>
-  <p class="flow-caption">The job lifecycle. Lease expiry moves CLAIMED back to PENDING, or to FAILED if attempts are exhausted.</p>
+  <p class="flow-caption">The job's life. If a lease expires, CLAIMED goes back to PENDING. If no attempts are left, it goes to FAILED instead.</p>
 
   <h3>Patterns: what and why here</h3>
   <div class="keys">
-    <div class="key"><h4>State enum → lifecycle</h4><p>An allowed-transitions table: small, explicit, easy to test.</p></div>
-    <div class="key"><h4>Strategy → backoff, handlers</h4><p><code>BackoffPolicy</code> and a <code>Map&lt;String, JobHandler&gt;</code> keyed by type.</p></div>
-    <div class="key"><h4>Producer-consumer monitor</h4><p><code>Lock</code> + <code>Condition</code>: idle workers sleep until a job is due, no polling.</p></div>
-    <div class="key"><h4>Lease + fencing token</h4><p>Same idea as SQS's visibility timeout and receipt handle.</p></div>
+    <div class="key"><h4>State enum → lifecycle</h4><p>A table of allowed status changes. It is small, clear and easy to test.</p></div>
+    <div class="key"><h4>Strategy → backoff, handlers</h4><p>A <code>BackoffPolicy</code> interface, and a <code>Map&lt;String, JobHandler&gt;</code> with one handler per job type.</p></div>
+    <div class="key"><h4>Producer-consumer monitor</h4><p>A <code>Lock</code> with a <code>Condition</code>. Idle workers sleep until a job is due, instead of checking again and again.</p></div>
+    <div class="key"><h4>Lease + fencing token</h4><p>The same idea as Amazon SQS's visibility timeout and receipt handle.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: class responsibilities and the component flow</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
-    <tr><td><code>JobSpec</code> (record)</td><td>Immutable submission</td><td>type, payload, priority, maxRetries, runAt</td></tr>
-    <tr><td><code>Job</code></td><td>Mutable runtime record, guarded by the queue lock</td><td>state, attempts, runAt, leaseToken, leaseExpiresAt, lastError, history</td></tr>
+    <tr><td><code>JobSpec</code> (record)</td><td>What was submitted. It never changes.</td><td>type, payload, priority, maxRetries, runAt</td></tr>
+    <tr><td><code>Job</code></td><td>The live job record. It changes, but only under the queue lock.</td><td>state, attempts, runAt, leaseToken, leaseExpiresAt, lastError, history</td></tr>
     <tr><td><code>JobState</code> (enum)</td><td>Lifecycle</td><td>PENDING, CLAIMED, SUCCEEDED, RETRY_SCHEDULED, FAILED, CANCELLED</td></tr>
-    <tr><td><code>JobQueue</code></td><td>All state transitions; priority index per type; delayed set; lease expiry index; DLQ</td><td><code>submit</code>, <code>claim</code>, <code>renew</code>, <code>complete</code>, <code>fail</code>, <code>cancel</code>, <code>stats</code></td></tr>
-    <tr><td><code>Lease</code> (record)</td><td>What a worker holds; token fences stale workers</td><td>jobId, token, expiresAt, job snapshot</td></tr>
-    <tr><td><code>BackoffPolicy</code> (interface)</td><td>Delay before retry n</td><td><code>ExponentialFullJitter(base, cap, random)</code></td></tr>
-    <tr><td><code>JobHandler</code> (interface)</td><td>User code per job type</td><td><code>void handle(Lease lease) throws Exception</code></td></tr>
-    <tr><td><code>Worker</code></td><td>Loop: claim → run with lease renewal → complete/fail</td><td>types, handlers, renewal executor</td></tr>
-    <tr><td><code>WorkerPool</code></td><td>Starts N workers (virtual threads), graceful shutdown</td><td><code>start</code>, <code>shutdown(Duration)</code></td></tr>
+    <tr><td><code>JobQueue</code></td><td>Makes every status change. Keeps a priority queue per type, a delayed set, a lease expiry index and the DLQ.</td><td><code>submit</code>, <code>claim</code>, <code>renew</code>, <code>complete</code>, <code>fail</code>, <code>cancel</code>, <code>stats</code></td></tr>
+    <tr><td><code>Lease</code> (record)</td><td>What a worker holds. The token blocks old workers.</td><td>jobId, token, expiresAt, job snapshot</td></tr>
+    <tr><td><code>BackoffPolicy</code> (interface)</td><td>How long to wait before retry n</td><td><code>ExponentialFullJitter(base, cap, random)</code></td></tr>
+    <tr><td><code>JobHandler</code> (interface)</td><td>Your code for one job type</td><td><code>void handle(Lease lease) throws Exception</code></td></tr>
+    <tr><td><code>Worker</code></td><td>A loop: claim, run while renewing the lease, then complete or fail</td><td>types, handlers, renewal executor</td></tr>
+    <tr><td><code>WorkerPool</code></td><td>Starts N workers on virtual threads. Shuts down cleanly.</td><td><code>start</code>, <code>shutdown(Duration)</code></td></tr>
   </table></div>
   <div class="flow">
     <span class="node">Producer<small>submit(spec)</small></span><span class="arrow">→</span>
@@ -160,56 +170,56 @@
     <span class="node">Worker × N<small>virtual threads</small></span><span class="arrow">→</span>
     <span class="node">JobHandler<small>by type</small></span>
   </div>
-  <p>Patterns in full: State pattern as an enum with an allowed-transitions table: small, explicit and easy to test. Strategy for backoff and for handlers (a registry <code>Map&lt;String, JobHandler&gt;</code> keyed by type). Producer-consumer with a monitor (<code>ReentrantLock</code> + <code>Condition</code>) so idle workers sleep until a job is due instead of polling. Lease plus fencing token, the same idea as SQS's visibility timeout and receipt handle.</p></details>
+  <p>Here are the patterns in full. The State pattern is an enum with a table of allowed changes. It is small, clear and easy to test. Strategy is used for backoff and for handlers, with a <code>Map&lt;String, JobHandler&gt;</code> keyed by type. Producer-consumer uses a monitor, a <code>ReentrantLock</code> with a <code>Condition</code>. Idle workers sleep until a job is due instead of polling. The lease with a fencing token is the same idea as SQS's visibility timeout and receipt handle.</p></details>
 
   <h2 id="flow"><span class="n">05</span>Watch a job's life</h2>
   <div class="stepper"><b class="title">Job J1 "send_email", maxRetries 2, lease 30 s</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell hl">PENDING</span><span class="cell">CLAIMED</span><span class="cell">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">10:00:00 submit</span><span>attempts=0</span><span>ready[send_email]=[J1]</span></div>
-      <figcaption><code>submit</code> stores J1, puts it in the ready heap for its type, and signals waiting workers.</figcaption>
+      <figcaption>Job J1 is submitted. The queue saves it in the "ready" list for email jobs and wakes any waiting workers.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">PENDING</span><span class="cell hl">CLAIMED</span><span class="cell">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">W1 claims</span><span>attempts=1</span><span>token=7</span><span>expires 10:00:30</span></div>
-      <figcaption>Worker W1 wakes, polls the best job, gets a lease with token 7.</figcaption>
+      <figcaption>Worker W1 wakes up and takes the best job. It borrows J1 for 30 seconds and gets ticket number 7.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell hl">PENDING</span><span class="cell bad">CLAIMED</span><span class="cell">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">10:00:31</span><span>lease expired</span><span>attempts=1 ≤ 2</span></div>
-      <figcaption>W1 hits a long GC pause and misses its renewal. <code>promoteDue</code> sees the expired lease and returns J1 to PENDING.</figcaption>
+      <figcaption>W1 freezes for a while (a long garbage-collection pause) and forgets to renew. The queue sees the time is up and puts J1 back as PENDING.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">PENDING</span><span class="cell hl">CLAIMED</span><span class="cell">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">W2 claims</span><span>attempts=2</span><span>token=8</span></div>
-      <figcaption>W2 claims J1 with a new token, 8. The job now belongs to W2.</figcaption>
+      <figcaption>Worker W2 takes J1 with a new ticket number, 8. The job now belongs to W2.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">PENDING</span><span class="cell hl">CLAIMED</span><span class="cell">RETRY</span><span class="cell dim">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">W1: complete(J1, 7)</span><span>token 7 ≠ 8</span><span>StaleLeaseException</span></div>
-      <figcaption>W1 wakes and tries to complete. The token check rejects it; state is unchanged.</figcaption>
+      <figcaption>W1 wakes up and says "done" with ticket 7. The current ticket is 8, so the queue refuses. Nothing changes.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">PENDING</span><span class="cell">CLAIMED</span><span class="cell hl">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span></div>
       <div class="ptrs"><span class="on">W2: fail(J1, 8)</span><span>attempts=2 ≤ 2</span><span>runAt=now+1.4s</span></div>
-      <figcaption>W2's handler throws. Attempts remain, so J1 waits in the delayed heap for a jittered backoff.</figcaption>
+      <figcaption>W2's email code throws an error. Attempts are left, so J1 waits a short random time before it can run again.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">PENDING</span><span class="cell">CLAIMED</span><span class="cell">RETRY</span><span class="cell">SUCCEEDED</span><span class="cell bad">FAILED</span></div>
       <div class="ptrs"><span class="on">attempt 3 fails</span><span>attempts=3 &gt; 2</span><span>dlq=[J1]</span></div>
-      <figcaption>At runAt J1 goes back to PENDING, W3 claims it (token 9), and it fails again. Retries exhausted: FAILED, into the DLQ.</figcaption>
+      <figcaption>After the wait, J1 is ready again. Worker W3 takes it (ticket 9), and it fails again. No retries are left, so J1 is marked FAILED and parked in the DLQ.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="concurrency"><span class="n">06</span>The race and the fix</h2>
-  <p>The bug: a <dfn title="A worker that paused past its lease and does not know it lost the job">zombie worker</dfn> completes a job it no longer owns.</p>
+  <p>The bug is a <dfn title="A worker that paused past its lease and does not know it lost the job">zombie worker</dfn>. It completes a job it no longer owns.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker W1</th><th>Worker W2</th><th>J1</th></tr></thead><tbody>
     <tr><td>t1</td><td>claims J1</td><td></td><td>CLAIMED by W1</td></tr>
     <tr><td>t2</td><td>GC pause, lease expires</td><td></td><td>PENDING</td></tr>
     <tr><td>t3</td><td></td><td>claims J1, starts work</td><td>CLAIMED by W2</td></tr>
     <tr><td>t4</td><td><code>complete(J1)</code></td><td>still running</td><td class="bad">SUCCEEDED, W2's run orphaned</td></tr>
   </tbody></table></div>
-  <p>The fix: a <dfn title="A number that increases on every new lease; an older number is rejected">fencing token</dfn> per lease, checked under the lock.</p>
+  <p>The fix is a <dfn title="A number that increases on every new lease; an older number is rejected">fencing token</dfn> for each lease. The queue checks it while holding the lock.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker W1</th><th>Worker W2</th><th>J1</th></tr></thead><tbody>
     <tr><td>t1</td><td>claims J1, token 7</td><td></td><td>CLAIMED, token 7</td></tr>
     <tr><td>t2</td><td>GC pause, lease expires</td><td></td><td>PENDING</td></tr>
@@ -217,26 +227,26 @@
     <tr><td>t4</td><td><code>complete(J1, 7)</code> → stale</td><td>completes with token 8</td><td class="ok">SUCCEEDED once, by W2</td></tr>
   </tbody></table></div>
   <div class="callout warn"><b>Other traps</b><ul>
-    <li>Double claim: claim, state change and lease must be one locked step (Postgres: <code>FOR UPDATE SKIP LOCKED</code>).</li>
-    <li>At-least-once means a handler can run twice. Make handlers idempotent.</li>
-    <li>Lost wake-ups: <code>awaitNanos</code> in a loop, <code>signalAll</code> on every change.</li>
-    <li>Never swallow <code>InterruptedException</code>.</li>
+    <li>Double claim: taking the job, changing its status and creating the lease must be one locked step. In Postgres, use <code>FOR UPDATE SKIP LOCKED</code>.</li>
+    <li>"At least once" means a handler can run twice. Make handlers safe to repeat.</li>
+    <li>Lost wake-ups: call <code>awaitNanos</code> in a loop, and <code>signalAll</code> on every change.</li>
+    <li>Never silently catch and ignore <code>InterruptedException</code>.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: every concurrency and edge case</summary><ul>
-    <li><b>Double claim.</b> Prevented because claim, state change and lease creation happen under one lock. In Postgres the equivalent is <code>SELECT … FOR UPDATE SKIP LOCKED LIMIT 1</code> followed by an update in the same transaction.</li>
-    <li><b>Zombie worker.</b> A worker pauses (GC, network) past its lease, the job is re-leased, then the first worker calls <code>complete</code>. The token check rejects it. Without tokens, a stale completion would overwrite the new attempt.</li>
-    <li><b>Renew after expiry.</b> Same token check: once the lease has been reissued, renewal fails and the worker should abort.</li>
-    <li><b>Lost wake-ups.</b> <code>awaitNanos</code> in a loop that re-checks state, with <code>signalAll</code> on every change. The timeout is capped at the next due retry or lease expiry so promotions happen without a separate sweeper thread.</li>
-    <li><b>At-least-once means duplicates.</b> A handler can run twice (lease expired mid-run). Handlers must be idempotent: dedupe by job id, use idempotency keys on downstream calls (for example a payment provider), or make writes upserts.</li>
-    <li><b>Poison jobs.</b> Lease expiry counts as an attempt, so a job that kills its worker reaches the DLQ instead of looping.</li>
-    <li><b>Starvation.</b> Strict priority can starve priority 0. Fix with ageing (effective priority rises with wait time) or weighted fair selection across priorities.</li>
-    <li><b>Thundering herd on retry.</b> Pure exponential backoff makes failed jobs retry in synchronised waves; full jitter spreads them (AWS Architecture Blog).</li>
-    <li><b>Time.</b> Inject <code>Clock</code> for runAt and lease logic. In tests, a mutable clock plus a direct call that triggers promotion; never <code>Thread.sleep</code> to wait for a lease to expire.</li>
-    <li><b>Interrupts.</b> Never swallow <code>InterruptedException</code>; restore the flag and exit the loop.</li>
+    <li><b>Double claim.</b> This can't happen, because claiming, changing status and creating the lease all happen under one lock. In Postgres, the same idea is <code>SELECT … FOR UPDATE SKIP LOCKED LIMIT 1</code>, then an update in the same transaction. <code>SKIP LOCKED</code> makes each worker skip rows another worker has already locked.</li>
+    <li><b>Zombie worker.</b> A worker pauses past its lease, for example during garbage collection or a network stall. The job is leased to someone else. Then the first worker calls <code>complete</code>. The token check rejects it. Without tokens, the late completion would overwrite the new attempt.</li>
+    <li><b>Renew after expiry.</b> The same token check applies. Once the lease has gone to someone else, renewal fails, and the worker should stop.</li>
+    <li><b>Lost wake-ups.</b> Call <code>awaitNanos</code> in a loop that checks the state again, and call <code>signalAll</code> on every change. Cap the wait time at the next due retry or lease expiry. Then due jobs move to ready without a separate cleanup thread.</li>
+    <li><b>At-least-once means duplicates.</b> A handler can run twice, if its lease expired mid-run. Handlers must be idempotent. You can skip job ids you have already processed. You can pass idempotency keys to outside calls, such as a payment provider. Or you can make writes upserts (insert or update).</li>
+    <li><b>Poison jobs.</b> An expired lease counts as an attempt. So a job that kills its worker reaches the DLQ instead of looping forever.</li>
+    <li><b>Starvation.</b> Strict priority can stop priority 0 from ever running. Fix it with ageing, where a job's priority rises the longer it waits. Or pick across priorities with weights.</li>
+    <li><b>Thundering herd on retry.</b> With plain exponential backoff, jobs that failed together retry together, in waves. Full jitter spreads them out (AWS Architecture Blog).</li>
+    <li><b>Time.</b> Pass in a <code>Clock</code> for runAt and lease logic. In tests, use a clock you can move forward, plus a direct call that triggers promotion. Never use <code>Thread.sleep</code> to wait for a lease to expire.</li>
+    <li><b>Interrupts.</b> Never silently catch <code>InterruptedException</code>. Set the interrupt flag again and leave the loop.</li>
   </ul></details>
 
   <h2 id="code"><span class="n">07</span>Core code</h2>
-  <p>The heart of it: every token-bearing call goes through one fenced, locked check.</p>
+  <p>Here is the heart of it. Every call that carries a token goes through one locked token check.</p>
   <pre><code>    private void withLease(String jobId, long token, Consumer&lt;Job&gt; action) {
         lock.lock();
         try {
@@ -297,7 +307,7 @@ public final class Job {
 
 public record Lease(String jobId, long token, Instant expiresAt, String type, Object payload, int attempt) {}</code></pre></details>
   <details class="code"><summary>Show JobQueue (one lock, three indexes, lazy cleanup)</summary>
-    <p>All transitions happen under one <code>ReentrantLock</code>. Priority queues are cleaned lazily: an entry whose job is no longer in the expected state is skipped when polled, which makes cancel and lease renewal O(1).</p>
+    <p>Every status change happens under one <code>ReentrantLock</code>. The priority queues are cleaned lazily. When an entry is taken out, the queue checks whether its job is still in the expected status. If not, it skips the entry. This makes cancel and lease renewal O(1).</p>
     <pre><code>public final class JobQueue {
     private record LeaseEntry(Instant expiresAt, String jobId, long token) {}
 
@@ -451,7 +461,7 @@ public record Lease(String jobId, long token, Instant expiresAt, String type, Ob
         return ready.computeIfAbsent(type, t -&gt; new PriorityQueue&lt;&gt;(BY_PRIORITY));
     }
 }</code></pre>
-    <p>One lock is a deliberate simplification: every operation is O(log n) in memory, so a single lock handles hundreds of thousands of operations per second. If asked, stripe by job type.</p></details>
+    <p>Using one lock is a deliberate simplification. Every operation is O(log n) in memory. So one lock can handle hundreds of thousands of operations per second. If asked, use a separate lock per job type.</p></details>
   <details class="code"><summary>Show BackoffPolicy (full jitter)</summary>
     <pre><code>public interface BackoffPolicy { Duration delay(int attempt); }
 
@@ -536,7 +546,7 @@ public record ExponentialFullJitter(Duration base, Duration cap, RandomGenerator
 // On permanent failure (5 attempts): mark it FAILED and every transitive dependent SKIPPED.
 // cancel(id): mark CANCELLED and SKIP its transitive dependents; running tasks get Future.cancel(true).
 // history: append-only ConcurrentLinkedQueue&lt;TaskEvent(taskId, from, to, at, attempt)&gt;.</code></pre>
-    <p>If tasks are all known up front, run Kahn's algorithm once: if the number of tasks it can order is less than the total, there is a cycle, and the unvisited nodes are on it or behind it. The Media.net report lists cycle protection as "last thing to check"; doing it at <code>add</code> time means the runner never sees a cycle.</p></details>
+    <p>If all tasks are known up front, run Kahn's algorithm once. It puts tasks in dependency order. If it orders fewer tasks than the total, there is a loop. The tasks it could not reach are on the loop or behind it. The Media.net report lists loop protection as the "last thing to check". Checking at <code>add</code> time means the runner never sees a loop.</p></details>
   <details class="code"><summary>Show SimpleScheduler (Uber / GS / Rubrik variant: ScheduledExecutorService from scratch)</summary>
     <pre><code>final class ScheduledTask implements Delayed, Runnable {
     private static final AtomicLong SEQ = new AtomicLong();
@@ -596,117 +606,117 @@ public final class SimpleScheduler {
 
     public void shutdownNow() { shutdown = true; workers.forEach(Thread::interrupt); queue.clear(); }
 }</code></pre>
-    <p>Rubrik also asks for a thread pool from a bounded blocking queue with <code>submit</code>, <code>execute</code>, <code>shutdown</code> and <code>shutdownNow</code>. A candidate got "Lean Hire" partly over <code>shutdown()</code> semantics and exception handling. Know the difference: <code>shutdown</code> stops accepting and drains the queue; <code>shutdownNow</code> interrupts workers and returns the unstarted tasks; workers must restore the interrupt flag and exit, and task exceptions must not kill the worker thread.</p></details>
+    <p>Rubrik also asks for a thread pool built on a bounded blocking queue. It needs <code>submit</code>, <code>execute</code>, <code>shutdown</code> and <code>shutdownNow</code>. One candidate got "Lean Hire", partly because of how <code>shutdown()</code> and exceptions were handled. Know the difference. <code>shutdown</code> stops taking new tasks and finishes the queued ones. <code>shutdownNow</code> interrupts the workers and returns the tasks that never started. Workers must set the interrupt flag again and exit. An exception inside a task must not kill the worker thread.</p></details>
 
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <h3>Survive restarts, run on many machines</h3>
   <div class="vs">
-    <div class="pick"><h4>Postgres <code>SKIP LOCKED</code> <span class="tag">usual pick</span></h4><ul><li class="pro">Claim = <code>FOR UPDATE SKIP LOCKED</code> + update</li><li class="pro">Index <code>(state, type, priority DESC, run_at)</code></li><li class="con">Needs a reaper for expired leases</li></ul></div>
-    <div><h4>SQS</h4><ul><li class="pro">Visibility timeout = lease; receipt handle = token</li><li class="pro">Redrive policy = DLQ</li><li class="con">Lease max 12 hours</li></ul><p class="when">Kafka is a poor fit for per-message backoff.</p></div>
+    <div class="pick"><h4>Postgres <code>SKIP LOCKED</code> <span class="tag">usual pick</span></h4><ul><li class="pro">To claim, lock one free row with <code>FOR UPDATE SKIP LOCKED</code>, then update it.</li><li class="pro">Index on <code>(state, type, priority DESC, run_at)</code> so finding the next job is fast.</li><li class="con">You need a cleanup job for expired leases.</li></ul></div>
+    <div><h4>SQS</h4><ul><li class="pro">The visibility timeout is the lease. The receipt handle is the token.</li><li class="pro">A redrive policy gives you the DLQ.</li><li class="con">A lease can last at most 12 hours.</li></ul><p class="when">Kafka fits badly when each message needs its own retry wait.</p></div>
   </div>
   <div class="grid">
-    <div class="card"><h4>DLQ redrive</h4><p><code>FAILED → PENDING</code> is already allowed; reset attempts.</p></div>
-    <div class="card"><h4>Queue health</h4><p>Counts by state, oldest pending age, stuck leases, DLQ size.</p></div>
-    <div class="card"><h4>Dedupe</h4><p><code>dedupeKey</code> → existing job id.</p></div>
-    <div class="card"><h4>Per-type limits</h4><p>In-flight counter or token bucket in <code>pollBest</code>.</p></div>
-    <div class="card"><h4>Recurring (Walmart)</h4><p>Schedule the next instance; none while one is CLAIMED.</p></div>
-    <div class="card"><h4>Priority vs delay queue</h4><p>Use both: delayed by time, ready by priority.</p></div>
+    <div class="card"><h4>DLQ redrive</h4><p>Moving <code>FAILED → PENDING</code> is already allowed. Just reset the attempts.</p></div>
+    <div class="card"><h4>Queue health</h4><p>Count jobs by status. Track the oldest waiting job, stuck leases and the DLQ size.</p></div>
+    <div class="card"><h4>Dedupe</h4><p>Map each <code>dedupeKey</code> to the existing job id, and return that id.</p></div>
+    <div class="card"><h4>Per-type limits</h4><p>Check a running-jobs counter or a token bucket inside <code>pollBest</code>.</p></div>
+    <div class="card"><h4>Recurring (Walmart)</h4><p>Schedule the next run. Don't schedule one while the current run is CLAIMED.</p></div>
+    <div class="card"><h4>Priority vs delay queue</h4><p>Use both. Waiting jobs are sorted by time. Ready jobs are sorted by priority.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>DLQ inspection and redrive</summary><p><code>FAILED → PENDING</code> is already an allowed transition. <code>redrive(jobId)</code> resets attempts and re-queues. Add <code>listDlq(type, limit)</code>.</p></details>
-  <details class="qa"><summary>Observability: queue health</summary><p><code>stats()</code> under the lock: counts by state and type, oldest pending age (head of each ready queue), number of leases expired in the last minute (stuck jobs), DLQ size, p95 time from submit to claim. Expose as Micrometer gauges in Spring.</p></details>
-  <details class="qa"><summary>Unique / deduplicated jobs</summary><p>Optional <code>dedupeKey</code> in the spec; a map from key to job id for non-terminal jobs; submit returns the existing id.</p></details>
-  <details class="qa"><summary>Rate limit per job type, or max concurrency per type</summary><p>Per-type in-flight counter checked in <code>pollBest</code>: skip a type at its limit. Rate limit: a token bucket per type consulted before claiming.</p></details>
-  <details class="qa"><summary>Recurring and cron jobs (Walmart)</summary><p>A schedule definition produces the next job instance on completion (fixed delay) or at each tick (fixed rate). Prevent overlap by not scheduling the next instance while one is CLAIMED.</p></details>
-  <details class="qa"><summary>Why PriorityBlockingQueue and not DelayQueue? (Walmart)</summary><p>Priority ordering and time ordering are different keys. <code>PriorityBlockingQueue</code> orders ready jobs by priority; a <code>DelayQueue</code> (or the delayed heap above) holds not-yet-due jobs by time. Use both: move from delayed to ready when due.</p></details>
-  <details class="qa"><summary>Make it survive restarts / run on many machines</summary><p>Persist jobs in Postgres: <code>jobs(id, type, state, priority, run_at, attempts, lease_token, lease_expires_at, payload jsonb)</code> with an index on <code>(state, type, priority DESC, run_at)</code>. Claim with <code>FOR UPDATE SKIP LOCKED</code>; a reaper updates expired leases. Or use SQS: visibility timeout is the lease (max 12 hours, extendable), the receipt handle is the token, a redrive policy is the DLQ. Kafka is a poor fit for per-message retry with backoff without retry topics.</p></details>
+  <details class="qa"><summary>DLQ inspection and redrive</summary><p>Moving <code>FAILED → PENDING</code> is already allowed. <code>redrive(jobId)</code> resets the attempts and puts the job back in the queue. Add <code>listDlq(type, limit)</code> to look at what failed.</p></details>
+  <details class="qa"><summary>Observability: queue health</summary><p><code>stats()</code> runs under the lock. It reports counts by status and type, and the age of the oldest pending job (the head of each ready queue). It counts leases that expired in the last minute (stuck jobs) and the DLQ size. It also reports p95 time from submit to claim, meaning 95 out of 100 jobs were claimed faster than this. In Spring, expose these as Micrometer gauges.</p></details>
+  <details class="qa"><summary>Unique / deduplicated jobs</summary><p>Add an optional <code>dedupeKey</code> to the spec. Keep a map from key to job id for jobs that are not finished. If the key exists, submit returns the existing id.</p></details>
+  <details class="qa"><summary>Rate limit per job type, or max concurrency per type</summary><p>Keep a running-jobs counter per type, and check it in <code>pollBest</code>. Skip any type that is at its limit. For a rate limit, check a token bucket per type before claiming.</p></details>
+  <details class="qa"><summary>Recurring and cron jobs (Walmart)</summary><p>A schedule definition creates the next job. With fixed delay, it does so when the current run finishes. With fixed rate, it does so at each tick. To stop runs overlapping, don't schedule the next one while the current one is CLAIMED.</p></details>
+  <details class="qa"><summary>Why PriorityBlockingQueue and not DelayQueue? (Walmart)</summary><p>Priority order and time order are different sort keys. <code>PriorityBlockingQueue</code> sorts ready jobs by priority. A <code>DelayQueue</code>, or the delayed heap above, holds jobs that are not due yet, sorted by time. Use both. Move a job from delayed to ready when it becomes due.</p></details>
+  <details class="qa"><summary>Make it survive restarts / run on many machines</summary><p>Save jobs in Postgres: <code>jobs(id, type, state, priority, run_at, attempts, lease_token, lease_expires_at, payload jsonb)</code>. Add an index on <code>(state, type, priority DESC, run_at)</code>. Claim with <code>FOR UPDATE SKIP LOCKED</code>. A cleanup job (a "reaper") resets expired leases. Or use SQS. Its visibility timeout is the lease (at most 12 hours, and it can be extended). The receipt handle is the token. A redrive policy is the DLQ. Kafka fits badly for per-message retry with backoff, unless you add separate retry topics.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Ordering</h4><p>Priority then FIFO; only registered types; leased jobs invisible.</p></div>
-    <div class="key"><h4>Leases and failure</h4><p>Mutable clock: expiry re-queues, renew extends, stale token rejected, backoff, DLQ, poison job.</p></div>
-    <div class="key"><h4>The proof</h4><p>1,000 jobs, 16 virtual-thread workers: every job SUCCEEDED, handler ran once each.</p></div>
+    <div class="key"><h4>Ordering</h4><p>Priority first, then first in, first out. Only registered types. Leased jobs are hidden from others.</p></div>
+    <div class="key"><h4>Leases and failure</h4><p>Use a clock you can move. Test that expiry re-queues, renew extends, old tokens are refused, and backoff, DLQ and poison jobs work.</p></div>
+    <div class="key"><h4>The proof</h4><p>1,000 jobs and 16 workers on virtual threads. Every job SUCCEEDED, and each handler ran exactly once.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full test list</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>claim_returnsHighestPriorityThenFifo</code></td><td>Priorities 3, 9, 9 submitted in order: claims are 9 (first), 9 (second), 3.</td></tr>
-    <tr><td><code>claim_onlyReturnsRegisteredTypes</code></td><td>Worker for <code>send_email</code> never gets <code>resize_image</code>.</td></tr>
-    <tr><td><code>leasedJob_isInvisibleToOtherWorkers</code></td><td>Second claim returns empty while the lease is live.</td></tr>
-    <tr><td><code>expiredLease_returnsJobToPending</code></td><td>Advance clock past lease: another worker claims it, attempt = 2.</td></tr>
-    <tr><td><code>renew_extendsLease</code></td><td>Renew at 2/3 of lease, advance past original expiry: still CLAIMED.</td></tr>
-    <tr><td><code>staleWorker_cannotCompleteReissuedJob</code></td><td>Old token's <code>complete</code> throws <code>StaleLeaseException</code>; state unchanged.</td></tr>
-    <tr><td><code>fail_schedulesRetryWithBackoff</code></td><td>Seeded random: <code>runAt</code> equals expected; job not claimable before it.</td></tr>
-    <tr><td><code>fail_afterMaxRetries_movesToDlq</code></td><td>maxRetries=3: fourth failure → FAILED, in DLQ, history has 4 attempts.</td></tr>
-    <tr><td><code>poisonJob_reachesDlqViaLeaseExpiry</code></td><td>Never completed, lease expires repeatedly: ends in DLQ.</td></tr>
-    <tr><td><code>cancel_pendingJobIsNeverClaimed</code></td><td>Cancelled job skipped lazily; claim returns the next one.</td></tr>
-    <tr><td><code>illegalTransition_throws</code></td><td>SUCCEEDED → PENDING rejected.</td></tr>
-    <tr><td><code>concurrentWorkers_eachJobSucceedsExactlyOnce</code></td><td>1,000 jobs, 16 workers on virtual threads, handler increments a per-job counter: all counters == 1, all SUCCEEDED.</td></tr>
-    <tr><td><code>taskGraph_rejectsCycle</code> / <code>runsInTopologicalOrder</code> / <code>skipsDependentsOfFailedTask</code></td><td>DAG variant correctness.</td></tr>
-    <tr><td><code>fixedRate_vs_fixedDelay_nextTrigger</code></td><td>Scheduler variant: rate uses previous trigger + period; delay uses finish time + delay.</td></tr>
+    <tr><td><code>claim_returnsHighestPriorityThenFifo</code></td><td>Priorities 3, 9, 9 submitted in that order. Claims come out as 9 (first), 9 (second), 3.</td></tr>
+    <tr><td><code>claim_onlyReturnsRegisteredTypes</code></td><td>A worker for <code>send_email</code> never gets <code>resize_image</code>.</td></tr>
+    <tr><td><code>leasedJob_isInvisibleToOtherWorkers</code></td><td>A second claim returns nothing while the lease is live.</td></tr>
+    <tr><td><code>expiredLease_returnsJobToPending</code></td><td>Move the clock past the lease. Another worker claims it, with attempt = 2.</td></tr>
+    <tr><td><code>renew_extendsLease</code></td><td>Renew at 2/3 of the lease, then move past the original expiry. Still CLAIMED.</td></tr>
+    <tr><td><code>staleWorker_cannotCompleteReissuedJob</code></td><td><code>complete</code> with the old token throws <code>StaleLeaseException</code>. The status does not change.</td></tr>
+    <tr><td><code>fail_schedulesRetryWithBackoff</code></td><td>With a seeded random, <code>runAt</code> equals the expected time. The job can't be claimed before then.</td></tr>
+    <tr><td><code>fail_afterMaxRetries_movesToDlq</code></td><td>maxRetries=3. The fourth failure gives FAILED, the job is in the DLQ, and history shows 4 attempts.</td></tr>
+    <tr><td><code>poisonJob_reachesDlqViaLeaseExpiry</code></td><td>Never completed, the lease expires again and again. It ends in the DLQ.</td></tr>
+    <tr><td><code>cancel_pendingJobIsNeverClaimed</code></td><td>The cancelled job is skipped when reached. Claim returns the next one.</td></tr>
+    <tr><td><code>illegalTransition_throws</code></td><td>SUCCEEDED → PENDING is refused.</td></tr>
+    <tr><td><code>concurrentWorkers_eachJobSucceedsExactlyOnce</code></td><td>1,000 jobs, 16 workers on virtual threads. The handler adds 1 to a per-job counter. Every counter is 1, and every job is SUCCEEDED.</td></tr>
+    <tr><td><code>taskGraph_rejectsCycle</code> / <code>runsInTopologicalOrder</code> / <code>skipsDependentsOfFailedTask</code></td><td>The dependency (DAG) variant works correctly.</td></tr>
+    <tr><td><code>fixedRate_vs_fixedDelay_nextTrigger</code></td><td>Scheduler variant. Fixed rate uses previous start + period. Fixed delay uses finish time + delay.</td></tr>
   </table></div></details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li>Code that does not run at the end (Media.net). Get a thin path green first.</li>
-    <li>Agentic rounds: no plan, no commits, "done" without concurrency tests (Razorpay).</li>
-    <li>No lease token, so a slow worker completes a re-run job.</li>
-    <li>Busy-wait with <code>Thread.sleep(10)</code>.</li>
-    <li><code>shutdown()</code> that does not stop workers (Rubrik).</li>
-    <li>Claiming exactly-once delivery.</li>
+    <li>Code that does not run at the end (Media.net). Get a thin path working first.</li>
+    <li>In AI-assisted rounds: no plan, no commits, and "done" without concurrency tests (Razorpay).</li>
+    <li>No lease token, so a slow worker completes a job someone else is re-running.</li>
+    <li>Waiting in a busy loop with <code>Thread.sleep(10)</code>.</li>
+    <li>A <code>shutdown()</code> that does not stop the workers (Rubrik).</li>
+    <li>Claiming each job runs exactly once.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: the rejection notes in full</summary><ul>
-    <li>Code that does not run at the end (Media.net, Nov 2025). Get a thin end-to-end path green first, then add features.</li>
-    <li>In agentic rounds: letting the agent write everything without a plan, no incremental commits, or "done" without tests that exercise concurrency (Razorpay's stated rules).</li>
+    <li>Code that does not run at the end (Media.net, Nov 2025). Get a thin end-to-end path passing first. Then add features.</li>
+    <li>In AI-assisted rounds: letting the agent write everything without a plan. No small commits. Or "done" without tests that exercise concurrency. These are Razorpay's stated rules.</li>
     <li>No lease token, so a slow worker completes a job someone else is re-running.</li>
-    <li>Busy-wait polling with <code>Thread.sleep(10)</code> instead of a condition or blocking queue.</li>
-    <li>Catching <code>InterruptedException</code> and continuing; <code>shutdown()</code> that does not actually stop workers (Rubrik feedback).</li>
-    <li>Using <code>PriorityQueue</code> without a sequence tie-breaker and claiming FIFO within a priority.</li>
-    <li>Claiming exactly-once delivery.</li>
+    <li>Polling in a busy loop with <code>Thread.sleep(10)</code>, instead of a condition or a blocking queue.</li>
+    <li>Catching <code>InterruptedException</code> and carrying on. A <code>shutdown()</code> that does not actually stop the workers (Rubrik feedback).</li>
+    <li>Using <code>PriorityQueue</code> with no sequence number to break ties, while claiming first in, first out within a priority.</li>
+    <li>Claiming each job is delivered exactly once.</li>
   </ul></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–10 min</span><span>Clarify guarantees, leases, priority, backoff. PLAN.md with the state diagram and test list; walk it through.</span></div>
-    <div class="step"><span class="t">10–25 min</span><span><code>JobState</code> transitions, <code>JobSpec</code>, <code>Job</code>. Submit + claim by priority. Tests green. Commit.</span></div>
-    <div class="step"><span class="t">25–45 min</span><span>Leases with tokens, complete, renew, expiry. Mutable-clock tests. Commit.</span></div>
-    <div class="step"><span class="t">45–60 min</span><span>Fail, jittered backoff, retry, DLQ, cancel. Tests. Commit.</span></div>
-    <div class="step"><span class="t">60–70 min</span><span>Worker loop with heartbeat; 16 workers × 1,000 jobs test.</span></div>
-    <div class="step"><span class="t">70–85 min</span><span>The extension, behind the existing seams.</span></div>
-    <div class="step"><span class="t">85–90 min</span><span>Guarantees, known limits, the SKIP LOCKED / SQS version.</span></div>
+    <div class="step"><span class="t">0–10 min</span><span>Ask about guarantees, leases, priority and backoff. Write PLAN.md with the status diagram and test list. Walk the interviewer through it.</span></div>
+    <div class="step"><span class="t">10–25 min</span><span>Write <code>JobState</code> moves, <code>JobSpec</code> and <code>Job</code>. Add submit and claim by priority. Tests pass. Commit.</span></div>
+    <div class="step"><span class="t">25–45 min</span><span>Add leases with tokens, complete, renew and expiry. Write tests with a movable clock. Commit.</span></div>
+    <div class="step"><span class="t">45–60 min</span><span>Add fail, backoff with jitter, retry, DLQ and cancel. Tests. Commit.</span></div>
+    <div class="step"><span class="t">60–70 min</span><span>Write the worker loop with lease renewal. Run the 16 workers × 1,000 jobs test.</span></div>
+    <div class="step"><span class="t">70–85 min</span><span>Build the new feature using the existing interfaces.</span></div>
+    <div class="step"><span class="t">85–90 min</span><span>Explain the guarantees, known limits, and the SKIP LOCKED or SQS version.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="1"><p class="q">W1's lease expired during a GC pause and W2 now holds the job. W1 calls <code>complete</code>. What should happen?</p>
+  <div class="quiz" data-answer="1"><p class="q">W1's lease ran out during a long pause, and W2 now holds the job. W1 calls <code>complete</code>. What should happen?</p>
     <div class="opts"><button class="opt" type="button">Job becomes SUCCEEDED; first one wins</button><button class="opt" type="button">Rejected: W1's token is older than the current lease's</button><button class="opt" type="button">Both completions are recorded</button></div>
-    <p class="why">The fencing token identifies the live lease. Any older token is stale.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">A job crashes every worker it touches. Why count lease expiry as an attempt?</p>
+    <p class="why">The token says which lease is the current one. W1's token is older than W2's, so the queue refuses W1's call.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">A job crashes every worker that runs it. Why count an expired lease as an attempt?</p>
     <div class="opts"><button class="opt" type="button">To keep stats accurate</button><button class="opt" type="button">To speed up retries</button><button class="opt" type="button">Otherwise the poison job loops forever instead of reaching the DLQ</button></div>
-    <p class="why">The worker never calls <code>fail</code>, so expiry is the only signal that an attempt was used.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">500 jobs fail together when a downstream dies. Why add full jitter to backoff?</p>
+    <p class="why">The crashed worker never calls <code>fail</code>. So the expired lease is the only sign that an attempt was used up.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">500 jobs fail at once when a service they call goes down. Why add full jitter to the retry wait?</p>
     <div class="opts"><button class="opt" type="button">So retries spread out instead of hitting the recovering service in one wave</button><button class="opt" type="button">To make retries faster</button><button class="opt" type="button">To get exactly-once delivery</button></div>
-    <p class="why">Same attempt number means same delay without jitter: a thundering herd.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Why is your system at-least-once, and what follows?</p>
+    <p class="why">Without jitter, the same attempt number gives the same wait. All 500 jobs would retry at the same moment, which is called a thundering herd.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why does your system run each job at least once, and what follows from that?</p>
     <div class="opts"><button class="opt" type="button">It is exactly-once thanks to tokens</button><button class="opt" type="button">A lease can expire mid-run, so a handler may run twice; handlers must be idempotent</button><button class="opt" type="button">It is at-most-once</button></div>
-    <p class="why">Tokens stop stale state changes, not the side effects a stale run already made.</p></div>
+    <p class="why">Tokens stop an old worker from changing the job's status. They can't undo what the old run already did, like an email it already sent.</p></div>
 
   <h2 id="viva"><span class="n">13</span>Interview questions</h2>
-  <details class="qa"><summary>Why lazy deletion in the heaps?</summary><p><code>PriorityQueue.remove(Object)</code> is O(n). Cancel and renew happen often; skipping stale entries on poll keeps them O(1) and claim amortised O(log n). The cost is some garbage entries, bounded by the number of renewals.</p></details>
+  <details class="qa"><summary>Why lazy deletion in the heaps?</summary><p><code>PriorityQueue.remove(Object)</code> is O(n), a full scan. Cancel and renew happen often. Skipping outdated entries when you take them out keeps those calls O(1). Claim stays O(log n) on average. The cost is some leftover entries, at most one per renewal.</p></details>
   <details class="qa"><summary>Why does lease expiry count as an attempt?</summary><p>Otherwise a job that crashes or hangs every worker retries forever. Counting it sends poison jobs to the DLQ after maxRetries.</p></details>
-  <details class="qa"><summary>Why full jitter instead of equal jitter or none?</summary><p>Without jitter, jobs that failed together retry together and hit the recovering dependency at the same instant. AWS's simulation found no-jitter backoff the clear loser; full jitter and decorrelated jitter both did well, with full jitter doing the least client work.</p></details>
-  <details class="qa"><summary>What would you change for 10,000 job types?</summary><p><code>pollBest</code> scans the worker's types; with many types per worker, keep a single heap keyed by (priority, seq) per worker group, or a global heap with type filtering, and stripe locks by type group.</p></details>
-  <details class="qa"><summary>How do you shut down gracefully?</summary><p>Stop claiming, wait up to a deadline for in-flight handlers, then interrupt them; their leases expire and the jobs are re-run by the next process. That is safe because handlers are idempotent.</p></details>
+  <details class="qa"><summary>Why full jitter instead of equal jitter or none?</summary><p>Without jitter, jobs that failed together retry together. They hit the recovering service at the same instant. AWS ran a simulation. Backoff with no jitter was the clear loser. Full jitter and decorrelated jitter both did well, and full jitter did the least client work.</p></details>
+  <details class="qa"><summary>What would you change for 10,000 job types?</summary><p><code>pollBest</code> looks through each of the worker's types. With many types per worker, that gets slow. Keep one heap per worker group, keyed by (priority, seq). Or use one global heap that filters by type. Then split locks by groups of types.</p></details>
+  <details class="qa"><summary>How do you shut down gracefully?</summary><p>Stop claiming new jobs. Wait until a deadline for running handlers to finish, then interrupt them. Their leases expire, and the next process runs those jobs again. That is safe because handlers are idempotent.</p></details>
 
   <div class="cheat"><b>Cheat sheet</b><ul>
     <li>PENDING → CLAIMED → SUCCEEDED | RETRY_SCHEDULED → PENDING | FAILED (DLQ).</li>
-    <li>One <code>ReentrantLock</code> + <code>Condition</code>; heaps: ready per type, delayed, leases.</li>
-    <li>Ready order: priority desc, then <code>seq</code> for FIFO.</li>
-    <li>Lease + token; every renew/complete/fail checks the token.</li>
-    <li>Lease expiry counts as an attempt (poison jobs).</li>
+    <li>One <code>ReentrantLock</code> with a <code>Condition</code>. Heaps: ready per type, delayed, and leases.</li>
+    <li>Ready order: highest priority first, then <code>seq</code> for first in, first out.</li>
+    <li>Lease plus token. Every renew, complete and fail checks the token.</li>
+    <li>An expired lease counts as an attempt, so poison jobs reach the DLQ.</li>
     <li>Backoff: <code>random(0, min(cap, base × 2^n))</code>.</li>
-    <li>At-least-once → idempotent handlers.</li>
-    <li>At scale: Postgres <code>SKIP LOCKED</code> or SQS visibility timeout.</li>
+    <li>Jobs run at least once, so handlers must be safe to repeat.</li>
+    <li>At scale: Postgres <code>SKIP LOCKED</code>, or the SQS visibility timeout.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>
@@ -726,3 +736,4 @@ public final class SimpleScheduler {
 <script src="guide.js" defer></script>
 </body>
 </html>
+

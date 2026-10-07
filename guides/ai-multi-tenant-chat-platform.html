@@ -12,21 +12,32 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">AI system design</a></div>
   <h1>Multi-tenant ChatGPT-style platform</h1>
-  <p class="lede">Design a shared, streaming chat product for thousands of organisations that survives dropped connections, noisy tenants and provider outages.</p>
+  <p class="lede">Design one shared chat product, like ChatGPT, used by thousands of companies at once. Replies appear word by word. The design must keep working when a phone loses signal, when one company floods the system, and when an AI provider goes down.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
-    <span class="fact"><b>Seen:</b> Tekion, Amazon, Uber, Microsoft in 2026; circuit breaker as machine coding</span>
+    <span class="fact"><b>Seen:</b> Tekion, Amazon, Uber, Microsoft in 2026. A circuit breaker was also asked as a machine-coding round.</span>
   </div>
   <div class="chips"><span class="chip hot">Tekion</span><span class="chip hot">Amazon</span><span class="chip">Uber</span><span class="chip">Microsoft</span><span class="chip">Emergent Labs</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Decouple generation from the connection: worker → Redis Streams → SSE.</li>
-    <li>Messages form a tree; edits create branches.</li>
-    <li>Tokens are the unit of capacity and money: limit and bill by them.</li>
-    <li>Provider failure is normal: route by hash bucket behind a breaker.</li>
+    <li>Keep writing the reply even if the browser disconnects. A background worker writes words into Redis, and the browser reads them from there.</li>
+    <li>Messages form a tree. Editing an old message starts a new branch instead of overwriting history.</li>
+    <li>Tokens (small chunks of text) decide both load and cost. So you limit and bill by tokens.</li>
+    <li>AI providers fail often. A circuit breaker moves traffic to a backup provider when errors rise.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A dabbawala network. You hand your order to the counter (send) and get a token number. The kitchen cooks whether or not you wait at the window, and you can collect from any counter by showing your token number (stream with <code>Last-Event-ID</code>).</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a food court with token numbers. You place your order at the counter and get a token number. The kitchen keeps cooking whether or not you stand at the window. You can collect your food from any counter by showing your token number. In this design, the token number is the <code>Last-Event-ID</code>, and collecting is reconnecting to the stream.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Tenant</dt><dd>One customer company using the shared platform. Each tenant's data must stay invisible to every other tenant.</dd>
+    <dt>Token</dt><dd>A small piece of text, roughly three-quarters of a word. AI providers count, limit and charge by tokens.</dd>
+    <dt>LLM</dt><dd>Large language model. The AI model, such as Claude or GPT, that writes the replies.</dd>
+    <dt>SSE</dt><dd>Server-Sent Events. A plain HTTP connection where the server keeps pushing small messages to the browser.</dd>
+    <dt>Redis Streams</dt><dd>An in-memory, append-only list in Redis. Readers can ask for "everything after item 41".</dd>
+    <dt>Circuit breaker</dt><dd>A switch that stops sending traffic to a failing service, so users fail fast instead of waiting.</dd>
+    <dt>Prompt caching</dt><dd>The provider remembers the start of a prompt it saw recently. Sending that same start again is about ten times cheaper.</dd>
+    <dt>TTFT</dt><dd>Time to first token. How long the user waits before the first word of the reply appears.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -47,58 +58,59 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Streaming done right</h4><p>SSE vs WebSocket, disconnects, resume, "stop generating".</p></div>
-    <div class="key"><h4>Conversation model</h4><p>Edits branch; context is root → current leaf; history trimmed or summarised.</p></div>
-    <div class="key"><h4>Isolation and fairness</h4><p>Tenant from the JWT, RLS, per-tenant keys, token-based limits.</p></div>
-    <div class="key"><h4>Cost and reliability</h4><p>Cost per turn, caching layers, model tiering, multi-provider breaker.</p></div>
+    <div class="key"><h4>Streaming done right</h4><p>Can you choose between SSE and WebSocket? Can you handle disconnects, resuming the reply, and a "stop generating" button?</p></div>
+    <div class="key"><h4>Conversation model</h4><p>Edits create branches. The model sees the path from the first message to the latest one. Long history gets trimmed or summarised.</p></div>
+    <div class="key"><h4>Isolation and fairness</h4><p>The tenant comes from the login token (JWT). Use row-level security, a separate encryption key per tenant, and limits based on tokens.</p></div>
+    <div class="key"><h4>Cost and reliability</h4><p>Know the cost of one question and answer. Use caching and cheaper models where possible. Fail over between providers with a circuit breaker.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the Tekion, Microsoft and Emergent Labs prompts</summary>
-  <p>Tekion's Staff (AI) round, Sep 2026, gave the full prompt: users converse with an AI assistant, replies stream token by token, conversations are saved, users search their history, many tenants each with isolated data, and users can edit messages. Microsoft's SDE-2 AI-team loop split the same space into an LLD on caching to cut AI cost plus LLM observability, and an HLD to design an AI application and then evaluate the design. Emergent Labs turned provider failover into a machine-coding problem with exact thresholds.</p>
+  <p>Tekion asked this in its Staff (AI) round in Sep 2026. The full prompt had six parts. Users chat with an AI assistant, and replies stream word by word. Conversations are saved, and users can search their history. Many tenants share the system, each with isolated data. Users can also edit their messages.</p>
+  <p>Microsoft's SDE-2 loop for an AI team split the same topic into two rounds. The LLD (low-level design) round covered caching to cut AI cost, plus monitoring of LLM calls. The HLD (high-level design) round asked you to design an AI application and then evaluate your own design. Emergent Labs turned provider failover into a machine-coding problem with exact error thresholds.</p>
   </details>
 
   <h2 id="scope"><span class="n">02</span>Clarify, scope and numbers</h2>
   <ul>
-    <li><b>Tenants:</b> B2B orgs; own system prompts, models or keys?</li>
-    <li><b>Edits:</b> regenerate from that point and keep the old branch?</li>
-    <li><b>Search, retention, providers:</b> own chats only? region pinning? failover allowed for every tenant?</li>
+    <li><b>Tenants:</b> Are they businesses? Can each one bring its own system prompt, model or API key?</li>
+    <li><b>Edits:</b> Does editing regenerate the reply from that point? Do we keep the old branch?</li>
+    <li><b>Search, retention, providers:</b> Do users search only their own chats? Must data stay in one country? Is switching providers allowed for every tenant?</li>
   </ul>
-  <div class="stats"><div class="stat"><b>2,000</b><span>tenants</span></div><div class="stat"><b>1M</b><span>DAU × 15 messages</span></div><div class="stat"><b>~600/s</b><span>peak sends</span></div><div class="stat"><b>~7,200</b><span>open SSE streams</span></div><div class="stat"><b>16 TB/yr</b><span>messages</span></div><div class="stat"><b>~$0.011</b><span>per turn with prompt caching ($360k → $166k/day)</span></div></div>
-  <p>Storage and QPS are ordinary. The system is bound by <b>LLM tokens, provider rate limits and open connections</b>. Re-sent history dominates input cost.</p>
+  <div class="stats"><div class="stat"><b>2,000</b><span>tenants (customer companies)</span></div><div class="stat"><b>1M</b><span>daily users, 15 messages each</span></div><div class="stat"><b>~600/s</b><span>messages sent per second at the busiest time</span></div><div class="stat"><b>~7,200</b><span>replies streaming at the same moment</span></div><div class="stat"><b>16 TB/yr</b><span>of stored messages</span></div><div class="stat"><b>~$0.011</b><span>per question and answer with prompt caching. That cuts $360k to $166k a day.</span></div></div>
+  <p>Storage and request rates are ordinary for a backend. The real limits are <b>LLM tokens, provider rate limits and the number of open connections</b>. Most of the input cost comes from re-sending the chat history every turn.</p>
   <details class="deep"><summary>Go deeper: full clarifying list, requirements and capacity table</summary>
   <ul>
-    <li><b>Who are tenants?</b> B2B organisations whose employees chat (like an enterprise ChatGPT). Do tenants bring their own system prompts, models or API keys?</li>
-    <li><b>Search scope?</b> A user searches only their own conversations, or also shared ones? Keyword or semantic?</li>
-    <li><b>Edit semantics?</b> Editing an earlier message regenerates from that point. Keep the old branch (ChatGPT does) or discard?</li>
-    <li><b>Attachments and tools?</b> Files, web search, RAG over tenant docs? (Scope out, note the hook.)</li>
-    <li><b>Retention and residency?</b> Per-tenant retention policy, region pinning, DPDP erasure.</li>
-    <li><b>Providers?</b> One provider or several (Anthropic, OpenAI, a self-hosted model)? Failover allowed across providers for every tenant?</li>
+    <li><b>Who are tenants?</b> Businesses whose employees chat, like an enterprise ChatGPT. Do tenants bring their own system prompts, models or API keys?</li>
+    <li><b>Search scope?</b> Does a user search only their own chats, or shared ones too? Is it keyword search or meaning-based (semantic) search?</li>
+    <li><b>Edit behaviour?</b> Editing an earlier message regenerates the reply from that point. Do we keep the old branch, as ChatGPT does, or throw it away?</li>
+    <li><b>Attachments and tools?</b> Files, web search, or RAG over tenant documents? RAG (retrieval-augmented generation) means looking up documents and adding them to the prompt. Keep these out of scope, but mention where they would plug in.</li>
+    <li><b>Retention and residency?</b> Each tenant may have its own rule for how long data is kept. Some need data pinned to one region. India's DPDP Act (Digital Personal Data Protection) lets users ask for erasure.</li>
+    <li><b>Providers?</b> One AI provider or several, such as Anthropic, OpenAI or a self-hosted model? Is switching between providers allowed for every tenant?</li>
   </ul>
   <div class="grid">
-    <div class="card"><h4>Functional</h4><ul><li>Create conversation, send message, stream reply</li><li>Stop, regenerate, edit (branching)</li><li>List conversations, full-text search history</li><li>Per-tenant config: models, system prompt, limits</li><li>Usage and cost reports per tenant</li></ul></div>
-    <div class="card"><h4>Non-functional</h4><ul><li>2,000 tenants, 1M DAU, 15 messages/user/day</li><li>Time to first token p95 &lt; 1.5 s (plus provider)</li><li>No lost messages; reply survives a dropped connection</li><li>99.95% for send/stream; search can lag a few seconds</li><li>Zero cross-tenant reads</li></ul></div>
-    <div class="card"><h4>Out of scope</h4><ul><li>Training or hosting frontier models</li><li>Voice and image generation</li><li>Real-time multi-user shared chats</li></ul></div>
+    <div class="card"><h4>Functional</h4><ul><li>Create a conversation, send a message, stream the reply</li><li>Stop, regenerate, and edit (which creates a branch)</li><li>List conversations and search past messages by text</li><li>Per-tenant settings: models, system prompt, limits</li><li>Usage and cost reports per tenant</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>2,000 tenants, 1M daily users, 15 messages per user per day</li><li>First word within 1.5 s for 95 of 100 requests, plus the provider's own time</li><li>No lost messages. The reply survives a dropped connection.</li><li>99.95% uptime for sending and streaming. Search can lag a few seconds.</li><li>No tenant can ever read another tenant's data</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Training or hosting frontier models</li><li>Voice and image generation</li><li>Live chats shared by several users at once</li></ul></div>
   </div>
   <h3>Capacity estimation</h3>
   <div class="tbl"><table>
     <tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr>
-    <tr><td>Turns per day</td><td>1M DAU × 15</td><td class="num">15M turns</td></tr>
-    <tr><td>Send QPS</td><td>15M ÷ 86,400; peak 3.5×</td><td class="num">~175 avg, ~600 peak</td></tr>
-    <tr><td>Concurrent streams</td><td>600/s × 12 s avg generation (400 tokens at ~35 tok/s)</td><td class="num">~7,200 open SSE streams</td></tr>
-    <tr><td>Message writes</td><td>30M messages/day (user + assistant)</td><td class="num">~350/s avg</td></tr>
-    <tr><td>Storage</td><td>30M × 1.5 KB</td><td class="num">45 GB/day ≈ 16 TB/yr (×3 replicas)</td></tr>
-    <tr><td>Input tokens</td><td>15M × 6k (1k system + 5k history)</td><td class="num">90B/day</td></tr>
-    <tr><td>Output tokens</td><td>15M × 400</td><td class="num">6B/day</td></tr>
-    <tr><td>Cost, no caching</td><td>90,000 M × $3 + 6,000 M × $15</td><td class="num">$270k + $90k = $360k/day</td></tr>
-    <tr><td>Cost with prompt caching</td><td>80% of input read from cache at 0.1×: 90B × (0.2 + 0.08) = 25.2B equivalent → $75.6k + $90k</td><td class="num">~$166k/day ≈ $0.011/turn</td></tr>
+    <tr><td>Turns per day (one question plus its answer)</td><td>1M daily users × 15</td><td class="num">15M turns</td></tr>
+    <tr><td>Messages sent per second</td><td>15M ÷ 86,400 seconds. The busiest time is 3.5× the average.</td><td class="num">~175 average, ~600 at the busiest time</td></tr>
+    <tr><td>Replies streaming at once</td><td>600 per second × 12 s per reply (400 tokens at ~35 tokens per second)</td><td class="num">~7,200 open SSE streams</td></tr>
+    <tr><td>Message writes</td><td>30M messages per day (user plus assistant)</td><td class="num">~350 per second on average</td></tr>
+    <tr><td>Storage</td><td>30M × 1.5 KB</td><td class="num">45 GB per day ≈ 16 TB per year (×3 copies)</td></tr>
+    <tr><td>Input tokens</td><td>15M × 6k (1k system prompt + 5k history)</td><td class="num">90B per day</td></tr>
+    <tr><td>Output tokens</td><td>15M × 400</td><td class="num">6B per day</td></tr>
+    <tr><td>Cost, no caching</td><td>90,000 M × $3 + 6,000 M × $15 (prices per million tokens)</td><td class="num">$270k + $90k = $360k per day</td></tr>
+    <tr><td>Cost with prompt caching</td><td>80% of input is read from cache at 0.1× the price. 90B × (0.2 + 0.08) = 25.2B full-price tokens. That costs $75.6k, plus $90k for output.</td><td class="num">~$166k per day ≈ $0.011 per turn</td></tr>
   </table></div>
-  <p>Say the conclusions: storage and QPS are ordinary; the system is bound by LLM tokens, provider rate limits and open connections. History re-sent every turn dominates input cost, so a stable prompt prefix (for provider caching) and summarisation matter more than any database choice. Routing simple turns to a smaller model is the next biggest lever.</p>
+  <p>Say the conclusions out loud. Storage and request rates are ordinary. The system is limited by LLM tokens, provider rate limits and open connections. Re-sending history every turn is most of the input cost. So two things matter more than any database choice. First, keep the start of the prompt identical, so the provider can cache it. Second, summarise old history. The next biggest saving is sending simple questions to a smaller, cheaper model.</p>
   </details>
 
   <h2 id="api"><span class="n">03</span>API and data model</h2>
   <ol class="walk">
-    <li><span class="who">Send</span><span><code>POST …/messages</code> with Idempotency-Key and <code>parentId</code> → 202 with message ids and <code>streamUrl</code></span></li>
-    <li><span class="who">Stream</span><span><code>GET /v1/messages/{mid}/stream</code>, resume with <code>Last-Event-ID</code></span></li>
-    <li><span class="who">Control</span><span>cancel, edit (new branch), switch leaf, search</span></li>
+    <li><span class="who">Send</span><span>The browser sends the message with a unique key, so a repeat send is not processed twice. It also says which message this one replies to. The server answers "accepted, we'll process it" (HTTP 202) with the new message ids and a link to read the reply. In the API: <code>POST …/messages</code>, <code>Idempotency-Key</code>, <code>parentId</code>, <code>streamUrl</code>.</span></li>
+    <li><span class="who">Stream</span><span>The browser opens a separate connection to read the reply as it is written. After a drop, it says the last piece it saw and gets the rest (<code>GET /v1/messages/{mid}/stream</code> with <code>Last-Event-ID</code>).</span></li>
+    <li><span class="who">Control</span><span>Stop a reply, edit a message (this starts a new branch), switch to another branch, or search old chats.</span></li>
   </ol>
   <details class="code"><summary>Show API sketch</summary><pre><code>POST /v1/conversations                         → { "conversationId": "c_01J..", "title": null }
 GET  /v1/conversations?cursor=..&amp;limit=20       # sidebar, newest first
@@ -119,45 +131,47 @@ PUT  /v1/conversations/{cid}/leaf              { "leafId": "m_..C" }   # switch 
 GET  /v1/search?q=termination+notice&amp;cursor=..</code></pre></details>
   <div class="arch">
     <div class="tier"><span class="node store">Postgres (Citus)<small>tenant, conversation · RLS</small></span><span class="node store hl">Cassandra / Scylla<small>message by (tenant, conversation)</small></span></div>
-    <div class="tier"><span class="node store">Redis<small>gen:{mid} streams, rate limits</small></span><span class="node store">OpenSearch<small>history search</small></span><span class="node store">ClickHouse<small>usage events</small></span></div>
+    <div class="tier"><span class="node store">Redis<small>live reply pieces, rate limits</small></span><span class="node store">OpenSearch<small>history search</small></span><span class="node store">ClickHouse<small>usage events</small></span></div>
   </div>
-  <p>Status: <code>PENDING → STREAMING → COMPLETE | CANCELLED | FAILED</code>. Content encrypted with a per-tenant key, which also allows crypto-shredding.</p>
+  <p>A reply moves through these states: <code>PENDING → STREAMING → COMPLETE | CANCELLED | FAILED</code>. Message text is encrypted with a separate key per tenant. When a tenant leaves, you delete its key, and all its data becomes unreadable. This is called crypto-shredding.</p>
   <details class="deep"><summary>Go deeper: send/stream split, data model table and storage choice</summary>
-  <p>Send and stream are separate calls, so a reconnect is just another GET with <code>Last-Event-ID</code>. The idempotency key makes a retried send return the same message ids instead of starting a second, billed generation. Event ids are per-message sequence numbers.</p>
+  <p>Sending and streaming are two separate calls. So reconnecting is just another GET with <code>Last-Event-ID</code>. The idempotency key is a unique id the client attaches to each send. If the client sends the same message again, it gets the same message ids back. That stops a second, separately billed reply. Event ids are simple counters within each message.</p>
   <div class="tbl"><table>
     <tr><th>Store</th><th>Table / key</th><th>Notes</th></tr>
-    <tr><td>Postgres (sharded by tenant_id, e.g. Citus)</td><td><code>tenant(tenant_id, plan, models_allowed, rpm, tpm, monthly_budget, region, kms_key_id)</code><br><code>conversation(tenant_id, conversation_id, user_id, title, current_leaf_id, summary, summary_upto_id, updated_at)</code></td><td>Index <code>(tenant_id, user_id, updated_at DESC)</code> for the sidebar. RLS on tenant_id.</td></tr>
-    <tr><td>Cassandra / ScyllaDB (or partitioned Postgres)</td><td><code>message</code>: partition <code>(tenant_id, conversation_id)</code>, clustering <code>message_id</code> (ULID, time-ordered); <code>parent_id, role, content (encrypted), status, model, tokens_in, tokens_out, created_at</code></td><td>Append-heavy, read by conversation. Conversation size is bounded, so no hot partitions.</td></tr>
-    <tr><td>Redis</td><td>Stream <code>gen:{message_id}</code> (tokens, TTL 15 min); rate-limit buckets <code>rl:{tenant}:{minute}</code>; cancel flags</td><td>Ephemeral; DB is the durable copy</td></tr>
-    <tr><td>OpenSearch</td><td>Index of messages, routing key tenant_id, fields tenant_id, user_id, conversation_id, branch_active, text, created_at</td><td>Fed from Kafka; dedicated index for very large tenants</td></tr>
-    <tr><td>ClickHouse</td><td><code>usage_event(tenant_id, user_id, message_id, provider, model, tokens_in, cached_in, tokens_out, cost_micros, ttft_ms, ts)</code></td><td>Cost attribution, dashboards, invoices</td></tr>
+    <tr><td>Postgres, split across servers by tenant_id (for example with Citus)</td><td><code>tenant(tenant_id, plan, models_allowed, rpm, tpm, monthly_budget, region, kms_key_id)</code><br><code>conversation(tenant_id, conversation_id, user_id, title, current_leaf_id, summary, summary_upto_id, updated_at)</code></td><td>Index on <code>(tenant_id, user_id, updated_at DESC)</code> for the sidebar. RLS (row-level security) on tenant_id means the database itself hides other tenants' rows.</td></tr>
+    <tr><td>Cassandra / ScyllaDB (or partitioned Postgres)</td><td><code>message</code>: partition <code>(tenant_id, conversation_id)</code>, clustering <code>message_id</code> (ULID, time-ordered); <code>parent_id, role, content (encrypted), status, model, tokens_in, tokens_out, created_at</code></td><td>Mostly new rows, read one conversation at a time. One conversation never gets huge, so no single partition gets overloaded.</td></tr>
+    <tr><td>Redis</td><td>Stream <code>gen:{message_id}</code> holds the tokens and expires after 15 min (its TTL). Rate-limit buckets <code>rl:{tenant}:{minute}</code>. Cancel flags.</td><td>Temporary. The database holds the permanent copy.</td></tr>
+    <tr><td>OpenSearch</td><td>Index of messages, routed by tenant_id. Fields: tenant_id, user_id, conversation_id, branch_active, text, created_at.</td><td>Filled from Kafka. Very large tenants get their own index.</td></tr>
+    <tr><td>ClickHouse</td><td><code>usage_event(tenant_id, user_id, message_id, provider, model, tokens_in, cached_in, tokens_out, cost_micros, ttft_ms, ts)</code></td><td>Who spent what, dashboards, invoices</td></tr>
   </table></div>
-  <p>Status moves <code>PENDING → STREAMING → COMPLETE | CANCELLED | FAILED</code>. Content is encrypted with a per-tenant data key (envelope encryption via KMS), which also gives crypto-shredding when a tenant leaves. Discord's move of trillions of messages to Cassandra and then ScyllaDB is the reference for the partition-by-channel design; Postgres is fine at this guide's 16 TB/yr if sharded, and simpler if the team knows it.</p>
+  <p>A reply moves through <code>PENDING → STREAMING → COMPLETE | CANCELLED | FAILED</code>. Each tenant's content is encrypted with its own data key. That key is itself protected by a master key in KMS (a key management service). This is called envelope encryption. When a tenant leaves, deleting its key makes the data unreadable (crypto-shredding).</p>
+  <p>Discord moved trillions of messages to Cassandra and then to ScyllaDB. It stores messages grouped by channel, and that is the model for grouping by conversation here. At this guide's 16 TB per year, Postgres is also fine if you split it across servers. It is simpler if the team already knows it.</p>
   </details>
 
   <h2 id="arch"><span class="n">04</span>High-level architecture</h2>
   <div class="arch">
     <div class="tier"><span class="node">Web / mobile<small>SSE client</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node">API gateway<small>JWT, tenant, RPM</small></span><span class="node">Stream service<small>WebFlux SSE</small></span></div>
+    <div class="tier"><span class="node">API gateway<small>checks login, company, request limits</small></span><span class="node">Stream service<small>WebFlux SSE</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node hl">Chat service<small>persist, idempotency</small></span><span class="node store">Redis Streams<small>gen:{mid}</small></span></div>
-    <div class="down">↓ <small>generation.requested</small></div>
-    <div class="tier"><span class="node store">Kafka</span><span class="node hl">Generation workers<small>context builder</small></span><span class="node hl">LLM gateway<small>TPM, router, breaker</small></span></div>
+    <div class="tier"><span class="node hl">Chat service<small>persist, idempotency</small></span><span class="node store">Redis Streams<small>one list of pieces per reply</small></span></div>
+    <div class="down">↓ <small>"please write a reply" event</small></div>
+    <div class="tier"><span class="node store">Kafka</span><span class="node hl">Generation workers<small>build the prompt, write the reply</small></span><span class="node hl">LLM gateway<small>token limits, picks provider, breaker</small></span></div>
     <div class="down">↓</div>
     <div class="tier"><span class="node">Anthropic</span><span class="node">OpenAI</span><span class="node">Self-hosted</span></div>
-    <div class="down">↓ <small>message.completed</small></div>
+    <div class="down">↓ <small>"reply finished" event</small></div>
     <div class="tier"><span class="node">Search indexer</span><span class="node">Usage consumer</span><span class="node">Summariser</span></div>
   </div>
-  <p>The browser connection is never on the generation's critical path.</p>
+  <p>The key idea: the browser's connection never controls the reply. If the browser leaves, the reply still gets written.</p>
   <details class="deep"><summary>Go deeper: each component's job</summary>
   <ul>
-    <li><b>API gateway</b>: validates JWT, derives tenant and user, applies request-per-minute limits and concurrent-stream caps.</li>
-    <li><b>Chat service</b>: writes the user message and a <code>PENDING</code> assistant placeholder, then emits <code>generation.requested</code> through an outbox. Returns 202 immediately.</li>
-    <li><b>Generation workers</b>: build the context (system prompt, summary, branch path, recent turns), call the LLM gateway with streaming, append each delta to the Redis stream, flush partial content to the DB every ~2 s, write the final message and emit <code>message.completed</code>.</li>
-    <li><b>LLM gateway</b>: per-tenant token budget, model tiering, provider routing, circuit breaker, retries before the first token only, prompt-cache markers, usage metering. Spring AI's <code>ChatClient.stream()</code> returning <code>Flux&lt;ChatResponse&gt;</code> fits here; LiteLLM or Portkey are the off-the-shelf equivalents in Python land.</li>
-    <li><b>Stream service</b>: stateless SSE endpoint on Netty; reads from the Redis stream after <code>Last-Event-ID</code> and blocks for new entries. Any node can serve any stream, so no sticky sessions.</li>
-    <li><b>Async consumers</b>: search indexing, usage and cost, title generation, rolling summaries, eval sampling.</li>
+    <li><b>API gateway</b>: checks the JWT and reads the tenant and user from it. It limits requests per minute (RPM) and how many streams one user can have open.</li>
+    <li><b>Chat service</b>: saves the user's message and an empty <code>PENDING</code> slot for the reply. It then publishes a <code>generation.requested</code> event through an outbox table, so the event is never lost. It answers 202 (accepted) at once.</li>
+    <li><b>Generation workers</b>: build the context, which is the system prompt, the summary, the branch path and recent turns. They call the LLM gateway and receive the reply piece by piece. Each piece (a delta) goes into the Redis stream. Every ~2 s they save the partial text to the database. At the end they save the full message and publish <code>message.completed</code>.</li>
+    <li><b>LLM gateway</b>: one place for all provider calls. It enforces each tenant's token budget and picks the model and provider. It also runs the circuit breaker and marks prompts for caching. It retries only before the first token arrives, and it records usage.</li>
+    <li><b>LLM gateway libraries</b>: in Spring AI, <code>ChatClient.stream()</code> returns a <code>Flux&lt;ChatResponse&gt;</code>, which fits here. LiteLLM or Portkey are ready-made gateways from the Python world.</li>
+    <li><b>Stream service</b>: a stateless SSE endpoint on Netty. It reads the Redis stream after <code>Last-Event-ID</code> and waits for new entries. Any server can serve any stream, so the user need not return to the same server (no sticky sessions).</li>
+    <li><b>Background consumers</b>: search indexing, usage and cost, chat titles, rolling summaries, and sampling replies for quality checks.</li>
   </ul>
   </details>
 
@@ -165,73 +179,73 @@ GET  /v1/search?q=termination+notice&amp;cursor=..</code></pre></details>
   <div class="stepper"><b class="title">"Summarise clause 12", with a dropped connection</b><div class="frames">
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
-      <figcaption>The gateway validates the JWT, derives tenant and user, and checks requests-per-minute and stream caps.</figcaption>
+      <figcaption>The gateway checks the login token (JWT) and finds the company and user. It also checks they are under their request and open-reply limits.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node hl">Chat svc<small>user msg + PENDING</small></span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
-      <figcaption>Writes the user message and a PENDING assistant placeholder, emits <code>generation.requested</code> via outbox, returns 202.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node hl">Chat svc<small>saves message + empty reply</small></span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
+      <figcaption>The chat service saves the message and an empty slot for the reply (status PENDING). It records a "please write a reply" event in the same database save, then answers "accepted" (HTTP 202) at once.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node hl">Worker<small>~6k tokens context</small></span><span class="node">LLM gateway</span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
-      <figcaption>The worker builds context: system prompt, summary, branch path, recent turns.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node hl">Worker<small>builds a ~6k-token prompt</small></span><span class="node">LLM gateway</span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
+      <figcaption>A worker builds the context. It adds the system prompt, the summary, the branch path and the recent turns.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node hl">LLM gateway<small>reserve TPM · Claude</small></span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
-      <figcaption>Reserves estimated input + <code>max_tokens</code> from the tenant's bucket, routes to Claude, marks the prefix for caching.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node hl">LLM gateway<small>sets aside tokens · calls Claude</small></span><span class="node store">Redis</span><span class="node">Stream svc</span></div></div>
+      <figcaption>The gateway sets aside enough tokens from the tenant's budget for the prompt and the longest allowed reply. It sends the call to Claude and marks the prompt start for caching.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store hl">Redis<small>XADD id 1…41</small></span><span class="node hl">Stream svc</span></div></div>
-      <figcaption>Each delta goes to <code>gen:{mid}</code>; the stream service reads it and pushes SSE events to the browser.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store hl">Redis<small>pieces 1…41 saved</small></span><span class="node hl">Stream svc</span></div></div>
+      <figcaption>Each new piece of text is added to this reply's list in Redis, numbered 1, 2, 3 and so on. The stream service reads the list and pushes each piece to the browser.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node hl">Worker<small>still generating</small></span><span class="node">LLM gateway</span><span class="node store hl">Redis<small>42…57</small></span><span class="node bad">Client offline</span></div></div>
-      <figcaption>The user's phone switches networks after event 41. Generation carries on; partials flush to the DB every ~2 s.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node hl">Worker<small>still generating</small></span><span class="node">LLM gateway</span><span class="node store hl">Redis<small>pieces 42…57 wait here</small></span><span class="node bad">Client offline</span></div></div>
+      <figcaption>After event 41, the phone switches from Wi-Fi to mobile data. The reply keeps being written, and partial text is saved every ~2 s.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store hl">Redis</span><span class="node hl">Stream svc<small>Last-Event-ID: 41</small></span></div></div>
-      <figcaption>The client reconnects to any node with <code>Last-Event-ID: 41</code> and replays from 42. No sticky sessions.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Gateway</span><span class="node">Chat svc</span><span class="node">Worker</span><span class="node">LLM gateway</span><span class="node store hl">Redis</span><span class="node hl">Stream svc<small>"I last saw 41"</small></span></div></div>
+      <figcaption>The phone reconnects to any server and says "I last saw piece 41" (<code>Last-Event-ID: 41</code>). It gets everything from piece 42 onward.</figcaption>
     </figure>
     <figure class="frame">
-      <div class="arch"><div class="tier"><span class="node">Worker<small>COMPLETE</small></span><span class="node hl">Kafka<small>message.completed</small></span><span class="node">Search</span><span class="node">Usage</span><span class="node">Summariser</span></div></div>
-      <figcaption>Final write, <code>done</code> event with usage, then fan-out: index for search, bill tokens, update the rolling summary.</figcaption>
+      <div class="arch"><div class="tier"><span class="node">Worker<small>reply finished</small></span><span class="node hl">Kafka<small>"reply finished" event</small></span><span class="node">Search</span><span class="node">Usage</span><span class="node">Summariser</span></div></div>
+      <figcaption>The worker saves the final reply and tells the browser it is finished, with the token count. Background jobs then add it to search, bill it, and update the summary.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="deep"><span class="n">06</span>Deep dives</h2>
   <h3>6.1 Streaming that survives disconnects</h3>
   <div class="vs">
-    <div class="pick"><h4>SSE + worker + Redis Streams <span class="tag">chosen</span></h4><ul><li class="pro">Resume with Last-Event-ID; multi-device</li><li class="pro">Generation finishes even if the user leaves</li><li class="con">One more hop (~1–3 ms)</li></ul><p class="when">One-way token flow (almost always).</p></div>
-    <div><h4>WebSocket</h4><ul><li class="pro">Bidirectional on one socket</li><li class="con">Proxy pain, manual reconnect and resume</li></ul><p class="when">Collaborative editing or voice.</p></div>
+    <div class="pick"><h4>SSE + worker + Redis Streams <span class="tag">chosen</span></h4><ul><li class="pro">Resume with Last-Event-ID. Watch the same reply on two devices.</li><li class="pro">The reply finishes even if the user leaves</li><li class="con">One extra network hop (~1–3 ms)</li></ul><p class="when">When text flows only from server to browser (almost always).</p></div>
+    <div><h4>WebSocket</h4><ul><li class="pro">Messages flow both ways on one connection</li><li class="con">Proxies often break it. You build reconnect and resume yourself.</li></ul><p class="when">Shared document editing or voice.</p></div>
   </div>
-  <p>7,200 in-flight streams × ~3 KB ≈ 22 MB of Redis. Cancel sets <code>cancel:{mid}</code>; the worker aborts upstream, saves CANCELLED, bills consumed tokens.</p>
+  <p>7,200 live streams × ~3 KB each is about 22 MB of Redis memory. That is tiny. To stop a reply, the app sets <code>cancel:{mid}</code>. The worker then stops the provider call, saves the reply as CANCELLED, and bills only the tokens used.</p>
   <details class="deep"><summary>Go deeper: the three streaming options and cancel details</summary>
   <div class="tbl"><table>
     <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
-    <tr><td>Proxy provider stream straight to the client</td><td>Simplest, lowest latency</td><td>Tab close or mobile network switch kills generation or loses tokens; the pod holding the stream is a single point</td></tr>
-    <tr><td>SSE + decoupled worker + Redis Streams (chosen)</td><td>Resume with Last-Event-ID; multi-device viewing; generation completes even if user leaves</td><td>One more hop (~1–3 ms); Redis memory for in-flight streams</td></tr>
-    <tr><td>WebSocket</td><td>Bidirectional (cancel, typing, presence on one socket)</td><td>Harder through proxies and load balancers, manual reconnect and resume protocol; overkill for one-way token flow</td></tr>
+    <tr><td>Pass the provider's stream straight to the browser</td><td>Simplest, fastest</td><td>Closing the tab or switching networks kills the reply or loses words. The one server holding the stream is a single point of failure.</td></tr>
+    <tr><td>SSE + separate worker + Redis Streams (chosen)</td><td>Resume with Last-Event-ID. View on several devices. The reply finishes even if the user leaves.</td><td>One extra hop (~1–3 ms). Redis memory for live streams.</td></tr>
+    <tr><td>WebSocket</td><td>Two-way: cancel, typing and presence on one connection</td><td>Harder through proxies and load balancers. You must build reconnect and resume yourself. Too much for text that flows one way.</td></tr>
   </table></div>
-  <p>Memory check: 7,200 in-flight streams × ~3 KB of tokens = ~22 MB in Redis, trivial. Cancel sets <code>cancel:{mid}</code>; the worker checks between deltas, aborts the upstream HTTP call (which stops billing for further output), saves the partial with status <code>CANCELLED</code> and bills consumed tokens. SSE runs fine over HTTP/2, which removes the browser's six-connections-per-host limit.</p>
+  <p>Memory check: 7,200 live streams × ~3 KB of tokens = ~22 MB in Redis, which is trivial. Cancel works like this. The app sets <code>cancel:{mid}</code>, and the worker checks it between pieces of text. When it sees the flag, it aborts the HTTP call to the provider, which stops further output charges. It saves the partial reply as <code>CANCELLED</code> and bills the tokens already used. SSE also works well over HTTP/2. That removes the browser's limit of six connections per website.</p>
   </details>
 
   <h3>6.2 Editing, branching and building the context</h3>
   <div class="cells"><span class="cell">A</span><span class="cell dim">B</span><span class="cell dim">reply</span><span class="cell hl">B′</span><span class="cell win">new reply</span></div>
-  <p>Editing B (parent A) creates B′ with parent A, and <code>current_leaf_id</code> moves. Context = path leaf → root. Prompt order: tools → system → summary → older → recent → new message, so the prefix cache hits on all but the tail.</p>
+  <p>Say message B follows message A. Editing B creates a new message B′, also under A. The conversation's <code>current_leaf_id</code> then points to the new end. The model sees the path from that end back to the start. The prompt is built in a fixed order: tools, system prompt, summary, older turns, recent turns, then the new message. Because the start never changes, the provider's cache covers everything except the end.</p>
   <details class="deep"><summary>Go deeper: context-window strategy and Spring AI chat memory</summary>
-  <p>Messages form a tree through <code>parent_id</code>. Editing message B (parent A) creates a new user message B' with parent A, then a new assistant reply; <code>conversation.current_leaf_id</code> moves to the new leaf. Old branches stay so the user can flip between "1/2" and "2/2". The context for a turn is the path from the leaf to the root, which the worker reads with one partition scan and walks in memory.</p>
-  <p><b>Context-window management</b>: budget = model window − max output − system prompt − tool schemas. Strategy:</p>
+  <p>Each message stores its <code>parent_id</code>, so messages form a tree. Editing message B (whose parent is A) creates a new user message B′ with parent A. A new assistant reply follows it. <code>conversation.current_leaf_id</code> moves to this new end, or leaf. Old branches stay, so the user can flip between "1/2" and "2/2". The context for a turn is the path from the leaf back to the root. The worker reads the whole conversation in one partition scan and walks the path in memory.</p>
+  <p><b>Fitting history into the model's limit</b>: the context window is the most text a model can read at once. Your budget is the window, minus the maximum reply length, minus the system prompt, minus the tool descriptions. The strategy:</p>
   <ol>
-    <li>Keep the last N turns verbatim (most relevant, and cheap thanks to caching).</li>
-    <li>When the path exceeds ~70% of the budget, an async job writes a rolling summary of older turns into <code>conversation.summary</code> and records <code>summary_upto_id</code>. Summaries advance in large steps so the cached prefix changes rarely.</li>
-    <li>Optionally embed old turns and retrieve the few relevant ones ("as I said earlier about clause 14").</li>
-    <li>Order the prompt as tools → system → summary → older turns → recent turns → new message, so the provider's prefix cache (Anthropic caches in the order tools, system, messages) hits on everything but the tail.</li>
+    <li>Keep the last N turns word for word. They matter most, and caching makes them cheap.</li>
+    <li>When the path passes ~70% of the budget, a background job summarises older turns. It saves the result in <code>conversation.summary</code> and records <code>summary_upto_id</code>. The summary moves forward in big jumps, so the cached prompt start changes rarely.</li>
+    <li>Optionally, store old turns as embeddings (number lists that capture meaning). Then fetch only the few that matter, as in "as I said earlier about clause 14".</li>
+    <li>Build the prompt in this order: tools, system prompt, summary, older turns, recent turns, new message. Anthropic caches in the order tools, system, messages. So the cache hits on everything except the end.</li>
   </ol>
-  <p>Spring AI's <code>MessageWindowChatMemory</code> (default 20 messages, keeps system messages) with <code>JdbcChatMemoryRepository</code> is the starter version; the branching tree and summaries are what you add on top.</p>
+  <p>Spring AI gives you a starter version. <code>MessageWindowChatMemory</code> keeps the last 20 messages by default and always keeps system messages. <code>JdbcChatMemoryRepository</code> stores them in a database. You add the branching tree and the summaries on top.</p>
   </details>
 
   <h3>6.3 Provider routing and the circuit breaker (Emergent Labs)</h3>
-  <div class="stats"><div class="stat"><b>HEALTHY</b><span>Claude error rate &lt; 2%: 100% Claude</span></div><div class="stat"><b>DEGRADED</b><span>&gt; 5%: 5% Claude probes, 95% OpenAI</span></div><div class="stat"><b>FAILING</b><span>&gt; 90%: 5% Claude, 5% OpenAI, rest 503</span></div></div>
-  <p>Pick the provider by <code>hash(requestId) mod 100</code>: stateless across nodes, and retries land in the same bucket. The 2–5% band stops flapping; judge only after 100 samples.</p>
+  <div class="stats"><div class="stat"><b>HEALTHY</b><span>Claude errors under 2%: send 100% to Claude</span></div><div class="stat"><b>DEGRADED</b><span>Over 5% errors: 5% to Claude as a test, 95% to OpenAI</span></div><div class="stat"><b>FAILING</b><span>Over 90% errors: 5% Claude, 5% OpenAI, the rest get 503</span></div></div>
+  <p>Pick the provider with <code>hash(requestId) mod 100</code>. Every server gets the same answer without talking to each other. A retry of the same request lands in the same bucket. Between 2% and 5% errors, the mode stays as it is, which stops it flipping back and forth. Wait for at least 100 results before judging.</p>
   <details class="code"><summary>Show Java: ProviderRouter</summary><pre><code>public final class ProviderRouter {
     public enum Mode { HEALTHY, DEGRADED, FAILING }
 
@@ -261,145 +275,150 @@ GET  /v1/search?q=termination+notice&amp;cursor=..</code></pre></details>
     }
 }</code></pre></details>
   <details class="deep"><summary>Go deeper: the full prompt, patterns and why failover isn't free</summary>
-  <p>The question: all calls go to Claude; if Claude's error rate exceeds 5%, send 95% to OpenAI; if it exceeds 90%, fail fast except for 5% to Claude and 5% to OpenAI as probes. The interviewer pushed on how to pick the provider per request; the candidate landed on hashing the request id mod 100. That is deterministic percentage bucketing, the same trick as feature-flag rollouts: stateless across gateway nodes, no coordination, and a retry of the same request id lands in the same bucket.</p>
-  <p>Patterns to name: State (the three modes), Strategy (provider clients behind one <code>LlmProvider</code> interface), Decorator (retry and metering around a provider). In production, keep the window per provider and per model, count only provider faults (5xx, 429, timeouts, not 400s caused by bad prompts), share counters through Redis or accept per-node windows, and alert on mode changes. Resilience4j's <code>CircuitBreaker</code> gives you the window and state machine for the single-provider case.</p>
-  <div class="callout warn"><b>Failover is not free</b><p>Prompts tuned for one model may behave differently on another; tool-call formats differ; tenants may have contracted for one provider or region only. Store per-tenant allowed providers, keep a prompt variant per provider, and run the golden eval set on the fallback model before enabling it. Retry only before the first token is sent; after that, the user has already seen part of a reply.</p></div>
+  <p>The question: all calls go to Claude. If Claude's error rate passes 5%, send 95% of calls to OpenAI. If it passes 90%, reject calls fast. The exception is 5% to Claude and 5% to OpenAI, as test calls (probes). The interviewer pushed on how to pick the provider for each request. The candidate settled on hashing the request id, mod 100.</p>
+  <p>This is deterministic percentage bucketing. Feature-flag rollouts use the same trick. Every gateway server computes the same answer with no coordination. A retry with the same request id lands in the same bucket.</p>
+  <p>Patterns to name: State (the three modes) and Strategy (all providers behind one <code>LlmProvider</code> interface). Also Decorator, which wraps retry and metering around a provider.</p>
+  <p>In production, keep a separate error window per provider and per model. Count only provider faults: 5xx errors, 429 (too many requests) and timeouts. Do not count 400 errors caused by bad prompts. Share counters through Redis, or accept that each server has its own window. Alert when the mode changes. For a single provider, Resilience4j's <code>CircuitBreaker</code> gives you the window and the state machine.</p>
+  <div class="callout warn"><b>Failover is not free</b><p>A prompt tuned for one model may behave differently on another. Tool-call formats also differ. Some tenants have a contract for one provider or region only. So store each tenant's allowed providers, and keep a prompt version for each provider. Before enabling a backup model, run your golden test set on it. Retry only before the first word is sent. After that, the user has already seen part of a reply.</p></div>
   </details>
 
   <h3>6.4 Rate limits, budgets and cost</h3>
   <ul>
-    <li>Limit <b>tokens per minute</b> and concurrent streams, not just requests.</li>
-    <li>Reserve estimate + <code>max_tokens</code> atomically (Redis Lua), refund after with actual usage.</li>
-    <li>Weighted fair queue shares pooled provider quota by plan. Alerts at 80% of budget; at 100% stop or downgrade.</li>
+    <li>Limit <b>tokens per minute</b> (TPM) and the number of open streams, not just requests.</li>
+    <li>Before the call, reserve the estimate plus <code>max_tokens</code> in one atomic step (a Redis Lua script). Afterwards, refund what was not used.</li>
+    <li>A weighted fair queue shares the provider's capacity by plan. Alert at 80% of the budget. At 100%, stop or switch to a cheaper model.</li>
   </ul>
   <details class="deep"><summary>Go deeper: limits and cost attribution</summary>
   <ul>
-    <li>Limits are in <b>tokens per minute</b> as well as requests, because one 100k-token request costs more than a thousand short ones. Also cap concurrent streams per user and per tenant.</li>
-    <li>Reserve before the call: estimated input tokens (tokeniser count) + <code>max_tokens</code>, taken atomically from a Redis token bucket via a Lua script. Reconcile after completion with actual usage and refund the difference.</li>
-    <li>Provider quotas are pooled across tenants; a weighted fair queue in the gateway gives each tenant a share proportional to plan so a burst from one tenant queues behind its own quota, not everyone's.</li>
-    <li>Every completion emits a usage event (tenant, user, feature, model, input, cached input, output, price-table version) to Kafka, then ClickHouse. Alerts at 80% of monthly budget; at 100% either hard-stop or downgrade to a cheaper model, per tenant policy.</li>
+    <li>Limit <b>tokens per minute</b> as well as requests. One 100k-token request costs more than a thousand short ones. Also cap the open streams per user and per tenant.</li>
+    <li>Reserve before the call. Count the input tokens with the tokeniser and add <code>max_tokens</code>. Take that amount from a Redis token bucket in one atomic Lua script. When the reply finishes, compare with the real usage and refund the difference.</li>
+    <li>Provider limits are shared by all tenants. The gateway uses a weighted fair queue that gives each tenant a share based on its plan. So if one tenant sends a burst, it waits behind its own quota, not everyone's.</li>
+    <li>Every finished reply sends a usage event to Kafka, then to ClickHouse. The event records tenant, user, feature, model, input, cached input, output and the price-table version.</li>
+    <li>Alert at 80% of the monthly budget. At 100%, either stop hard or move to a cheaper model, based on the tenant's policy.</li>
   </ul>
   </details>
 
   <h3>6.5 Search, caching and observability</h3>
   <div class="keys">
-    <div class="key"><h4>Search</h4><p>Kafka → OpenSearch, <code>routing=tenant_id</code>, mandatory tenant + user filter. Old branches searchable but ranked lower.</p></div>
-    <div class="key"><h4>Prompt cache</h4><p>Reads ~0.1× input; any early-block change invalidates the rest.</p></div>
-    <div class="key"><h4>Model tiering</h4><p>A classifier sends easy turns to a small model: 3–10× cheaper.</p></div>
-    <div class="key"><h4>Traces</h4><p>LLM span with model, tokens, TTFT, cost. Logs sampled and PII-redacted.</p></div>
+    <div class="key"><h4>Search</h4><p>Kafka feeds OpenSearch with <code>routing=tenant_id</code>. Every query must filter by tenant and user. Old branches are searchable but ranked lower.</p></div>
+    <div class="key"><h4>Prompt cache</h4><p>Cached input costs ~0.1× the normal price. Changing any early part of the prompt breaks the cache for everything after it.</p></div>
+    <div class="key"><h4>Model tiering</h4><p>A small classifier sends easy questions to a small model. That is 3–10× cheaper.</p></div>
+    <div class="key"><h4>Traces</h4><p>Each LLM call is recorded with model, tokens, TTFT and cost. Logs are sampled, with personal data hidden.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: search, caching layers table, observability and guardrails</summary>
-  <p>A Kafka consumer indexes completed messages into OpenSearch with <code>routing=tenant_id</code>; every query carries a mandatory filter on tenant_id and user_id built server-side. Edits mark superseded branches <code>branch_active=false</code> (searchable but ranked lower). Lag is seconds, which is acceptable. For semantic search add a k-NN vector field and fuse with BM25; for big tenants give them their own index so a noisy tenant does not affect relevance statistics or latency. Deleting a conversation deletes from the DB, index and caches in one saga, which the DPDP erasure path reuses.</p>
+  <p>A Kafka consumer adds finished messages to OpenSearch with <code>routing=tenant_id</code>. The server adds a required filter on tenant_id and user_id to every query. Edits mark replaced branches as <code>branch_active=false</code>. They stay searchable but rank lower. Search lags by a few seconds, which is fine.</p>
+  <p>For meaning-based search, add a k-NN vector field (find the nearest meanings). Then merge its results with BM25, the classic keyword ranking. Give big tenants their own index. Then a noisy tenant cannot skew relevance scores or slow others down. Deleting a conversation removes it from the database, the index and the caches. This runs as one saga, a chain of steps that all finish or are undone. The DPDP erasure flow reuses it.</p>
   <div class="tbl"><table>
     <tr><th>Layer</th><th>Key</th><th>Saves</th><th>Risk</th></tr>
-    <tr><td>Provider prompt cache</td><td>Identical prefix (tools, system, history)</td><td>Cache reads at ~0.1× input price on Anthropic; lower TTFT</td><td>Writes cost 1.25× (5-min TTL); any change to an early block invalidates the rest</td></tr>
-    <tr><td>Exact response cache</td><td>hash(tenant, model, params, full prompt)</td><td>100% for repeated deterministic prompts (temperature 0, templates)</td><td>Low hit rate in open chat</td></tr>
-    <tr><td>Semantic cache</td><td>Embedding of standalone question, cosine ≥ 0.95, tenant-scoped</td><td>FAQ-style tenant bots</td><td>Wrong answer on near-duplicates; never across tenants or users with different data</td></tr>
-    <tr><td>Model tiering</td><td>Classifier picks small vs large model</td><td>3–10× on easy turns</td><td>Quality dips; measure with evals</td></tr>
+    <tr><td>Provider prompt cache</td><td>Same prompt start (tools, system prompt, history)</td><td>On Anthropic, cached reads cost ~0.1× the input price. The first word also arrives faster.</td><td>Writing to the cache costs 1.25× and lasts 5 minutes. Any change to an early part breaks the cache for the rest.</td></tr>
+    <tr><td>Exact response cache</td><td>hash(tenant, model, params, full prompt)</td><td>Saves 100% when the same fixed prompt repeats (temperature 0, templates)</td><td>Rarely hits in open chat</td></tr>
+    <tr><td>Semantic cache</td><td>Meaning of the stand-alone question, with similarity ≥ 0.95, per tenant</td><td>FAQ-style tenant bots</td><td>Similar but different questions get the wrong answer. Never share it across tenants or users who see different data.</td></tr>
+    <tr><td>Model tiering</td><td>A classifier picks a small or large model</td><td>3–10× on easy questions</td><td>Quality can drop. Measure it with evals.</td></tr>
   </table></div>
   <ul>
-    <li><b>Traces</b> (OpenTelemetry): gateway → chat service → worker → LLM call span with model, provider, input/cached/output tokens, TTFT, finish reason, cost. Use the GenAI semantic-convention attribute names so tools understand them.</li>
-    <li><b>Metrics</b>: TTFT p50/p95, tokens/s, provider error and 429 rates, breaker mode, cache hit rate, queue depth, concurrent streams, cost per tenant per hour.</li>
-    <li><b>Prompt and response logs</b>: sampled, PII-redacted, retained per tenant policy, access-audited.</li>
-    <li><b>Quality</b>: offline golden conversations scored by LLM-as-judge (calibrated against human labels) before any model or prompt change; online regenerate rate, edit rate, thumbs-down rate, abandonment mid-stream; A/B by tenant cohort.</li>
+    <li><b>Traces</b> (OpenTelemetry): follow one request through gateway, chat service and worker to the LLM call. Record model, provider, input, cached and output tokens, TTFT, why it stopped, and cost. Use the standard GenAI attribute names, so tools understand them.</li>
+    <li><b>Metrics</b>: TTFT at the median and at 95 of 100 requests (p50/p95). Also tokens per second, provider errors and 429 rates, and the breaker mode. Plus cache hit rate, queue length, open streams, and cost per tenant per hour.</li>
+    <li><b>Prompt and response logs</b>: sampled, with personal data hidden. Kept as long as each tenant's policy allows. Every access is audited.</li>
+    <li><b>Quality before release</b>: before changing any model or prompt, replay a fixed set of golden conversations. Another LLM scores them (LLM-as-judge), and you check its scores against human ratings.</li>
+    <li><b>Quality in production</b>: track how often users regenerate, edit, give a thumbs-down, or leave mid-reply. Run A/B tests by groups of tenants.</li>
   </ul>
-  <div class="callout warn"><b>Guardrails</b><p><b>Prompt injection</b>: tenant system prompts and uploaded files are untrusted; tools that write anything need user confirmation. <b>PII and DPDP</b>: detect and mask identifiers (Aadhaar, PAN, phone) before logging; in-region inference for tenants that need it; zero-retention provider terms; erasure across DB, index, caches and analytics; breach reporting to the Board without delay and in detail within 72 hours once the DPDP Rules' core obligations apply (13 May 2027). <b>Tenant isolation</b>: tenant id only from the JWT, RLS and mandatory filters, per-tenant keys, no shared caches, automated cross-tenant leak tests.</p></div>
+  <div class="callout warn"><b>Guardrails</b><p><b>Prompt injection</b> is hidden text that tries to make the model disobey you. Treat tenant system prompts and uploaded files as untrusted. Any tool that changes data needs the user's confirmation.</p><p><b>Personal data and DPDP</b>: find and mask IDs like Aadhaar, PAN and phone numbers before logging. Run the model in-region for tenants that need it. Use provider terms that keep no data. Erase data from the database, index, caches and analytics. The DPDP Rules' core duties apply from 13 May 2027. From then, report a breach to the Data Protection Board without delay, and in full detail within 72 hours.</p><p><b>Tenant isolation</b>: take the tenant id only from the JWT. Use RLS and required search filters, and a separate key per tenant. Never share caches between tenants. Run automated tests that try to leak data across tenants.</p></div>
   </details>
 
   <h2 id="scale"><span class="n">07</span>Scaling, failure handling and consistency</h2>
   <div class="keys">
-    <div class="key"><h4>Breaks first at 10×</h4><p>Provider limits and spend. More providers, tiering, cache share, provisioned throughput.</p></div>
-    <div class="key"><h4>Connections</h4><p>72k SSE streams ≈ 10–15 Netty nodes. Scale on open connections, not CPU.</p></div>
-    <div class="key"><h4>Worker crash</h4><p>Offset committed after the final write. Next worker sees STREAMING: restart with a <code>reset</code> event, or FAILED. Never append a second generation.</p></div>
-    <div class="key"><h4>Consistency</h4><p>Strong within a conversation; search and usage eventual.</p></div>
+    <div class="key"><h4>What breaks first at 10×</h4><p>Provider limits and spend. Add providers, use more small models, and cache more. Buy reserved capacity (provisioned throughput).</p></div>
+    <div class="key"><h4>Connections</h4><p>72k open SSE streams need about 10–15 Netty servers. Scale on open connections, not CPU.</p></div>
+    <div class="key"><h4>Worker crash</h4><p>The Kafka offset is saved only after the final write. The next worker sees STREAMING. It restarts with a <code>reset</code> event, or marks the reply FAILED. Never add a second reply onto the first.</p></div>
+    <div class="key"><h4>Consistency</h4><p>Within one conversation, everyone sees the latest data at once. Search and usage catch up a little later.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: duplicates, backpressure and multi-region</summary>
   <ul>
-    <li><b>First to break at 10×</b>: provider rate limits and spend. Add providers and regions, more model tiering, bigger cache share; negotiate provisioned throughput.</li>
-    <li><b>Connections</b>: 72k concurrent SSE streams at 10× is ~10–15 Netty nodes; scale on open connections, not CPU.</li>
-    <li><b>Worker crash mid-stream</b>: the Kafka offset is committed only after the final write. Another worker picks the request up, sees status <code>STREAMING</code> with partial content, and either restarts generation (emitting a <code>reset</code> event so clients clear the partial) or marks it <code>FAILED</code> with a retry button. Never silently append a second generation to the first.</li>
-    <li><b>Duplicate sends</b>: idempotency key unique per (tenant, user, key) returns the original ids.</li>
-    <li><b>Backpressure</b>: when provider capacity is exhausted, queue with a short deadline and tell the user ("high demand, using a faster model") rather than time out.</li>
-    <li><b>Consistency</b>: messages strongly consistent within a conversation (single partition); search and usage eventually consistent.</li>
-    <li><b>Multi-region</b>: tenant pinned to a home region (data residency); active-passive per tenant with async replication; providers chosen per region.</li>
+    <li><b>What breaks first at 10×</b>: provider rate limits and spend. Add providers and regions, use small models more, and cache more. Negotiate reserved capacity (provisioned throughput).</li>
+    <li><b>Connections</b>: at 10×, 72k open SSE streams need ~10–15 Netty servers. Scale on open connections, not CPU.</li>
+    <li><b>Worker crash mid-reply</b>: the Kafka offset (the "I'm done with this event" marker) is saved only after the final write. So another worker picks the request up. It sees status <code>STREAMING</code> with partial text. It either restarts the reply, or marks it <code>FAILED</code> with a retry button. On restart it sends a <code>reset</code> event, so the browser clears the partial text. Never quietly add a second reply onto the first.</li>
+    <li><b>Duplicate sends</b>: the idempotency key is unique per tenant, user and key. A repeated send gets the original ids back.</li>
+    <li><b>Backpressure</b> (pushing back when overloaded): when the provider is full, queue the request with a short deadline. Tell the user, for example "high demand, using a faster model". Don't just let it time out.</li>
+    <li><b>Consistency</b>: messages in one conversation live in one partition, so reads are always up to date. Search and usage are eventually consistent, meaning they catch up after a few seconds.</li>
+    <li><b>Multi-region</b>: each tenant has a home region, to keep data in its country. Each tenant has one active region and one standby region, copied in the background. Providers are chosen per region.</li>
   </ul>
   </details>
 
   <h2 id="tradeoffs"><span class="n">08</span>Trade-offs</h2>
   <div class="vs">
-    <div class="pick"><h4>Postgres (Citus) <span class="tag">most B2B</span></h4><ul><li class="pro">One system, RLS, transactions</li><li class="con">Sharding work past a few TB per node</li></ul><p class="when">Up to tens of TB.</p></div>
-    <div><h4>Cassandra / ScyllaDB</h4><ul><li class="pro">Linear writes, partition per conversation</li><li class="con">No joins, ops expertise</li></ul><p class="when">Consumer scale, hundreds of TB.</p></div>
+    <div class="pick"><h4>Postgres (Citus) <span class="tag">most B2B</span></h4><ul><li class="pro">One system, RLS, transactions</li><li class="con">Needs splitting across servers past a few TB each</li></ul><p class="when">Up to tens of TB.</p></div>
+    <div><h4>Cassandra / ScyllaDB</h4><ul><li class="pro">Writes scale by adding servers. One partition per conversation.</li><li class="con">No joins. Needs operations experts.</li></ul><p class="when">Consumer scale, hundreds of TB.</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Shared tables + tenant_id <span class="tag">long tail</span></h4><ul><li class="pro">Cheap, simple</li><li class="con">Noisy neighbours; isolation relies on RLS</li></ul><p class="when">Small tenants.</p></div>
-    <div><h4>Database per tenant</h4><ul><li class="pro">Strong isolation, residency, keys</li><li class="con">Cost, migrations across thousands of DBs</li></ul><p class="when">Large or regulated tenants.</p></div>
+    <div class="pick"><h4>Shared tables + tenant_id <span class="tag">long tail</span></h4><ul><li class="pro">Cheap and simple</li><li class="con">One busy tenant can slow others. Isolation depends on RLS.</li></ul><p class="when">Small tenants.</p></div>
+    <div><h4>Database per tenant</h4><ul><li class="pro">Strong isolation. Each tenant gets its own region and keys.</li><li class="con">Costly. Schema changes across thousands of databases.</li></ul><p class="when">Large or regulated tenants.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full trade-offs table (self-hosted models, build vs buy gateway)</summary>
   <div class="tbl"><table>
     <tr><th>Option</th><th>Pros</th><th>Cons</th><th>Choose when</th></tr>
-    <tr><td>Postgres for messages</td><td>One system, RLS, transactions, team knows it</td><td>Sharding work beyond a few TB per node</td><td>Up to tens of TB with Citus; most B2B products</td></tr>
-    <tr><td>Cassandra / ScyllaDB</td><td>Linear write scale, natural partition per conversation</td><td>No joins, limited secondary indexes, ops expertise</td><td>Consumer scale, hundreds of TB</td></tr>
-    <tr><td>Shared tables + tenant_id</td><td>Cheap, simple ops</td><td>Noisy neighbours, isolation relies on code and RLS</td><td>Long tail of small tenants</td></tr>
-    <tr><td>Database or cluster per tenant</td><td>Strong isolation, per-tenant residency and keys</td><td>Cost, migrations across thousands of DBs</td><td>Large or regulated tenants (hybrid model)</td></tr>
-    <tr><td>Self-hosted open model (vLLM)</td><td>Data control, predictable cost at high volume</td><td>GPU ops, lower quality than frontier models</td><td>Strict residency, high-volume simple tasks</td></tr>
-    <tr><td>Build gateway vs buy (LiteLLM, Portkey)</td><td>Build: full control in your Spring stack</td><td>Build: maintain provider adapters</td><td>Buy to start; build when routing and billing are core IP</td></tr>
+    <tr><td>Postgres for messages</td><td>One system, RLS, transactions. The team already knows it.</td><td>Must split across servers beyond a few TB each</td><td>Up to tens of TB with Citus. Most B2B products.</td></tr>
+    <tr><td>Cassandra / ScyllaDB</td><td>Writes scale by adding servers. One natural partition per conversation.</td><td>No joins, few secondary indexes, needs operations experts</td><td>Consumer scale, hundreds of TB</td></tr>
+    <tr><td>Shared tables + tenant_id</td><td>Cheap, simple to run</td><td>Busy tenants slow others. Isolation depends on code and RLS.</td><td>Many small tenants</td></tr>
+    <tr><td>Database or cluster per tenant</td><td>Strong isolation. Each tenant gets its own region and keys.</td><td>Cost, schema changes across thousands of databases</td><td>Large or regulated tenants (mix both models)</td></tr>
+    <tr><td>Self-hosted open model (vLLM)</td><td>You control the data. Cost is predictable at high volume.</td><td>You run GPUs. Quality is below frontier models.</td><td>Strict data-location rules, or many simple tasks</td></tr>
+    <tr><td>Build the gateway or buy one (LiteLLM, Portkey)</td><td>Build: full control in your Spring stack</td><td>Build: you maintain an adapter per provider</td><td>Buy to start. Build when routing and billing are your core product.</td></tr>
   </table></div>
   </details>
 
   <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
-    <li>Tying generation to the HTTP connection, so a dropped network loses the reply.</li>
-    <li>Rate limiting only by requests; ignoring tokens and cost.</li>
-    <li>No tenant isolation story beyond "add tenant_id"; taking tenant id from the request.</li>
-    <li>Treating edits as overwrites, which breaks history and the context the model saw.</li>
-    <li>Sending the whole history every turn with no window management, then being unable to explain the bill.</li>
-    <li>In the Emergent machine-coding round: spending too long on the routing debate and leaving AI-generated code with bugs. Settle the bucketing quickly, then drive the code and test the thresholds.</li>
+    <li>Tying the reply to the HTTP connection, so a dropped network loses the reply.</li>
+    <li>Limiting only requests, and ignoring tokens and cost.</li>
+    <li>No isolation plan beyond "add tenant_id". Or worse, taking the tenant id from the request.</li>
+    <li>Treating edits as overwrites. That breaks history and hides what the model actually saw.</li>
+    <li>Sending the full history every turn with no limit, then being unable to explain the bill.</li>
+    <li>In the Emergent machine-coding round, debating routing for too long. The AI-generated code was left with bugs. Settle the bucketing fast, then write the code and test the thresholds.</li>
   </ul></div>
 
   <h2 id="quiz"><span class="n">10</span>Quick check</h2>
-  <div class="quiz" data-answer="1"><p class="q">The user's network drops mid-reply. In this design, what happens?</p>
-    <div class="opts"><button class="opt" type="button">Generation stops and the reply is lost</button><button class="opt" type="button">The worker keeps generating; the client resumes with Last-Event-ID</button><button class="opt" type="button">The client resends the message</button></div>
-    <p class="why">Generation is decoupled from the connection; tokens buffer in Redis Streams and partials flush to the DB.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">Why rate-limit by tokens per minute, not just requests?</p>
+  <div class="quiz" data-answer="1"><p class="q">The user's network drops in the middle of a reply. What happens in this design?</p>
+    <div class="opts"><button class="opt" type="button">The reply stops and is lost</button><button class="opt" type="button">The worker keeps writing. The browser resumes with Last-Event-ID.</button><button class="opt" type="button">The browser sends the message again</button></div>
+    <p class="why">The reply does not depend on the connection. Words wait in Redis Streams, and partial text is saved to the database. So the browser can pick up where it stopped.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why limit tokens per minute, and not only requests?</p>
     <div class="opts"><button class="opt" type="button">Tokens are easier to count</button><button class="opt" type="button">Providers don't limit requests</button><button class="opt" type="button">One 100k-token request costs more than a thousand short ones</button></div>
-    <p class="why">Tokens are the unit of both capacity and money.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">Why <code>hash(requestId) mod 100</code> instead of <code>random() &lt; 0.95</code>?</p>
-    <div class="opts"><button class="opt" type="button">Deterministic: retries land in the same bucket, no shared state</button><button class="opt" type="button">It gives better proportions</button><button class="opt" type="button">It's faster to compute</button></div>
-    <p class="why">Both give the right split; hashing makes retries and debugging reproducible across gateway nodes.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Primary fails after 200 tokens were already shown. Retry on the fallback?</p>
-    <div class="opts"><button class="opt" type="button">Yes, append the fallback's output</button><button class="opt" type="button">No: retry only before the first token; otherwise reset or mark FAILED</button><button class="opt" type="button">Yes, silently</button></div>
-    <p class="why">The user has already seen part of a reply. Never splice a second generation onto the first.</p></div>
+    <p class="why">Tokens measure both the load on the provider and the money you pay. Request counts hide the difference.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Why use <code>hash(requestId) mod 100</code> instead of <code>random() &lt; 0.95</code>?</p>
+    <div class="opts"><button class="opt" type="button">It always gives the same answer, so retries land in the same bucket with no shared state</button><button class="opt" type="button">It gives better proportions</button><button class="opt" type="button">It's faster to compute</button></div>
+    <p class="why">Both give the right split. But a hash gives the same result on every gateway server. So retries and debugging behave the same every time.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">The main provider fails after 200 tokens were already shown. Should you retry on the backup?</p>
+    <div class="opts"><button class="opt" type="button">Yes, add the backup's output after it</button><button class="opt" type="button">No. Retry only before the first token. Otherwise reset or mark it FAILED.</button><button class="opt" type="button">Yes, without telling the user</button></div>
+    <p class="why">The user has already read part of a reply. Gluing a second, different reply onto it would confuse them.</p></div>
 
   <h2 id="followups"><span class="n">11</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>Why SSE and not WebSockets?</summary><p>Tokens flow one way; the user's input is a normal POST. SSE is plain HTTP, works through corporate proxies, has built-in reconnect with Last-Event-ID, and multiplexes over HTTP/2. Choose WebSockets when you need frequent client-to-server messages on the same channel (collaborative editing, voice).</p></details>
-  <details class="qa"><summary>The user edits a message from ten turns ago. What happens to search, context and billing?</summary><p>A new branch is created from that message's parent; context is the new path, so later turns from the old branch are excluded. Old-branch messages stay in search with branch_active=false. The regeneration is billed like any turn; prompt caching still helps because the prefix up to the edit point is unchanged.</p></details>
-  <details class="qa"><summary>How do you count tokens before calling the provider?</summary><p>Use the provider's tokeniser or token-count endpoint for an estimate, reserve estimate + max_tokens from the budget, and reconcile with the usage block the provider returns at the end of the stream. Never trust a client-side count.</p></details>
-  <details class="qa"><summary>One tenant runs a script that sends 10,000 long prompts. What protects others?</summary><p>Tenant TPM bucket rejects or queues beyond its quota, concurrent-stream cap per tenant, weighted fair queue in the gateway so provider capacity is shared by plan weight, and a budget hard stop. Alert the tenant admin.</p></details>
-  <details class="qa"><summary>Why hash the request id instead of random() &lt; 0.95?</summary><p>Both give the right proportions. Hashing is deterministic, so retries and debugging are reproducible, and you can pin a request or user to a provider across gateway nodes without shared state. Hash the user or conversation id instead if you want a whole conversation to stay on one provider for consistent style and cache hits.</p></details>
-  <details class="qa"><summary>How would you evaluate this design? (Microsoft)</summary><p>Against the requirements: TTFT and availability SLOs measured end to end, cost per turn against target, isolation verified by leak tests, quality by golden set and online signals, and a failure-mode review (provider down, Redis down, worker crash, region loss) showing each has a defined behaviour.</p></details>
-  <details class="qa"><summary>Redis goes down. What breaks?</summary><p>Live token streaming and rate limiting. Workers keep generating and flushing partials to the DB, so clients fall back to polling the message; rate limiting fails closed for heavy tenants or falls back to per-node local buckets. Run Redis with replicas and keep it off the durability path.</p></details>
+  <details class="qa"><summary>Why SSE and not WebSockets?</summary><p>Words flow one way, from server to browser. The user's message is a normal POST. SSE is plain HTTP, so it passes through company proxies. It reconnects by itself and resumes with Last-Event-ID. It also shares one HTTP/2 connection with other requests. Choose WebSockets when the browser must send many messages on the same channel, as in shared editing or voice.</p></details>
+  <details class="qa"><summary>The user edits a message from ten turns ago. What happens to search, context and billing?</summary><p>A new branch starts from that message's parent. The context is the new path, so later turns from the old branch are left out. Old-branch messages stay in search with branch_active=false. The new reply is billed like any turn. Prompt caching still helps, because the prompt up to the edit point is unchanged.</p></details>
+  <details class="qa"><summary>How do you count tokens before calling the provider?</summary><p>Use the provider's tokeniser, or its token-count endpoint, to estimate. Reserve that estimate plus max_tokens from the budget. When the stream ends, the provider returns a usage block with the real numbers. Settle the difference then. Never trust a count from the browser.</p></details>
+  <details class="qa"><summary>One tenant runs a script that sends 10,000 long prompts. What protects others?</summary><p>Several layers. The tenant's TPM bucket rejects or queues anything over its quota. A per-tenant cap limits open streams. A weighted fair queue in the gateway shares provider capacity by plan. A budget hard stop ends the spend. Also alert the tenant's admin.</p></details>
+  <details class="qa"><summary>Why hash the request id instead of random() &lt; 0.95?</summary><p>Both give the right proportions. But hashing always gives the same answer for the same id. So retries and debugging can be repeated. You can also pin a request or user to one provider across all gateway servers with no shared state. Hash the user or conversation id instead to keep a whole chat on one provider. That keeps the style consistent and the cache warm.</p></details>
+  <details class="qa"><summary>How would you evaluate this design? (Microsoft)</summary><p>Check it against the requirements. Measure TTFT and uptime targets (SLOs, service level objectives) end to end. Compare cost per turn with the target. Prove isolation with leak tests. Measure quality with the golden set and with live user signals. Finally, review each failure: provider down, Redis down, worker crash, region loss. Show each one has a defined behaviour.</p></details>
+  <details class="qa"><summary>Redis goes down. What breaks?</summary><p>Live word-by-word streaming and rate limiting break. Workers keep writing and saving partial text to the database. So browsers fall back to polling the message. Rate limiting either blocks heavy tenants, or falls back to local limits on each server. Run Redis with replicas. Never make it the only copy of anything you must keep.</p></details>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–5 min</span><span>Clarify tenants, edits, search scope, providers, retention.</span></div>
-    <div class="step"><span class="t">5–9 min</span><span>Capacity: QPS, concurrent streams, storage, tokens and cost per turn.</span></div>
-    <div class="step"><span class="t">9–17 min</span><span>APIs (send vs stream split) and data model (message tree, tenant keys).</span></div>
-    <div class="step"><span class="t">17–25 min</span><span>Architecture: chat service, workers, Redis Streams, LLM gateway, async consumers.</span></div>
-    <div class="step"><span class="t">25–37 min</span><span>Deep dives: resumable streaming, context window, router and breaker, token rate limits.</span></div>
-    <div class="step"><span class="t">37–43 min</span><span>Search, caching, observability, guardrails, failure modes.</span></div>
-    <div class="step"><span class="t">43–45 min</span><span>Trade-offs and how you would evaluate the design.</span></div>
+    <div class="step"><span class="t">0–5 min</span><span>Ask about tenants, edits, search scope, providers and data retention.</span></div>
+    <div class="step"><span class="t">5–9 min</span><span>Estimate requests per second, open streams, storage, tokens and cost per turn.</span></div>
+    <div class="step"><span class="t">9–17 min</span><span>APIs, with send and stream as separate calls. Data model, with the message tree and tenant keys.</span></div>
+    <div class="step"><span class="t">17–25 min</span><span>Architecture: chat service, workers, Redis Streams, LLM gateway and background consumers.</span></div>
+    <div class="step"><span class="t">25–37 min</span><span>Deep dives: resumable streaming, the context window, the router and breaker, and token limits.</span></div>
+    <div class="step"><span class="t">37–43 min</span><span>Search, caching, monitoring, guardrails and failure cases.</span></div>
+    <div class="step"><span class="t">43–45 min</span><span>Trade-offs, and how you would evaluate the design.</span></div>
   </div>
 
   <h2 id="cheat"><span class="n">13</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Numbers: 600 sends/s peak, 7,200 open streams, ~$0.011/turn with caching.</li>
-    <li>Send (202 + ids) and stream (GET, Last-Event-ID) are separate calls.</li>
-    <li>Worker → Redis Streams → stateless SSE service; partial flush every ~2 s.</li>
-    <li>Message tree via parent_id; edits branch; context = leaf → root.</li>
-    <li>Prompt order: tools → system → summary → history → new message.</li>
-    <li>Gateway: TPM reserve/refund, fair queue, breaker with hash buckets.</li>
-    <li>Isolation: JWT tenant, RLS, per-tenant keys, mandatory search filters.</li>
-    <li>Failures: retry only before first token; worker crash → reset or FAILED.</li>
+    <li>Numbers: 600 sends per second at peak, 7,200 open streams, ~$0.011 per turn with caching.</li>
+    <li>Send (returns 202 and ids) and stream (GET with Last-Event-ID) are separate calls.</li>
+    <li>The worker writes to Redis Streams. A stateless SSE service reads from it. Partial text is saved every ~2 s.</li>
+    <li>Messages form a tree through parent_id. Edits create branches. The context is the path from the newest message back to the first.</li>
+    <li>Prompt order: tools, system prompt, summary, history, new message.</li>
+    <li>Gateway: reserve and refund tokens per minute, fair queue, breaker with hash buckets.</li>
+    <li>Isolation: tenant from the JWT, RLS, a key per tenant, required search filters.</li>
+    <li>Failures: retry only before the first token. After a worker crash, reset or mark FAILED.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>

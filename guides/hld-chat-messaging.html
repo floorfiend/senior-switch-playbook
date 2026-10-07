@@ -11,8 +11,8 @@
 <div class="wrap">
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
-  <h1>Chat / Messaging (WhatsApp, Teams)</h1>
-  <p class="lede">Design 1:1 and group chat with receipts, offline delivery, multiple devices and correct ordering.</p>
+    <h1>Chat / Messaging (WhatsApp, Teams)</h1>
+  <p class="lede">Design one-to-one and group chat. It needs read receipts, delivery to people who are offline, several devices per user, and messages that always show in the right order.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> Uber (WhatsApp, Messenger, ChatGPT-like), Microsoft (Teams), Freshworks, Goldman Sachs (YouTube Live chat), Amazon (ChatGPT)</span>
@@ -20,13 +20,24 @@
   <div class="chips"><span class="chip hot">Uber</span><span class="chip">Microsoft</span><span class="chip">Freshworks</span><span class="chip">Goldman Sachs</span><span class="chip">Amazon</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>WebSocket gateways plus a session registry: user → gateway.</li>
-    <li>Per-conversation sequence numbers, not timestamps, for order and sync.</li>
-    <li>Persist, then ACK; fan out via Kafka keyed by conversation.</li>
-    <li>Store by (conversation, time bucket) so "last 50" is one partition read.</li>
+    <li>Phones keep an open WebSocket to a gateway server. A registry remembers which gateway each user's device is on.</li>
+    <li>Give every message a number that counts up within its conversation. Use it, not timestamps, for order and catching up.</li>
+    <li>Save the message first, then confirm to the sender. Kafka, grouped by conversation, delivers it to the others.</li>
+    <li>Store messages by (conversation, time slot). Then "the last 50 messages" is one quick read.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A housing society register at the gate. Every parcel gets the next line number in that flat's page. The guard knows which wing each resident is in today. If a resident was away, they read their page from the last line number they remember.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a housing society register at the gate. Every parcel gets the next line number on that flat's page. The guard knows which wing each resident is in today. A resident who was away reads their page from the last line number they remember.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>WebSocket</dt><dd>A connection that stays open, so the server can send messages to the phone at any time. Normal HTTP only answers when the phone asks.</dd>
+    <dt>Gateway</dt><dd>A server whose only job is to hold open WebSocket connections, about 200,000 per server.</dd>
+    <dt>Session registry</dt><dd>A lookup table in Redis: "Ravi's phone is connected to gateway G3".</dd>
+    <dt>Sequence number (seq)</dt><dd>A counter per conversation: 1040, 1041, 1042. It gives the exact order, and a jump shows a message is missing.</dd>
+    <dt>ACK</dt><dd>An acknowledgement: "I received and saved it". In chat it shows up as ticks.</dd>
+    <dt>Fan-out</dt><dd>Sending one message on to many receivers, such as every member of a group.</dd>
+    <dt>Sync cursor</dt><dd>The last sequence number a device has. On reconnect it asks "give me everything after this".</dd>
+    <dt>Partition</dt><dd>One slice of the data that lives together on the same servers. Here, one conversation's messages for one time slot.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -47,63 +58,63 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Real-time transport</h4><p>Why WebSocket (or MQTT); how a message reaches a user on a different server.</p></div>
-    <div class="key"><h4>Delivery guarantees</h4><p>At-least-once with client dedup; sent / delivered / read; offline delivery.</p></div>
-    <div class="key"><h4>Ordering</h4><p>Per-conversation monotonic sequence; why wall-clock timestamps fail.</p></div>
-    <div class="key"><h4>Storage</h4><p>Write-heavy, time-ordered, partitioned by conversation; hot partitions.</p></div>
-    <div class="key"><h4>Fan-out and variants</h4><p>Groups, huge live rooms, streaming LLM replies.</p></div>
+    <div class="key"><h4>Real-time transport</h4><p>Why WebSocket (or MQTT)? How does a message reach a user who is connected to a different server?</p></div>
+    <div class="key"><h4>Delivery guarantees</h4><p>Messages may be sent more than once, and the phone hides repeats. Sent, delivered and read ticks. Delivery to offline users.</p></div>
+    <div class="key"><h4>Ordering</h4><p>A counter per conversation that only goes up. Know why clock timestamps fail.</p></div>
+    <div class="key"><h4>Storage</h4><p>Many writes, in time order, grouped by conversation. Watch for one busy chat overloading a server.</p></div>
+    <div class="key"><h4>Fan-out and variants</h4><p>Groups, huge live-stream chat rooms, and AI replies streamed word by word.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: what the reports said</summary><p>Uber asks WhatsApp and Facebook Messenger; an Uber SDE-2 (Jun 2026) got "a chat application similar to ChatGPT" (start a new chat, continue a previous one) and was rejected after getting stuck mid-design. Microsoft asks MS Teams messaging and specifically pushes on <b>sequence numbers vs timestamps</b>. Freshworks asked a WhatsApp-like HLD and told the candidate to go back and learn how WebSockets work. Goldman Sachs asked YouTube Live chat, Amazon asked ChatGPT. The common grading:</p>
+  <details class="deep"><summary>Go deeper: what the reports said</summary><p>Uber asks for WhatsApp and Facebook Messenger. An Uber SDE-2 (Jun 2026) got "a chat application similar to ChatGPT", with starting a new chat and continuing an old one. They got stuck mid-design and were rejected. Microsoft asks for MS Teams messaging. It pushes hard on <b>sequence numbers vs timestamps</b>. Freshworks asked for a WhatsApp-like design, and told the candidate to go and learn how WebSockets work. Goldman Sachs asked for YouTube Live chat. Amazon asked for ChatGPT. The common grading looks like this.</p>
   <ul>
-    <li><b>Real-time transport:</b> why WebSocket (or MQTT), how a message reaches a user connected to a different server.</li>
-    <li><b>Delivery guarantees:</b> at-least-once with client-side dedup, ack levels (sent, delivered, read), offline delivery.</li>
-    <li><b>Ordering:</b> per-conversation monotonic sequence, why wall-clock timestamps fail.</li>
-    <li><b>Storage:</b> write-heavy, time-ordered, partitioned by conversation; hot partitions.</li>
-    <li><b>Group fan-out</b> and the variants: huge rooms (live chat), streaming LLM responses (ChatGPT).</li>
+    <li><b>Real-time transport:</b> why WebSocket (or MQTT), and how a message reaches a user connected to a different server.</li>
+    <li><b>Delivery guarantees:</b> at-least-once delivery, with the phone dropping repeats. Ack levels (sent, delivered, read). Delivery to offline users.</li>
+    <li><b>Ordering:</b> a counter per conversation that only goes up, and why clock timestamps fail.</li>
+    <li><b>Storage:</b> heavy writes, in time order, split by conversation. Busy chats that overload one partition.</li>
+    <li><b>Group fan-out</b> and the variants: huge rooms (live chat) and streaming AI model (LLM) replies (ChatGPT).</li>
   </ul></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
   <div class="grid">
-    <div class="card"><h4>Functional</h4><ul><li>1:1 and group (≤ 1,000) messages</li><li>Sent / delivered / read receipts</li><li>Offline delivery and history sync on login</li><li>Multi-device; presence; media by reference</li></ul></div>
-    <div class="card"><h4>Non-functional</h4><ul><li>Send → receive p99 &lt; 500 ms when both online (Slack quotes ~500 ms worldwide)</li><li>No lost messages; duplicates hidden from users</li><li>Ordered within a conversation</li><li>99.99% availability</li></ul></div>
-    <div class="card"><h4>Out of scope</h4><ul><li>Voice / video calls</li><li>Full-text search (mention Elasticsearch per tenant)</li><li>Spam ML</li></ul></div>
+    <div class="card"><h4>Functional</h4><ul><li>One-to-one and group messages (up to 1,000 members)</li><li>Sent, delivered and read receipts</li><li>Delivery after being offline, and history sync at login</li><li>Several devices per user; online status; photos sent as a link to stored files</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>When both are online, 99 out of 100 messages arrive within 500 ms (Slack quotes ~500 ms worldwide)</li><li>No lost messages; users never see duplicates</li><li>Correct order within a conversation</li><li>Up 99.99% of the time</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Voice and video calls</li><li>Full-text search (mention Elasticsearch per customer)</li><li>Spam detection models</li></ul></div>
   </div>
   <details class="deep"><summary>Go deeper: six questions to ask first</summary><ul>
-    <li><b>1:1 only, or groups? Max group size?</b> WhatsApp caps groups (hundreds to ~1,000); Teams channels can be larger; live chat is unbounded. Size picks the fan-out strategy.</li>
-    <li><b>Multi-device?</b> Each device needs its own sync cursor; this rules out "delete from server once delivered" unless every device is tracked.</li>
-    <li><b>Message retention?</b> WhatsApp stores undelivered messages only (store-and-forward); Teams / Slack keep full history server-side and support search.</li>
-    <li><b>End-to-end encryption?</b> If yes, the server cannot index or search content; key distribution matters.</li>
-    <li><b>Media?</b> Upload to object storage via pre-signed URL; the message carries a reference.</li>
-    <li><b>Presence and typing indicators?</b> High-volume, ephemeral, best effort.</li>
+    <li><b>One-to-one only, or groups? How big can a group be?</b> WhatsApp limits groups to hundreds, up to ~1,000. Teams channels can be bigger. Live chat has no limit. The size decides how you fan out.</li>
+    <li><b>Several devices?</b> Each device needs its own sync cursor. So you cannot "delete from the server once delivered" unless you track every device.</li>
+    <li><b>How long are messages kept?</b> WhatsApp keeps only undelivered messages (store-and-forward). Teams and Slack keep the full history on the server and support search.</li>
+    <li><b>End-to-end encryption?</b> If yes, the server cannot read, index or search messages. Sharing encryption keys becomes important.</li>
+    <li><b>Photos and files?</b> The phone uploads them to file storage through a pre-signed URL, a temporary upload link. The message only carries a link.</li>
+    <li><b>Online status and typing indicators?</b> Very frequent, short-lived and best-effort. Losing one does not matter.</li>
   </ul></details>
 
   <h2 id="capacity"><span class="n">03</span>The numbers</h2>
   <div class="stats">
-    <div class="stat"><b>20B/day</b><span>messages (500M DAU × 40)</span></div>
-    <div class="stat"><b>~700k/s</b><span>peak sends (~230k avg)</span></div>
-    <div class="stat"><b>~2M/s</b><span>peak deliveries (3 devices each)</span></div>
-    <div class="stat"><b>~4 TB/day</b><span>stored; 12 TB with 3 replicas</span></div>
-    <div class="stat"><b>200M</b><span>concurrent sockets (~1,000 gateways)</span></div>
-    <div class="stat"><b>~6.7M/s</b><span>heartbeats: keep on the gateway</span></div>
+    <div class="stat"><b>20B/day</b><span>messages (500M daily users × 40)</span></div>
+    <div class="stat"><b>~700k/s</b><span>messages sent per second at peak (~230k average)</span></div>
+    <div class="stat"><b>~2M/s</b><span>deliveries per second at peak (3 devices each)</span></div>
+    <div class="stat"><b>~4 TB/day</b><span>stored; 12 TB with 3 copies</span></div>
+    <div class="stat"><b>200M</b><span>open connections at once (~1,000 gateways)</span></div>
+    <div class="stat"><b>~6.7M/s</b><span>"I'm alive" pings per second: keep them on the gateway</span></div>
   </div>
   <ul>
-    <li>Append-only, write-heavy → an <dfn title="Log-structured merge tree: writes go to memory and are flushed as sorted files, so writes are cheap">LSM</dfn> store (Cassandra / ScyllaDB).</li>
-    <li>The connection tier is the biggest fleet; heartbeats and presence stay in memory.</li>
+    <li>Messages are only added, never changed, and there are many writes. So use a store built for fast writes, an <dfn title="Log-structured merge tree: writes go to memory and are flushed as sorted files, so writes are cheap">LSM</dfn> store like Cassandra or ScyllaDB.</li>
+    <li>The connection servers are the biggest group of machines. Pings and online status stay in memory, never in a database.</li>
   </ul>
   <details class="deep"><summary>Go deeper: full estimation table</summary>
   <div class="tbl"><table>
     <tr><th>Quantity</th><th>Assumption</th><th>Result</th></tr>
-    <tr><td>DAU</td><td>Large messenger</td><td class="num">500M</td></tr>
+    <tr><td>Daily active users</td><td>Large messenger</td><td class="num">500M</td></tr>
     <tr><td>Messages / day</td><td>40 sent per user</td><td class="num">20B/day</td></tr>
     <tr><td>Average send rate</td><td>20B / 86,400</td><td class="num">~230k msg/s</td></tr>
     <tr><td>Peak send rate</td><td>~3× (evenings, New Year)</td><td class="num">~700k msg/s</td></tr>
-    <tr><td>Deliveries</td><td>Avg 3 recipient devices per message (groups, multi-device)</td><td class="num">~2M deliveries/s peak</td></tr>
-    <tr><td>Storage</td><td>20B × ~200 B (text + metadata)</td><td class="num">~4 TB/day; ×3 replicas = 12 TB/day</td></tr>
-    <tr><td>Concurrent connections</td><td>40% of DAU online at peak</td><td class="num">200M sockets</td></tr>
-    <tr><td>Gateway hosts</td><td>~200k sockets per host (tuned JVM / Netty, conservative)</td><td class="num">~1,000 hosts</td></tr>
-    <tr><td>Heartbeats</td><td>200M / 30 s interval</td><td class="num">~6.7M/s (keep them on the gateway, never to a DB)</td></tr>
+    <tr><td>Deliveries</td><td>On average 3 receiving devices per message (groups, several devices)</td><td class="num">~2M deliveries/s peak</td></tr>
+    <tr><td>Storage</td><td>20B × ~200 bytes (text and details)</td><td class="num">~4 TB/day; ×3 copies = 12 TB/day</td></tr>
+    <tr><td>Open connections</td><td>40% of daily users online at peak</td><td class="num">200M sockets</td></tr>
+    <tr><td>Gateway servers</td><td>~200k sockets per server (tuned Java / Netty, a safe estimate)</td><td class="num">~1,000 servers</td></tr>
+    <tr><td>Heartbeats</td><td>200M, one every 30 s</td><td class="num">~6.7M/s (keep them on the gateway, never send to a DB)</td></tr>
   </table></div>
-  <p>Takeaways: storage is write-heavy and append-only (LSM stores such as Cassandra / ScyllaDB fit), the connection tier is the biggest fleet, and heartbeats and presence must stay in memory.</p></details>
+  <p>What this tells you. Storage gets many writes and only adds data, so LSM stores like Cassandra or ScyllaDB fit. The connection servers are the biggest fleet. Heartbeats and online status must stay in memory.</p></details>
 
   <h2 id="arch"><span class="n">04</span>Architecture</h2>
   <div class="arch">
@@ -120,10 +131,10 @@
     <div class="tier"><span class="node">Fan-out workers<small>members → devices</small></span><span class="node">Push service<small>FCM / APNs if offline</small></span></div>
   </div>
   <ul>
-    <li><b>Send path</b> (persist, then ACK) and <b>delivery path</b> (fan-out via registry) are decoupled by Kafka.</li>
-    <li>Push over the socket is an optimisation; <b><code>/sync</code> is the correctness path.</b></li>
+    <li>The <b>send path</b> saves the message and confirms it. The <b>delivery path</b> finds each receiver's gateway and sends it there. Kafka sits between them, so a slow delivery never slows down sending.</li>
+    <li>Pushing over the socket is only a speed-up. <b>Asking the server to catch up (<code>/sync</code>) is what guarantees nothing is missed.</b></li>
   </ul>
-  <pre><code>WebSocket  wss://chat.example.com/ws   (auth: JWT on upgrade; one socket per device)
+<pre><code>WebSocket  wss://chat.example.com/ws   (auth: JWT on upgrade; one socket per device)
 
 client → server  { "type": "SEND", "clientMsgId": "d7-0091", "convId": "c_55",
                    "body": "hi", "mediaRef": null }
@@ -136,58 +147,58 @@ GET  /v1/conversations?updatedAfter=...                   → list with lastSeq 
 GET  /v1/conversations/{convId}/messages?beforeSeq=1042&amp;limit=50
 GET  /v1/sync?cursor=...                                   → missed messages after reconnect
 POST /v1/media/upload-url                                  → pre-signed S3 URL</code></pre>
-  <p><code>clientMsgId</code> is the idempotency key. Receipts are cumulative (<code>upToSeq</code>): N acks become one.</p>
+  <p><code>clientMsgId</code> is the idempotency key: the phone's own id for the message, so a resend is recognised. Receipts cover everything "up to" a number (<code>upToSeq</code>). So N separate acks become one.</p>
   <details class="deep"><summary>Go deeper: API notes, data model and Slack's real stack</summary>
-  <p><code>clientMsgId</code> is the idempotency key: a client that resends after a dropped ACK gets the same <code>msgId</code> and <code>seq</code>, so the message appears once. Receipts are cumulative (<code>upToSeq</code>), which turns N acks into one.</p>
+  <p><code>clientMsgId</code> is the idempotency key. Say the confirmation was lost and the phone sends again. It gets back the same <code>msgId</code> and <code>seq</code>, so the message appears only once. Receipts say "everything up to N" (<code>upToSeq</code>), which turns N acks into one.</p>
   <div class="tbl"><table>
     <tr><th>Store</th><th>Shape</th><th>Partition / clustering</th></tr>
-    <tr><td>Cassandra / ScyllaDB <code>messages</code></td><td>conv_id, bucket, seq, msg_id, sender_id, body, media_ref, created_at</td><td>Partition (conv_id, bucket); clustering seq DESC. Bucket = time window (e.g. 10 days) so busy chats do not create unbounded partitions</td></tr>
+    <tr><td>Cassandra / ScyllaDB <code>messages</code></td><td>conv_id, bucket, seq, msg_id, sender_id, body, media_ref, created_at</td><td>Partition (conv_id, bucket), sorted by seq, newest first. Bucket = a time slot (e.g. 10 days), so busy chats do not grow one partition forever.</td></tr>
     <tr><td><code>conversations</code> (Postgres or Cassandra)</td><td>conv_id, type, title, member_count, last_seq</td><td>conv_id</td></tr>
-    <tr><td><code>members</code></td><td>conv_id, user_id, role, last_read_seq, last_delivered_seq</td><td>Two tables: by conv_id (fan-out) and by user_id (inbox list)</td></tr>
+    <tr><td><code>members</code></td><td>conv_id, user_id, role, last_read_seq, last_delivered_seq</td><td>Two tables: by conv_id (for fan-out) and by user_id (for the chat list)</td></tr>
     <tr><td><code>user_inbox</code></td><td>user_id, conv_id, last_seq, updated_at</td><td>Partition user_id; drives the chat list screen</td></tr>
-    <tr><td>Redis session registry</td><td><code>user_id → {deviceId: gatewayId}</code> with TTL refreshed by heartbeat</td><td>Sharded by user_id</td></tr>
-    <tr><td>Redis sequence counters</td><td><code>INCR seq:{conv_id}</code> (or owned by the conversation's shard leader)</td><td>conv_id</td></tr>
-    <tr><td>S3 + CDN</td><td>Media blobs, thumbnails</td><td>Content hash</td></tr>
+    <tr><td>Redis session registry</td><td><code>user_id → {deviceId: gatewayId}</code>, with an expiry refreshed by each heartbeat</td><td>Split by user_id</td></tr>
+    <tr><td>Redis sequence counters</td><td><code>INCR seq:{conv_id}</code> (or kept by the server that owns the conversation)</td><td>conv_id</td></tr>
+    <tr><td>S3 + CDN</td><td>Photos, files, thumbnails</td><td>Content hash</td></tr>
   </table></div>
-  <p>Discord stored messages in Cassandra partitioned by (channel_id, time bucket), later moved to ScyllaDB (177 Cassandra nodes to 72 Scylla nodes) and put a request-coalescing data service in front of hot partitions. That is the same layout, with real numbers to quote.</p>
+  <p>Discord stored messages in Cassandra, split by (channel_id, time bucket). Later it moved to ScyllaDB, going from 177 Cassandra nodes to 72 Scylla nodes. It also added a data service in front of busy partitions that merges identical requests into one. That is the same layout, with real numbers you can quote.</p>
   <ol>
-    <li>Sender's gateway forwards SEND to the chat service.</li>
-    <li>Chat service checks membership, dedupes on <code>(sender, clientMsgId)</code>, assigns <code>seq</code> for the conversation, writes the message, updates <code>last_seq</code>, publishes to Kafka, and returns ACK. The sender sees one tick only after the write is durable.</li>
-    <li>Fan-out workers expand members to devices, look up each device's gateway in the registry, and send over an internal RPC / pub-sub channel. Offline devices get a push notification; their messages wait in the DB until the next sync.</li>
-    <li>Recipient devices reply DELIVERED / READ with <code>upToSeq</code>; that flows back as a receipt event to the sender.</li>
-    <li>On reconnect a device calls <code>/sync</code> with its per-conversation cursors and pulls everything with seq greater than its cursor. Push over the socket is an optimisation; sync is the correctness path.</li>
+    <li>The sender's gateway passes the SEND to the chat service.</li>
+    <li>The chat service checks the sender is a member. It drops repeats by <code>(sender, clientMsgId)</code>. It gives the message the next <code>seq</code> for the conversation, saves it and updates <code>last_seq</code>. It publishes to Kafka and returns the ACK. The sender sees one tick only after the message is safely saved.</li>
+    <li>Fan-out workers turn the member list into a device list. They look up each device's gateway in the registry. They send through an internal call or pub/sub channel. Offline devices get a push notification. Their messages wait in the database until the next sync.</li>
+    <li>Receiving devices reply DELIVERED or READ with <code>upToSeq</code>. That travels back to the sender as a receipt.</li>
+    <li>On reconnect, a device calls <code>/sync</code> with its cursor for each conversation. It pulls everything with a higher seq. Pushing over the socket is only a speed-up. Sync is what guarantees correctness.</li>
   </ol>
-  <p>Slack's real-time stack follows the same split: Gateway Servers hold WebSocket subscriptions per region, Channel Servers own channels via consistent hashing, and a hash-ring manager replaces failed channel servers within about 20 seconds.</p></details>
+  <p>Slack's real-time system uses the same split. Gateway Servers hold the WebSocket connections in each region. Channel Servers each own a set of channels, picked by consistent hashing. A hash-ring manager replaces a failed channel server within about 20 seconds.</p></details>
 
   <h2 id="follow"><span class="n">05</span>Follow one message</h2>
   <div class="stepper"><b class="title">Asha sends "hi" to Ravi in conversation c_55</b><div class="frames">
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Asha's gateway G7<small>SEND clientMsgId d7-0091</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Chat service</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store dim">Registry</span><span class="node dim">Ravi's gateway G3</span></div></div>
-      <figcaption>Asha's phone sends a SEND frame over its WebSocket to gateway G7.</figcaption>
+      <figcaption>Asha's phone sends the message over its open connection to gateway G7. The phone tags it with its own id, so a resend can be recognised.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Asha's gateway G7</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Chat service<small>member? dedupe? seq = 1042</small></span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store dim">Registry</span><span class="node dim">Ravi's gateway G3</span></div></div>
-      <figcaption>The chat service checks membership, dedupes on (sender, clientMsgId) and assigns seq 1042 for c_55.</figcaption>
+      <figcaption>The chat service checks Asha is in the chat and has not sent this message already. It gives it the next number in the chat: 1042.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Asha's gateway G7<small>ACK seq 1042 → one tick</small></span></div><div class="down">↑</div><div class="tier"><span class="node dim">Chat service</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Messages DB<small>(c_55, bucket) seq 1042</small></span><span class="node store hl">Kafka<small>key c_55</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store dim">Registry</span><span class="node dim">Ravi's gateway G3</span></div></div>
-      <figcaption>Write is durable, event published, then ACK. Asha sees one tick.</figcaption>
+      <figcaption>The message is saved and handed to Kafka. Only then is Asha told "saved". She sees one tick.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Asha's gateway G7</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Chat service</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Fan-out</span><span class="node store hl">Registry<small>Ravi/phone → G3</small></span><span class="node dim">Ravi's gateway G3</span></div></div>
-      <figcaption>A fan-out worker expands members to devices and looks up each device's gateway.</figcaption>
+      <figcaption>A delivery worker lists the members' devices. It looks up which gateway each device is connected to. Ravi's phone is on G3.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Asha's gateway G7</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Chat service</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store dim">Registry</span><span class="node hl">Ravi's gateway G3<small>MSG seq 1042</small></span></div></div>
-      <figcaption>G3 pushes the MSG frame. Ravi's phone replies DELIVERED upToSeq 1042; Asha sees two ticks.</figcaption>
+      <figcaption>G3 sends the message to Ravi's phone. The phone replies "delivered, up to 1042". Asha sees two ticks.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Asha's gateway G7</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Chat service</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store dim">Registry</span><span class="node bad">Ravi's gateway G3<small>crashed</small></span></div></div>
-      <figcaption>Failure: G3 dies before Ravi's laptop got seq 1043. Nothing is lost: the message is already in the DB.</figcaption>
+      <figcaption>Failure case. G3 dies before Ravi's laptop gets message 1043. Nothing is lost, because the message is already saved in the database.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Asha's gateway G7</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Chat service<small>/sync cursor 1042 → 1043</small></span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Messages DB</span><span class="node store dim">Kafka</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Fan-out</span><span class="node store hl">Registry<small>laptop → G9</small></span><span class="node dim">G9</span></div></div>
-      <figcaption>The laptop reconnects to G9 with jitter, re-registers, and calls /sync with cursor 1042. It gets 1043.</figcaption>
+      <figcaption>After a short random wait, the laptop connects to G9 and registers there. It asks "what came after 1042?" and gets 1043.</figcaption>
     </figure>
   </div></div>
 
@@ -195,16 +206,16 @@ POST /v1/media/upload-url                                  → pre-signed S3 URL
 
   <h3>6.1 Sequence numbers vs timestamps (the Teams question)</h3>
   <div class="tbl"><table class="race"><thead><tr><th>Server time</th><th>Chat server A</th><th>Chat server B</th><th>Order by timestamp</th></tr></thead><tbody>
-    <tr><td>10:31:02.118</td><td>"Meet at 5?" commits, clock +4 ms → ts .122</td><td></td><td></td></tr>
-    <tr><td>10:31:02.121</td><td></td><td>"Yes" commits, clock −1 ms → ts .120</td><td></td></tr>
+    <tr><td>10:31:02.118</td><td>"Meet at 5?" saved; clock 4 ms fast → ts .122</td><td></td><td></td></tr>
+    <tr><td>10:31:02.121</td><td></td><td>"Yes" saved; clock 1 ms slow → ts .120</td><td></td></tr>
     <tr><td>read</td><td></td><td></td><td class="bad">"Yes" shown before "Meet at 5?"</td></tr>
-    <tr><td>sync</td><td colspan="2">client cursor = .122; asks "after .122"</td><td class="bad">"Yes" (.120) is skipped forever</td></tr>
+    <tr><td>sync</td><td colspan="2">phone's cursor = .122; it asks "after .122"</td><td class="bad">"Yes" (.120) is skipped forever</td></tr>
   </tbody></table></div>
   <div class="stepper"><b class="title">Per-conversation seq: gap detection</b><div class="frames">
     <figure class="frame">
       <div class="cells idx"><span class="cell ok" data-i="seq">1039</span><span class="cell ok">1040</span></div>
       <div class="ptrs"><span class="on">client cursor = 1040</span></div>
-      <figcaption>The phone has everything up to 1040.</figcaption>
+      <figcaption>The phone has every message up to 1040.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell ok" data-i="seq">1039</span><span class="cell ok">1040</span><span class="cell bad">?</span><span class="cell hl">1042</span></div>
@@ -214,149 +225,149 @@ POST /v1/media/upload-url                                  → pre-signed S3 URL
     <figure class="frame">
       <div class="cells idx"><span class="cell ok" data-i="seq">1039</span><span class="cell ok">1040</span><span class="cell hl">1041</span><span class="cell ok">1042</span></div>
       <div class="ptrs"><span class="on">GET /sync?after=1040</span></div>
-      <figcaption>Fetch after 1040; 1041 fills the gap. Order is exact.</figcaption>
+      <figcaption>The phone asks for everything after 1040. 1041 fills the gap, and the order is exact.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell ok" data-i="seq">1039</span><span class="cell ok">1040</span><span class="cell ok">1041</span><span class="cell ok">1042</span></div>
       <div class="ptrs"><span class="on">cursor = 1042</span><span>DELIVERED upToSeq 1042</span></div>
-      <figcaption>One cumulative ack covers all three. The cursor is a perfect sync point.</figcaption>
+      <figcaption>One "delivered up to 1042" reply covers all three. The number is a perfect bookmark for the next sync.</figcaption>
     </figure>
   </div></div>
   <div class="vs">
-    <div><h4>Redis <code>INCR seq:{conv}</code></h4><ul><li class="pro">Simple, ~100k ops/s per shard</li><li class="con">Failover can reissue numbers: reset to max(DB) + gap</li></ul><p class="when">Quick, common answer.</p></div>
-    <div class="pick"><h4>Conversation owner <span class="tag">usual pick</span></h4><ul><li class="pro">One partition owns the conversation; increments in memory</li><li class="pro">No external call per message</li></ul><p class="when">At scale (Kafka partition or consistent hash).</p></div>
-    <div><h4>DB conditional write</h4><ul><li class="pro">Correct (<code>UPDATE … RETURNING</code> or Cassandra LWT)</li><li class="con">Slower</li></ul><p class="when">Low-traffic chats.</p></div>
+    <div><h4>Redis <code>INCR seq:{conv}</code></h4><ul><li class="pro">Simple; ~100k operations per second per Redis server</li><li class="con">After a Redis failover, numbers can be handed out twice. Fix: reset to the highest saved number plus a gap.</li></ul><p class="when">Quick, common answer.</p></div>
+    <div class="pick"><h4>Conversation owner <span class="tag">usual pick</span></h4><ul><li class="pro">One server owns each conversation and counts in memory</li><li class="pro">No extra network call per message</li></ul><p class="when">At scale (pick the owner by Kafka partition or consistent hashing).</p></div>
+    <div><h4>DB conditional write</h4><ul><li class="pro">Correct (<code>UPDATE … RETURNING</code> or a Cassandra lightweight transaction)</li><li class="con">Slower</li></ul><p class="when">Quiet chats.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: why timestamps fail, and Snowflake ids</summary>
-  <p>Ordering by client timestamp fails because device clocks are wrong. Ordering by server timestamp fails because two chat-service instances have skewed clocks (NTP keeps them within milliseconds, not exactly), two messages can share a millisecond, and a message written later can carry an earlier timestamp. You also cannot sync with a timestamp cursor safely: "give me everything after 10:31:02.123" misses a message committed late with timestamp 10:31:02.120.</p>
-  <p>Use a <b>per-conversation monotonic sequence</b>, assigned by one authority for that conversation:</p>
+  <p>Ordering by the phone's timestamp fails because phone clocks are often wrong. Ordering by server timestamp also fails, for three reasons. Two chat servers' clocks differ slightly: NTP keeps them within milliseconds, not exactly equal. Two messages can share the same millisecond. And a message saved later can carry an earlier timestamp. You also cannot sync safely with a timestamp cursor. "Give me everything after 10:31:02.123" misses a message saved late with timestamp 10:31:02.120.</p>
+  <p>Instead, use a <b>counter per conversation that only goes up</b>. One authority hands out the numbers for each conversation. There are three ways to do it.</p>
   <ul>
-    <li><b>Redis <code>INCR seq:{conv}</code></b>: simple, ~100k ops/s per shard. Risk: Redis failover can reissue numbers; persist <code>last_seq</code> and on recovery set the counter to max(DB) + gap.</li>
-    <li><b>Conversation owner</b>: route all writes for a conversation to one chat-service partition (Kafka partition or consistent hash), which increments in memory and persists. No external call per message.</li>
-    <li><b>DB conditional write</b>: <code>UPDATE conversations SET last_seq = last_seq + 1 ... RETURNING</code> in SQL, or Cassandra LWT. Correct, slower; fine for low-traffic chats.</li>
+    <li><b>Redis <code>INCR seq:{conv}</code></b>: simple, about 100k operations per second per Redis server. The risk: after a Redis failover, it can hand out a number twice. So also save <code>last_seq</code> in the database. On recovery, set the counter to the highest saved number plus a gap.</li>
+    <li><b>Conversation owner</b>: send all writes for a conversation to one chat server, chosen by Kafka partition or consistent hashing. It counts in memory and saves. No extra network call per message.</li>
+    <li><b>DB conditional write</b>: <code>UPDATE conversations SET last_seq = last_seq + 1 ... RETURNING</code> in SQL, or a Cassandra lightweight transaction (LWT). Correct but slower. Fine for quiet chats.</li>
   </ul>
-  <p>The sequence gives total order within a conversation, gap detection (client has 1040 and receives 1042 → fetch 1041), and a perfect sync cursor. Global order across conversations is not needed. Snowflake-style ids (timestamp + machine + counter) are unique and roughly sortable but not gap-free, so they do not support gap detection; use them for <code>msg_id</code>, not for ordering. Display time still comes from the server timestamp.</p></details>
+  <p>The counter gives three things. A total order within a conversation. Gap detection: the phone has 1040, receives 1042, so it fetches 1041. And a perfect sync cursor. You do not need one global order across all conversations. Snowflake-style ids combine timestamp, machine and counter. They are unique and roughly sorted, but they have gaps, so they cannot detect missing messages. Use them for <code>msg_id</code>, not for ordering. The time shown on screen still comes from the server timestamp.</p></details>
 
   <h3>6.2 Delivery guarantees and acks</h3>
   <ol class="walk">
-    <li><span class="who">Client → server</span><span>Retry SEND with the same <code>clientMsgId</code> until ACK; server dedupes. At-least-once + dedup = effectively-once.</span></li>
-    <li><span class="who">Server → client</span><span>Push MSG; client acks DELIVERED up to a seq. The cursor in the DB is the truth; <code>/sync</code> fills gaps.</span></li>
-    <li><span class="who">Group receipts</span><span><code>last_read_seq</code> per member; "read by 12 of 40" is counted lazily.</span></li>
-    <li><span class="who">Offline</span><span>Push notification wakes the app; the app syncs.</span></li>
+    <li><span class="who">Client → server</span><span>The phone resends until it gets a confirmation, always with the same message id (<code>clientMsgId</code>). The server drops repeats. Sending at least once plus dropping repeats means each message appears once.</span></li>
+    <li><span class="who">Server → client</span><span>The server pushes the message. The phone replies "delivered up to" a number. That number, saved in the database, is the truth. Catching up (<code>/sync</code>) fills any gaps.</span></li>
+    <li><span class="who">Group receipts</span><span>Store how far each member has read (<code>last_read_seq</code>). "Read by 12 of 40" is counted only when someone asks.</span></li>
+    <li><span class="who">Offline</span><span>A push notification wakes the app. The app then catches up.</span></li>
   </ol>
   <details class="deep"><summary>Go deeper: delivery guarantees in full</summary><ul>
-    <li><b>Client → server</b>: client retries SEND until ACK, with the same <code>clientMsgId</code>. Server dedupes (unique key or a short-TTL Redis set). At-least-once plus dedup gives effectively-once.</li>
-    <li><b>Server → client</b>: server pushes MSG; client acks DELIVERED up to a seq. Unacked frames are not tracked per message in memory; the device's cursor in the DB is the truth and <code>/sync</code> fills gaps.</li>
-    <li><b>Receipts in groups</b>: store <code>last_read_seq</code> per member; "read by 12 of 40" is a count over members, computed lazily when the sender opens message info.</li>
-    <li><b>Offline</b>: messages stay in the conversation; a push notification wakes the app; the app syncs. WhatsApp-style store-and-forward deletes server copies once every registered device has acked.</li>
+    <li><b>Client → server</b>: the phone resends SEND with the same <code>clientMsgId</code> until it gets an ACK. The server drops repeats, using a unique key or a short-lived Redis set. At-least-once delivery plus dropping repeats gives "effectively once".</li>
+    <li><b>Server → client</b>: the server pushes the message, and the phone acks DELIVERED up to a seq. The server does not track each unacked message in memory. The device's cursor in the database is the truth, and <code>/sync</code> fills gaps.</li>
+    <li><b>Receipts in groups</b>: store <code>last_read_seq</code> for each member. "Read by 12 of 40" is a count over members. It is calculated only when the sender opens message info.</li>
+    <li><b>Offline</b>: messages stay in the conversation. A push notification wakes the app, and the app syncs. In WhatsApp-style store-and-forward, the server deletes its copy once every registered device has acked.</li>
   </ul></details>
 
   <h3>6.3 Group fan-out</h3>
   <div class="vs">
-    <div class="pick"><h4>Write once, notify <span class="tag">usual pick</span></h4><ul><li class="pro">Store once in the conversation; push to online members; others pull on sync</li></ul><p class="when">Default for chat: every member reads the same ordered log.</p></div>
-    <div><h4>Per-user inbox copy</h4><ul><li class="pro">Each device gets its own copy</li><li class="con">Write amplification</li></ul><p class="when">Small groups; E2E encryption.</p></div>
-    <div><h4>Pub/sub per room, sampled</h4><ul><li class="pro">Gateways subscribe once per room, broadcast locally</li><li class="con">Best-effort order</li></ul><p class="when">YouTube Live, Teams town halls.</p></div>
+    <div class="pick"><h4>Write once, notify <span class="tag">usual pick</span></h4><ul><li class="pro">Store the message once in the conversation. Push to members who are online. Others fetch it when they sync.</li></ul><p class="when">Default for chat: every member reads the same ordered log.</p></div>
+    <div><h4>Per-user inbox copy</h4><ul><li class="pro">Each device gets its own copy</li><li class="con">One message becomes many writes</li></ul><p class="when">Small groups; end-to-end encryption.</p></div>
+    <div><h4>Pub/sub per room, sampled</h4><ul><li class="pro">Each gateway subscribes once per room and passes messages to its own viewers</li><li class="con">Order is best-effort</li></ul><p class="when">YouTube Live, Teams town halls.</p></div>
   </div>
-  <p>1,000-member group: batch the 1,000 registry lookups (<code>MGET</code>) and send one frame per gateway listing its local recipients.</p>
+  <p>For a 1,000-member group, look up all 1,000 gateways in one batch (<code>MGET</code>). Then send one message per gateway, listing the receivers connected to it.</p>
 
   <h3>6.4 Variants: YouTube Live chat and ChatGPT</h3>
   <div class="keys">
-    <div class="key"><h4>YouTube Live</h4><p>A million viewers: room log, two-level pub/sub, 100–250 ms batches, <b>sample</b> above reading speed, slow mode. Super Chats on a reliable path.</p></div>
-    <div class="key"><h4>ChatGPT-like</h4><p>Same storage; the other side is an LLM. Stream tokens over SSE / WebSocket, persist incrementally, load last N turns + summary, queue GPU work by priority.</p></div>
+    <div class="key"><h4>YouTube Live</h4><p>A million viewers. Keep one log per room and a two-level pub/sub. Send in 100–250 ms batches. Show only a <b>sample</b> when messages come faster than people can read. Add slow mode. Paid Super Chats take a reliable path.</p></div>
+    <div class="key"><h4>ChatGPT-like</h4><p>Same storage, but the other side is an AI model. Stream words back as they are generated. Save as you go. Load recent turns plus a summary. Queue GPU work by priority.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: both variants in full</summary>
-  <p><b>YouTube Live (Goldman Sachs).</b> One room, a million viewers, thousands of messages per second. Per-message fan-out to a million sockets is impossible and unreadable. Write messages to a room log partitioned by room; gateways subscribe once per room (a two-level pub/sub tree) and broadcast to their local viewers; batch messages into 100–250 ms frames; <b>sample</b> what each viewer sees when the rate exceeds what a human can read; apply slow mode and per-user rate limits; ordering is best effort, no read receipts. Super Chats / pinned messages go through a separate, reliable path.</p>
-  <p><b>ChatGPT-like (Uber, Amazon).</b> Conversations and messages are stored like any chat (conversation_id partition, seq per turn), but the "other participant" is an LLM. Send creates the user turn, enqueues a generation job, and streams tokens back over SSE or WebSocket; the assistant turn is persisted incrementally (or at completion with checkpoints) so a refresh mid-stream can resume. Continue-chat loads the last N turns plus a running summary to fit the context window. Add per-user token rate limits, a queue in front of GPU-bound inference with priority tiers, cancellation (stop generating), and idempotent retries of a turn keyed by <code>(conversation_id, turn_seq)</code>.</p></details>
+  <p><b>YouTube Live (Goldman Sachs).</b> One room has a million viewers and thousands of messages per second. Sending each message to a million sockets is impossible, and nobody could read it anyway. Write messages to a room log, split by room. Each gateway subscribes once per room and passes messages to its own viewers. This is a two-level pub/sub tree. Group messages into 100–250 ms batches. When messages arrive faster than a human can read, show each viewer only a <b>sample</b>. Add slow mode and per-user rate limits. Order is best-effort, and there are no read receipts. Super Chats and pinned messages go through a separate, reliable path.</p>
+  <p><b>ChatGPT-like (Uber, Amazon).</b> Conversations and messages are stored like any chat: partition by conversation_id, with a seq per turn. But the "other participant" is an LLM (large language model). Sending creates the user's turn and queues a generation job. Words stream back over SSE or WebSocket. SSE (server-sent events) is a simple one-way stream from server to browser. The assistant's turn is saved as it grows, or at the end with checkpoints. Then a page refresh in the middle can resume. To continue a chat, load the last N turns plus a running summary. That keeps it inside the model's context window, the most text it can read at once. Add per-user token rate limits. Put a queue with priority levels in front of the GPU servers. Support "stop generating". Make a retried turn safe by keying it on <code>(conversation_id, turn_seq)</code>.</p></details>
 
   <h3>6.5 Presence</h3>
   <div class="cells"><span class="cell ok">heartbeat 0 s</span><span class="cell ok">30 s</span><span class="cell bad">60 s missed</span><span class="cell bad">90 s missed</span><span class="cell dim">offline</span></div>
-  <p>Presence = registry entry with TTL refreshed every 30 s. Mark offline after 2 missed heartbeats (debounce). Publish changes only to users with that chat open or in recent contacts; fetch on demand for huge contact lists.</p>
+  <p>"Online" is a registry entry that expires unless renewed. The phone renews it with a heartbeat every 30 s. Mark a user offline only after 2 missed heartbeats, so a short network blip does not flicker. Send status changes only to people who have that chat open, or who are recent contacts. For huge contact lists, fetch status only when needed.</p>
 
   <h2 id="tradeoffs"><span class="n">07</span>Design choices</h2>
   <div class="vs">
-    <div class="pick"><h4>WebSocket <span class="tag">usual pick</span></h4><ul><li class="pro">Full duplex, low overhead, browser native</li><li class="con">Stateful fleet; LB and deploys need draining</li></ul><p class="when">Default for chat.</p></div>
-    <div><h4>Long polling / SSE</h4><ul><li class="pro">Works through any proxy; SSE simple for server push</li><li class="con">Higher overhead; SSE is one-way</li></ul><p class="when">Fallback; LLM token streaming.</p></div>
-    <div><h4>MQTT</h4><ul><li class="pro">Tiny frames, good on flaky mobile networks</li><li class="con">Extra broker to run</li></ul><p class="when">Mobile-first (Facebook Messenger used MQTT).</p></div>
+    <div class="pick"><h4>WebSocket <span class="tag">usual pick</span></h4><ul><li class="pro">Both sides can send at any time; low overhead; built into browsers</li><li class="con">Servers hold state, so load balancers and deploys must move connections gently</li></ul><p class="when">Default for chat.</p></div>
+    <div><h4>Long polling / SSE</h4><ul><li class="pro">Works through any proxy; SSE is simple for server-to-phone messages</li><li class="con">More overhead; SSE only goes one way</li></ul><p class="when">Fallback; streaming AI replies.</p></div>
+    <div><h4>MQTT</h4><ul><li class="pro">Tiny messages; good on weak mobile networks</li><li class="con">One more message broker to run</li></ul><p class="when">Mobile-first apps (Facebook Messenger used MQTT).</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Cassandra / Scylla <span class="tag">usual pick</span></h4><ul><li class="pro">Write-heavy, partition by conversation, linear scale</li><li class="con">No joins; tombstones on deletes; hot partitions</li></ul><p class="when">Message history at scale.</p></div>
-    <div><h4>Postgres / MySQL (sharded)</h4><ul><li class="pro">Transactions, familiar</li><li class="con">Manual sharding; B-tree write amplification</li></ul><p class="when">Smaller scale; enterprise chat with strong tenant boundaries.</p></div>
+    <div class="pick"><h4>Cassandra / Scylla <span class="tag">usual pick</span></h4><ul><li class="pro">Handles heavy writes, splits by conversation, scales by adding servers</li><li class="con">No joins; deletes leave "tombstone" markers that slow reads; busy partitions</li></ul><p class="when">Message history at scale.</p></div>
+    <div><h4>Postgres / MySQL (sharded)</h4><ul><li class="pro">Transactions; familiar</li><li class="con">You split data by hand; B-tree indexes make each write cost more</li></ul><p class="when">Smaller scale; company chat with strict separation per customer.</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Per-conversation sequence <span class="tag">always</span></h4><ul><li class="pro">Total order, gap detection, sync cursor</li><li class="con">Single writer per conversation</li></ul><p class="when">Ordering.</p></div>
-    <div><h4>Timestamps / Snowflake ids</h4><ul><li class="pro">No coordination</li><li class="con">Clock skew, no gap detection</li></ul><p class="when">Ids and display time only.</p></div>
+    <div class="pick"><h4>Per-conversation sequence <span class="tag">always</span></h4><ul><li class="pro">Exact order, gap detection, sync bookmark</li><li class="con">Only one writer per conversation</li></ul><p class="when">Ordering.</p></div>
+    <div><h4>Timestamps / Snowflake ids</h4><ul><li class="pro">No coordination needed</li><li class="con">Clocks differ; cannot detect gaps</li></ul><p class="when">Ids and display time only.</p></div>
   </div>
 
   <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
   <div class="keys">
-    <div class="key"><h4>Gateway dies</h4><p>200k clients reconnect with jitter, re-register, sync from cursors. Nothing lived only in gateway memory.</p></div>
-    <div class="key"><h4>Registry stale</h4><p>Delivery fails → fall back to push. Sync still guarantees correctness.</p></div>
-    <div class="key"><h4>Hot conversation</h4><p>Time buckets bound partitions; coalesce identical reads (Discord); cache recent messages in Redis.</p></div>
-    <div class="key"><h4>Multi-region</h4><p>Each conversation has a home region that assigns seq. Accept cross-region latency over multi-master seq.</p></div>
+    <div class="key"><h4>Gateway dies</h4><p>200k phones reconnect after a short random wait, register again and catch up from their bookmarks. Nothing lived only in the gateway's memory.</p></div>
+    <div class="key"><h4>Registry stale</h4><p>If delivery to the listed gateway fails, send a push notification instead. Sync still guarantees nothing is missed.</p></div>
+    <div class="key"><h4>Hot conversation</h4><p>Time slots cap partition size. Merge identical reads into one (Discord). Cache recent messages in Redis.</p></div>
+    <div class="key"><h4>Multi-region</h4><p>Each conversation has one home region that hands out its numbers. Accept slower cross-region chats rather than two regions numbering at once.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full scaling notes</summary><ul>
-    <li><b>Gateway dies.</b> Its 200k clients reconnect (with jittered backoff to avoid a thundering herd) to other gateways, re-register, and sync from their cursors. No message is lost because nothing was only in gateway memory.</li>
-    <li><b>Registry stale.</b> Delivery to a gateway that no longer has the device fails; the worker falls back to push notification. Correctness still comes from sync.</li>
-    <li><b>Hot conversation.</b> A large active group hammers one partition. Time buckets bound partition size; a coalescing read layer (Discord) collapses identical concurrent reads; recent messages cached in Redis per conversation.</li>
-    <li><b>Kafka lag.</b> Fan-out workers scale with partitions; per-conversation ordering is preserved because the key is conv_id.</li>
-    <li><b>Multi-region.</b> Users connect to the nearest region. Each conversation has a home region that assigns seq; cross-region members receive via replicated Kafka (MirrorMaker) or inter-region RPC. Accept higher latency for cross-region groups rather than multi-master sequence assignment.</li>
-    <li><b>10×.</b> More gateways (stateless apart from sockets), more Kafka partitions, Cassandra scales linearly. The registry is the piece to shard carefully.</li>
+    <li><b>Gateway dies.</b> Its 200k phones reconnect to other gateways. Each waits a random, growing delay, so they do not all hit at once (a "thundering herd"). They register again and sync from their cursors. No message is lost, because nothing lived only in gateway memory.</li>
+    <li><b>Registry stale.</b> Delivery to a gateway that no longer has the device fails. The worker then sends a push notification. Correctness still comes from sync.</li>
+    <li><b>Hot conversation.</b> A big, active group hammers one partition. Time buckets limit partition size. A read layer that merges identical requests (Discord) turns many reads into one. Recent messages are cached in Redis per conversation.</li>
+    <li><b>Kafka lag.</b> Fan-out workers scale with the number of partitions. Order within a conversation is kept, because the key is conv_id.</li>
+    <li><b>Multi-region.</b> Users connect to the nearest region. Each conversation has a home region that assigns seq. Members in other regions receive messages through copied Kafka topics (MirrorMaker) or calls between regions. Accept higher delay for cross-region groups, rather than letting several regions assign numbers at once.</li>
+    <li><b>10×.</b> Add gateways (they hold no state apart from sockets) and Kafka partitions. Cassandra grows by adding servers. The registry is the piece to split carefully.</li>
   </ul></details>
 
   <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
-      <li>"WebSockets and a message queue" with no explanation of how a socket works or how cross-server delivery happens (the Freshworks feedback).</li>
-      <li>Ordering by timestamp and not seeing the skew problem when the interviewer asks.</li>
-      <li>Messages held only in gateway memory or a queue, so a gateway crash loses them; no sync path.</li>
-      <li>Relational schema with one global messages table and no partitioning story.</li>
-      <li>For ChatGPT-like: designing a generic chat and never addressing streaming, context length, or inference capacity; getting stuck mid-way (the Uber reject).</li>
+      <li>"WebSockets and a message queue", with no explanation of how a socket works or how messages cross servers (the Freshworks feedback).</li>
+      <li>Ordering by timestamp, and not seeing the clock problem when the interviewer asks.</li>
+      <li>Keeping messages only in gateway memory or a queue, so a gateway crash loses them. No sync path.</li>
+      <li>One global relational messages table, with no plan for splitting it.</li>
+      <li>For ChatGPT-like: designing a plain chat and never covering streaming, context length or GPU capacity. Getting stuck halfway (the Uber rejection).</li>
     </ul>
   </div>
 
   <h2 id="quiz"><span class="n">10</span>Quick check</h2>
-  <div class="quiz" data-answer="1"><p class="q">Ravi is connected to gateway G3; Asha's message lands on chat service instance 12. How does it reach Ravi?</p>
-    <div class="opts"><button class="opt" type="button">Broadcast to every gateway</button><button class="opt" type="button">Fan-out worker looks up Ravi's device in the session registry and sends to G3</button><button class="opt" type="button">Ravi's phone polls instance 12</button></div>
-    <p class="why">The registry maps user and device to gateway. A miss means offline: push notification plus sync.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">Why is a per-conversation seq better than a server timestamp as a sync cursor?</p>
-    <div class="opts"><button class="opt" type="button">It is smaller to store</button><button class="opt" type="button">It is globally unique</button><button class="opt" type="button">It is gap-free, so a client can detect and fetch missing messages</button></div>
-    <p class="why">Skewed clocks can give a later message an earlier timestamp, and "after T" would skip it forever.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">A gateway crashes with 200k users connected. What prevents message loss?</p>
-    <div class="opts"><button class="opt" type="button">Messages were persisted before ACK; clients reconnect and /sync from their cursors</button><button class="opt" type="button">The gateway replicates its memory to a standby</button><button class="opt" type="button">Kafka redelivers to the same gateway</button></div>
-    <p class="why">Push is an optimisation; the DB and cursors are the truth.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">A YouTube Live room has a million viewers. Best delivery model?</p>
-    <div class="opts"><button class="opt" type="button">Per-message fan-out to each socket with read receipts</button><button class="opt" type="button">Gateways subscribe once per room, batch frames and sample above reading speed</button><button class="opt" type="button">Copy each message into a million inboxes</button></div>
-    <p class="why">Per-socket fan-out is impossible and unreadable. Two-level pub/sub plus sampling scales.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Ravi is connected to gateway G3. Asha's message lands on chat server number 12. How does it reach Ravi?</p>
+    <div class="opts"><button class="opt" type="button">Send it to every gateway</button><button class="opt" type="button">A delivery worker looks up Ravi's device in the session registry and sends to G3</button><button class="opt" type="button">Ravi's phone keeps asking server 12</button></div>
+    <p class="why">The registry says which gateway each user's device is on. If the device is not there, it is offline: send a push notification, and it will sync later.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Why is a per-conversation counter a better sync bookmark than a server timestamp?</p>
+    <div class="opts"><button class="opt" type="button">It takes less space</button><button class="opt" type="button">It is unique across the world</button><button class="opt" type="button">It has no gaps, so a phone can spot and fetch missing messages</button></div>
+    <p class="why">Server clocks differ slightly. A later message can get an earlier timestamp, and "after T" would skip it forever.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">A gateway crashes with 200k users connected. What stops messages from being lost?</p>
+    <div class="opts"><button class="opt" type="button">Messages were saved before the sender was told; phones reconnect and /sync from their bookmarks</button><button class="opt" type="button">The gateway copies its memory to a standby</button><button class="opt" type="button">Kafka resends to the same gateway</button></div>
+    <p class="why">Pushing is only a speed-up. The database and the bookmarks are the truth.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">A YouTube Live room has a million viewers. What is the best way to deliver chat?</p>
+    <div class="opts"><button class="opt" type="button">Send each message to every socket, with read receipts</button><button class="opt" type="button">Gateways subscribe once per room, send in batches and show a sample when it is too fast to read</button><button class="opt" type="button">Copy each message into a million inboxes</button></div>
+    <p class="why">Sending to each socket separately is impossible and unreadable. A two-level pub/sub with sampling scales.</p></div>
 
   <h2 id="followups"><span class="n">11</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>How does a message reach a user connected to a different server?</summary><p>The session registry maps user and device to a gateway id. The fan-out worker looks it up and sends the frame to that gateway via internal RPC or a per-gateway pub/sub channel. If the lookup misses, the user is offline: send a push notification and rely on sync.</p></details>
-  <details class="qa"><summary>Why not order messages by timestamp?</summary><p>Clocks skew across devices and servers, timestamps collide, and a timestamp cursor can skip a late-committed message. A per-conversation sequence from a single authority gives a total order, gap detection and a safe sync cursor.</p></details>
-  <details class="qa"><summary>The client sent a message, the network dropped, it resends. How do you avoid a duplicate?</summary><p>The resend carries the same clientMsgId; the server finds it already persisted and returns the original msgId and seq. The UI dedupes on clientMsgId too.</p></details>
-  <details class="qa"><summary>How does a phone that was offline for two days catch up?</summary><p>It sends its per-conversation last seq (or a single global cursor over its inbox) to /sync; the server returns conversations with newer last_seq and pages messages after the cursor. Large backlogs page lazily: show the chat list first, load messages when a chat is opened.</p></details>
-  <details class="qa"><summary>How do WebSocket servers scale and deploy without dropping users?</summary><p>L4 load balancing, connection limits per host, graceful drain on deploy (stop accepting, send a reconnect hint, wait), and clients that reconnect with jitter. Autoscale on connection count and memory, not CPU alone.</p></details>
-  <details class="qa"><summary>How would you add end-to-end encryption?</summary><p>Signal-protocol style: each device publishes identity and pre-keys; senders encrypt per recipient device (sender keys for groups). The server only routes ciphertext, so server-side search and moderation of content are lost.</p></details>
+  <details class="qa"><summary>How does a message reach a user connected to a different server?</summary><p>The session registry maps each user and device to a gateway id. The fan-out worker looks it up. It sends the message to that gateway through an internal RPC (a server-to-server call) or a pub/sub channel per gateway. If the lookup finds nothing, the user is offline. Send a push notification and rely on sync.</p></details>
+  <details class="qa"><summary>Why not order messages by timestamp?</summary><p>Clocks on phones and servers differ. Timestamps can collide. A timestamp bookmark can skip a message that was saved late. A per-conversation sequence from one authority gives an exact order, gap detection and a safe sync bookmark.</p></details>
+  <details class="qa"><summary>The phone sent a message, the network dropped, and it sends again. How do you avoid a duplicate?</summary><p>The resend carries the same clientMsgId. The server sees it is already saved and returns the original msgId and seq. The app also hides repeats by clientMsgId.</p></details>
+  <details class="qa"><summary>How does a phone that was offline for two days catch up?</summary><p>It sends /sync its last seq for each conversation, or one overall bookmark for its inbox. The server returns the conversations with a newer last_seq. It then sends messages after the bookmark, page by page. Big backlogs load lazily. Show the chat list first, and load messages when a chat is opened.</p></details>
+  <details class="qa"><summary>How do WebSocket servers scale and deploy without dropping users?</summary><p>Use L4 load balancing, which routes raw TCP connections. Limit connections per server. Drain gently on deploy: stop accepting, tell clients to reconnect elsewhere, then wait. Clients reconnect after a random delay. Scale on connection count and memory, not CPU alone.</p></details>
+  <details class="qa"><summary>How would you add end-to-end encryption?</summary><p>Use the Signal protocol approach. Each device publishes its identity key and pre-keys. Senders encrypt separately for each receiving device, or use shared sender keys for groups. The server only passes along encrypted text. So server-side search and content moderation are lost.</p></details>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–5 min</span><span>1:1 vs group size, multi-device, retention, E2E, receipts, presence.</span></div>
-    <div class="step"><span class="t">5–10 min</span><span>Capacity: 700k msg/s, 200M sockets, 4 TB/day; conclude LSM store and a large gateway fleet.</span></div>
-    <div class="step"><span class="t">10–15 min</span><span>WebSocket frames, REST sync and history APIs; clientMsgId.</span></div>
-    <div class="step"><span class="t">15–24 min</span><span>Architecture: gateway, registry, chat service, Kafka, fan-out, push; walk one message end to end.</span></div>
+    <div class="step"><span class="t">0–5 min</span><span>Ask: one-to-one or groups (and size), several devices, how long to keep messages, encryption, receipts, online status.</span></div>
+    <div class="step"><span class="t">5–10 min</span><span>Capacity: 700k messages/s, 200M sockets, 4 TB/day. Conclude: a write-friendly LSM store and a large gateway fleet.</span></div>
+    <div class="step"><span class="t">10–15 min</span><span>WebSocket messages, REST sync and history APIs, and the phone's message id (clientMsgId).</span></div>
+    <div class="step"><span class="t">15–24 min</span><span>Architecture: gateway, registry, chat service, Kafka, fan-out, push. Walk one message from start to end.</span></div>
     <div class="step"><span class="t">24–36 min</span><span>Deep dives: sequence numbers vs timestamps, ack levels and sync, storage layout.</span></div>
-    <div class="step"><span class="t">36–42 min</span><span>Group fan-out, hot conversations, gateway failure, multi-region.</span></div>
-    <div class="step"><span class="t">42–45 min</span><span>Variant hook (live chat or LLM streaming) and trade-offs.</span></div>
+    <div class="step"><span class="t">36–42 min</span><span>Group fan-out, busy conversations, gateway failure, multi-region.</span></div>
+    <div class="step"><span class="t">42–45 min</span><span>A variant (live chat or AI streaming) and the trade-offs.</span></div>
   </div>
 
   <h2 id="cheat"><span class="n">13</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Gateways (WebSocket) + Redis registry user → device → gateway.</li>
-    <li>SEND → dedupe clientMsgId → seq → persist → Kafka (key conv_id) → ACK.</li>
-    <li>Fan-out: registry lookup, batch per gateway; offline → push + sync.</li>
-    <li>Seq per conversation: order, gap detection, sync cursor. Timestamps for display only.</li>
-    <li>Messages partitioned (conv_id, time bucket), clustering seq DESC, Cassandra / Scylla.</li>
-    <li>Receipts cumulative upToSeq; group read counts lazy.</li>
-    <li>Gateway crash → jittered reconnect + /sync; nothing lives only in memory.</li>
-    <li>Live chat: room pub/sub, batch, sample. ChatGPT: stream tokens, persist turns, GPU queue.</li>
+    <li>WebSocket gateways, plus a Redis registry mapping user to device to gateway.</li>
+    <li>Send path: drop repeats by clientMsgId, assign seq, save, publish to Kafka (key conv_id), then ACK.</li>
+    <li>Fan-out: look up the registry, batch per gateway. Offline: push notification, then sync.</li>
+    <li>Seq per conversation gives order, gap detection and the sync bookmark. Timestamps are for display only.</li>
+    <li>Store messages by (conv_id, time bucket), sorted by seq newest first, in Cassandra or Scylla.</li>
+    <li>Receipts say "up to seq N". Group read counts are calculated only when asked.</li>
+    <li>Gateway crash: reconnect after a random wait, then /sync. Nothing lives only in memory.</li>
+    <li>Live chat: room pub/sub, batches, sampling. ChatGPT: stream words, save turns, GPU queue.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>
@@ -374,3 +385,4 @@ POST /v1/media/upload-url                                  → pre-signed S3 URL
 <script src="guide.js" defer></script>
 </body>
 </html>
+

@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>Your first LLM calls: Python and Spring AI</h1>
-  <p class="lede">Call Claude from Python and Spring Boot, stream tokens, get typed output, log tokens and latency, and survive 429 and 529 errors.</p>
+  <p class="lede">In this lesson you call Claude from Python and from Spring Boot. You will show the answer word by word as it is written (streaming). You will get typed output back, like a Java record. You will log how many tokens each call used and how long it took. You will also handle the two "please slow down" errors, 429 and 529.</p>
   <div class="facts">
     <span class="fact"><b>Time:</b> 3–4 hours</span>
     <span class="fact"><b>Stack:</b> Python 3.12+, anthropic SDK 1.x; Spring Boot 4 + Spring AI 2.0</span>
@@ -21,13 +21,24 @@
   <div class="chips"><span class="chip hot">Messages API</span><span class="chip">Streaming</span><span class="chip">Structured output</span><span class="chip">Retries</span><span class="chip">ChatClient</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>The Messages API is a stateless REST call: resend history every turn.</li>
-    <li>Output tokens drive both cost and latency.</li>
-    <li>Stream over SSE; measure time to first token separately.</li>
-    <li>Retry 429/5xx/529 with jitter at one layer only.</li>
+    <li>The Messages API remembers nothing between calls. You send the whole chat history every time.</li>
+    <li>The words the model writes back (output tokens) decide most of the cost and the waiting time.</li>
+    <li>Stream the answer so the user sees words early. Measure the wait for the first word on its own.</li>
+    <li>When the API says "busy", wait a random short time and try again. Do this in one place only.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A UPI payment: each request carries everything the bank needs; nothing is remembered between taps. Streaming is the "payment processing…" screen updating live instead of a blank wait until the receipt.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a UPI payment. Each request carries everything the bank needs. Nothing is remembered between taps. Streaming is like the "payment processing…" screen that updates live. Without it, you stare at a blank screen until the receipt appears.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>LLM</dt><dd>Large language model. A program, like Claude, that reads text and writes text back.</dd>
+    <dt>Token</dt><dd>A small piece of text, about 4 English letters. You pay per token, and the model writes one token at a time.</dd>
+    <dt>max_tokens</dt><dd>The longest answer you allow, in tokens. Like a word limit on an exam answer. The model stops when it hits it.</dd>
+    <dt>System prompt</dt><dd>Standing instructions for the whole chat, such as "You are a contracts analyst. Answer in three sentences."</dd>
+    <dt>Streaming</dt><dd>Getting the answer piece by piece as it is written, instead of all at once at the end.</dd>
+    <dt>TTFT</dt><dd>Time to first token. How long the user waits before the first word appears. This is the delay people actually feel.</dd>
+    <dt>Structured output</dt><dd>Making the model reply in a fixed JSON shape that your code can read safely, like a form with fixed boxes.</dd>
+    <dt>Backoff with jitter</dt><dd>After an error, wait a bit longer each try, plus a random extra. So thousands of clients do not all retry at the same moment.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#outcomes">What you'll be able to do</a></li>
@@ -44,50 +55,51 @@
 
   <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
   <div class="keys">
-    <div class="key"><h4>First call</h4><p>System prompt, content blocks, and every response field: <code>stop_reason</code>, <code>usage</code>, request id.</p></div>
-    <div class="key"><h4>Stream</h4><p>Token by token, with <dfn title="Time to first token: how long until the user sees the first word">TTFT</dfn> measured apart from total latency.</p></div>
-    <div class="key"><h4>Typed output</h4><p>Validated before use: a Pydantic model or a Java record.</p></div>
-    <div class="key"><h4>Spring AI</h4><p><code>ChatClient</code> endpoint plus a <code>Flux&lt;String&gt;</code> stream; safe templates with parameters.</p></div>
-    <div class="key"><h4>Retries</h4><p>Configure them for <code>429 rate_limit_error</code> and <code>529 overloaded_error</code>, and explain why naive retries worsen outages.</p></div>
+    <div class="key"><h4>First call</h4><p>Send a system prompt and a message. Read every response field, including <code>stop_reason</code>, <code>usage</code> and the request id.</p></div>
+    <div class="key"><h4>Stream</h4><p>Show the answer token by token. Measure <dfn title="Time to first token: how long until the user sees the first word">TTFT</dfn> (time to the first word) apart from the total time.</p></div>
+    <div class="key"><h4>Typed output</h4><p>Turn the reply into a Pydantic model or a Java record, and check it before you use it.</p></div>
+    <div class="key"><h4>Spring AI</h4><p>Build a <code>ChatClient</code> endpoint and a <code>Flux&lt;String&gt;</code> stream. Fill prompt templates safely with parameters.</p></div>
+    <div class="key"><h4>Retries</h4><p>Set up retries for <code>429 rate_limit_error</code> and <code>529 overloaded_error</code>. Explain why careless retries make an outage worse.</p></div>
   </div>
 
   <h2 id="concepts"><span class="n">02</span>The request and the response</h2>
   <div class="flow">
     <span class="node">Your service<small>builds request</small></span><span class="arrow">→</span>
-    <span class="node hl">POST /v1/messages<small>model, max_tokens, system, messages</small></span><span class="arrow">→</span>
+    <span class="node hl">Request to Claude<small>model, answer length cap, instructions, chat</small></span><span class="arrow">→</span>
     <span class="node">Claude<small>generates tokens</small></span><span class="arrow">→</span>
-    <span class="node">Response<small>content[], stop_reason, usage</small></span>
+    <span class="node">Response<small>the text, why it stopped, tokens used</small></span>
   </div>
-  <p class="flow-caption">Figure: one request, one response. No server-side session; you resend history each time.</p>
+  <p class="flow-caption">Figure: one request goes in and one response comes back. The server keeps no session, so you send the history each time.</p>
   <ul>
-    <li>Like a downstream microservice with no session: the server keeps nothing between calls.</li>
-    <li>For chat, append the reply and the next user turn, then send everything again. Input tokens grow every turn.</li>
+    <li>It is like calling another microservice that has no session. The server forgets everything between calls.</li>
+    <li>For a chat, add the model's reply and the user's next message to your list. Then send the whole list again. So input tokens grow every turn.</li>
   </ul>
 
   <div class="tbl"><table>
     <thead><tr><th>Request field</th><th>What it is</th><th>Java analogy</th></tr></thead>
     <tbody>
-      <tr><td><code>model</code></td><td>Which model serves the call, e.g. <code>claude-sonnet-5-5</code> or <code>claude-haiku-4-5-20251001</code></td><td>Choosing a downstream service version</td></tr>
-      <tr><td><code>max_tokens</code></td><td>Hard cap on output tokens (including any thinking). Required.</td><td>A response size limit / circuit on runaway work</td></tr>
-      <tr><td><code>system</code></td><td>Instructions and role that apply to the whole conversation</td><td>Configuration injected into every call</td></tr>
-      <tr><td><code>messages</code></td><td>The turns, each with <code>role</code> and <code>content</code> (a string or a list of blocks)</td><td>The request body</td></tr>
-      <tr><td><code>output_config</code></td><td>Structured output (<code>format</code> with a JSON schema) and <code>effort</code></td><td>Content negotiation plus a quality/cost knob</td></tr>
+      <tr><td><code>model</code></td><td>Which model answers the call, e.g. <code>claude-sonnet-5-5</code> or <code>claude-haiku-4-5-20251001</code></td><td>Choosing which version of a service to call</td></tr>
+      <tr><td><code>max_tokens</code></td><td>The most output tokens allowed, including any thinking. You must set it.</td><td>A response size limit that stops runaway work</td></tr>
+      <tr><td><code>system</code></td><td>Instructions and role that apply to the whole chat</td><td>Configuration added to every call</td></tr>
+      <tr><td><code>messages</code></td><td>The turns of the chat. Each has a <code>role</code> and <code>content</code> (a string or a list of blocks).</td><td>The request body</td></tr>
+      <tr><td><code>output_config</code></td><td>The JSON shape for structured output (<code>format</code>), and <code>effort</code> (how hard the model should think)</td><td>Content negotiation, plus a quality-versus-cost knob</td></tr>
       <tr><td><code>stop_sequences</code>, <code>tools</code>, <code>thinking</code></td><td>Covered in later lessons</td><td></td></tr>
     </tbody>
   </table></div>
 
-  <p>The response has <code>id</code>, <code>model</code>, a <code>content</code> array of blocks (for now only <code>type: "text"</code>; later <code>tool_use</code> and <code>thinking</code>), a <code>stop_reason</code> and <code>usage</code>.</p>
+  <p>The response has an <code>id</code> and a <code>model</code>. It has a <code>content</code> array of blocks. For now the only block type is <code>type: "text"</code>. Later you will meet <code>tool_use</code> and <code>thinking</code>. It also has a <code>stop_reason</code> (why the model stopped) and <code>usage</code> (tokens used).</p>
   <div class="tbl"><table>
     <thead><tr><th>stop_reason</th><th>Meaning</th><th>What your code should do</th></tr></thead>
     <tbody>
-      <tr><td><code>end_turn</code></td><td>Model finished naturally</td><td>Use the answer</td></tr>
-      <tr><td><code>max_tokens</code></td><td>Cut off at your cap</td><td>Treat as truncated: never parse it as complete JSON; raise the cap or ask for less</td></tr>
-      <tr><td><code>stop_sequence</code></td><td>Hit one of your stop strings</td><td>Expected if you set them</td></tr>
-      <tr><td><code>tool_use</code></td><td>Model wants you to run a tool</td><td>Run it and send a <code>tool_result</code> (tool-use lesson)</td></tr>
+      <tr><td><code>end_turn</code></td><td>The model finished on its own</td><td>Use the answer</td></tr>
+      <tr><td><code>max_tokens</code></td><td>It was cut off at your limit</td><td>Treat it as incomplete. Never read it as complete JSON. Raise the limit or ask for less.</td></tr>
+      <tr><td><code>stop_sequence</code></td><td>It hit one of your stop words</td><td>Expected, if you set them</td></tr>
+      <tr><td><code>tool_use</code></td><td>The model wants you to run a tool</td><td>Run it and send back a <code>tool_result</code> (see the tool-use lesson)</td></tr>
     </tbody>
   </table></div>
 
   <h3>Tokens are your unit of cost and latency</h3>
+  <p>A token is a small piece of text, about 4 English letters. Prices are per MTok, which means per one million tokens. Input is what you send. Output is what the model writes.</p>
   <div class="stats">
     <div class="stat"><b>$2 / $10</b><span>Sonnet 5.5, per MTok in / out</span></div>
     <div class="stat"><b>$1 / $5</b><span>Haiku 4.5</span></div>
@@ -95,89 +107,105 @@
     <div class="stat"><b>5×</b><span>output vs input price</span></div>
   </div>
   <ul>
-    <li><code>usage</code>: <code>input_tokens</code>, <code>output_tokens</code>, and with caching <code>cache_creation_input_tokens</code>, <code>cache_read_input_tokens</code>.</li>
-    <li>Output tokens are produced one at a time, so they are also what you wait for: 60 tokens is fast, 2,000 is not.</li>
+    <li><code>usage</code> tells you <code>input_tokens</code> and <code>output_tokens</code>. With caching it also has <code>cache_creation_input_tokens</code> and <code>cache_read_input_tokens</code>.</li>
+    <li>The model writes output tokens one at a time, so they are also what you wait for. 60 tokens is fast. 2,000 tokens is not.</li>
   </ul>
-  <div class="callout warn"><b>One modern-model gotcha</b><p>On Sonnet 5.5 and Opus 5.5: <code>temperature</code>/<code>top_p</code> accept only the default, assistant prefill returns a 400, and forced tool choice (<code>any</code>/<code>tool</code>) is unsupported. Use structured outputs and <code>output_config.effort</code>.</p></div>
+  <div class="callout warn"><b>One modern-model gotcha</b><p>Sonnet 5.5 and Opus 5.5 have three limits. <code>temperature</code> and <code>top_p</code> accept only the default. Prefilling the start of the assistant's reply returns a 400 error. Forcing a tool choice (<code>any</code> or <code>tool</code>) is not supported. Use structured outputs and <code>output_config.effort</code> instead.</p></div>
   <details class="deep"><summary>Go deeper: statelessness, tokens and the modern-model gotcha in full</summary>
-  <p>Think of it as calling a downstream microservice that has no session. Every request carries the whole conversation: an optional <code>system</code> prompt and a list of <code>messages</code> that alternate <code>user</code> and <code>assistant</code>. The server keeps nothing between calls. If you want a chat, you append the assistant's reply and the next user turn to the list and send everything again. That is why long chats get slower and more expensive: input tokens grow on every turn.</p>
-  <p><code>usage</code> reports <code>input_tokens</code>, <code>output_tokens</code>, and with prompt caching <code>cache_creation_input_tokens</code> and <code>cache_read_input_tokens</code>. Pricing is per million tokens (MTok): Claude Sonnet 5.5 is $2 input / $10 output, Haiku 4.5 is $1 / $5, Opus 5.5 is $4 / $20. Output tokens cost five times input and are also what you wait for, because the model produces them one at a time. A classification that returns 60 tokens is fast; a 2,000-token explanation is not.</p>
-  <p>On the newest Claude models (Sonnet 5.5, Opus 5.5), <code>temperature</code> and <code>top_p</code> are deprecated and only the default is accepted, assistant-message prefill returns a 400, and forced tool choice (<code>any</code>/<code>tool</code>) is not supported. Older tutorials that set <code>temperature=0</code> or prefill <code>{</code> to force JSON will fail. Use structured outputs instead, and control depth and cost with <code>output_config.effort</code> (<code>low</code>, <code>medium</code>, <code>high</code>, …).</p>
+  <p>Think of it as calling another microservice that has no session. Every request carries the whole chat. That is an optional <code>system</code> prompt and a list of <code>messages</code>. The messages take turns between <code>user</code> and <code>assistant</code>. The server keeps nothing between calls.</p>
+  <p>For a chat, you add the assistant's reply and the next user message to the list. Then you send everything again. That is why long chats get slower and more expensive. Input tokens grow on every turn.</p>
+  <p><code>usage</code> reports <code>input_tokens</code> and <code>output_tokens</code>. With prompt caching it also reports <code>cache_creation_input_tokens</code> and <code>cache_read_input_tokens</code>. Prices are per million tokens (MTok). Claude Sonnet 5.5 costs $2 input and $10 output. Haiku 4.5 costs $1 and $5. Opus 5.5 costs $4 and $20.</p>
+  <p>Output tokens cost five times more than input. They are also what you wait for, because the model writes them one at a time. A classification that returns 60 tokens is fast. A 2,000-token explanation is not.</p>
+  <p>The newest Claude models are Sonnet 5.5 and Opus 5.5. On them, <code>temperature</code> and <code>top_p</code> are deprecated, and only the default is accepted. Temperature is the "randomness dial" for picking words. Prefill means writing the first few characters of the assistant's reply yourself. It now returns a 400 error. Forcing a tool choice (<code>any</code> or <code>tool</code>) is not supported either.</p>
+  <p>Older tutorials set <code>temperature=0</code> or prefill <code>{</code> to force JSON. Those will fail. Use structured outputs instead. Control depth and cost with <code>output_config.effort</code> (<code>low</code>, <code>medium</code>, <code>high</code>, …).</p>
   </details>
 
   <h2 id="streaming"><span class="n">03</span>Streaming, step by step</h2>
+  <p>Without streaming, the user waits for the whole answer. With streaming, words appear as they are written, like a person typing in a chat app.</p>
   <ol class="walk">
-    <li><span class="who">Client</span><span><code>client.messages.stream(...)</code> opens one HTTP request</span></li>
-    <li><span class="who">API</span><span>Replies 200 and keeps the connection open, sending <dfn title="Server-sent events: a one-way stream of text events over HTTP">SSE</dfn> events</span></li>
-    <li><span class="who">Your code</span><span>Prints each <code>text_delta</code> as it arrives (a <code>Flux&lt;String&gt;</code> in Java terms)</span></li>
-    <li><span class="who">API</span><span>Ends with the final <code>stop_reason</code> and usage</span></li>
+    <li><span class="who">Client</span><span>Asks for a streamed answer. This opens one HTTP request (<code>client.messages.stream(...)</code>).</span></li>
+    <li><span class="who">API</span><span>Says "OK" (HTTP 200) and keeps the line open. It pushes small messages down it, called <dfn title="Server-sent events: a one-way stream of text events over HTTP">SSE</dfn> events (server-sent events).</span></li>
+    <li><span class="who">Your code</span><span>Shows each new piece of text as it arrives (a <code>text_delta</code>). In Java terms, it is a <code>Flux&lt;String&gt;</code>.</span></li>
+    <li><span class="who">API</span><span>Ends by saying why it stopped and how many tokens it used (<code>stop_reason</code> and <code>usage</code>).</span></li>
   </ol>
   <div class="stepper"><b class="title">"Explain an indemnity clause": the SSE events in order</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell hl">message_start</span></div>
       <div class="ptrs"><span class="on">t=0</span><span>HTTP 200</span></div>
-      <figcaption>The message object starts, with empty content. The user still sees nothing.</figcaption>
+      <figcaption>The server says the answer has started, but it is still empty (<code>message_start</code>). The user sees nothing yet.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">message_start</span><span class="cell hl">content_block_start</span></div>
       <div class="ptrs"><span class="on">block 0: text</span></div>
-      <figcaption>A text content block opens at index 0.</figcaption>
+      <figcaption>The server says a block of text is about to begin (<code>content_block_start</code>). It is the first block.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">…</span><span class="cell hl">delta: "An indemnity"</span></div>
       <div class="ptrs"><span class="on">ttft_ms=610</span></div>
-      <figcaption>The first <code>content_block_delta</code> carries a <code>text_delta</code>. This moment is TTFT: the number users feel.</figcaption>
+      <figcaption>The first words arrive (a <code>content_block_delta</code>). The time until now is TTFT, the delay users actually feel.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">"An indemnity"</span><span class="cell hl">" clause means"</span><span class="cell hl">" one party"</span><span class="cell">…</span></div>
       <div class="ptrs"><span class="on">many deltas</span><span>+ ping events</span></div>
-      <figcaption>Many more deltas follow, each appended to the screen. Occasional <code>ping</code> events keep the connection alive.</figcaption>
+      <figcaption>Many more pieces follow, each added to the screen. Now and then a small "still here" message (<code>ping</code>) keeps the line open.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">text…</span><span class="cell bad">error: overloaded_error</span></div>
       <div class="ptrs"><span class="on">already HTTP 200</span></div>
-      <figcaption>Possible failure: an overload now arrives as an SSE <code>error</code> event, not a 529. Retrying now would duplicate text on the client.</figcaption>
+      <figcaption>A possible failure: the servers get too busy. The OK was already sent, so this comes as an error message in the stream, not a 529 code. Retrying now would show the same text twice.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">content_block_stop</span><span class="cell hl">message_delta</span><span class="cell ok">message_stop</span></div>
       <div class="ptrs"><span class="on">total_ms=5480</span><span>out=290</span><span>stop=end_turn</span></div>
-      <figcaption>Normal end: <code>message_delta</code> carries the final <code>stop_reason</code> and usage. Total latency is what your thread pool feels.</figcaption>
+      <figcaption>A normal end. The last messages say why it stopped and how many tokens it used (<code>message_delta</code>). The total time is how long your server thread stays busy.</figcaption>
     </figure>
   </div></div>
   <details class="deep"><summary>Go deeper: the SSE event list</summary>
-  <p>With streaming the API sends SSE events as tokens are produced: <code>message_start</code>, then per content block a <code>content_block_start</code>, many <code>content_block_delta</code> events (each with a <code>text_delta</code>), <code>content_block_stop</code>, then <code>message_delta</code> (final <code>stop_reason</code> and usage) and <code>message_stop</code>. There are also <code>ping</code> events. In Java terms, it is a <code>Flux&lt;String&gt;</code> where each element is a chunk of text. The user sees the first words in well under a second instead of waiting for the full answer, which is why every chat UI streams.</p>
-  <p><b>Errors can arrive after HTTP 200.</b> Once a stream has started, an overload shows up as an SSE <code>error</code> event with <code>{"type": "overloaded_error"}</code>, not as an HTTP 529. Your streaming code must handle an error mid-stream, and a retry after the first token would duplicate text on the client.</p>
+  <p>With streaming, the API sends SSE events as tokens are written. The order is:</p>
+  <ul>
+    <li><code>message_start</code>.</li>
+    <li>For each content block, a <code>content_block_start</code>.</li>
+    <li>Many <code>content_block_delta</code> events, each with a <code>text_delta</code>.</li>
+    <li>A <code>content_block_stop</code>.</li>
+    <li>Then <code>message_delta</code>, with the final <code>stop_reason</code> and usage.</li>
+    <li>Finally <code>message_stop</code>.</li>
+  </ul>
+  <p>There are also <code>ping</code> events. In Java terms, it is a <code>Flux&lt;String&gt;</code> where each item is a piece of text. The user sees the first words in well under a second. Without streaming, they would wait for the full answer. That is why every chat screen streams.</p>
+  <p><b>Errors can arrive after HTTP 200.</b> Once a stream has started, an overload shows up as an SSE <code>error</code> event. It looks like <code>{"type": "overloaded_error"}</code>, not an HTTP 529. Your streaming code must handle an error in the middle. And a retry after the first token would show duplicate text to the user.</p>
   </details>
 
   <h2 id="errors"><span class="n">04</span>Structured output and errors</h2>
+  <p>Your code needs data it can trust, not free text. Structured output is like giving the model a form with fixed boxes. It cannot write outside the boxes.</p>
   <div class="vs">
-    <div><h4>"Please reply in JSON"</h4><ul><li class="con">Hope-based; prose, drafts or broken JSON</li></ul><p class="when">Fallback only.</p></div>
-    <div class="pick"><h4>Structured outputs <span class="tag">usual pick</span></h4><ul><li class="pro">JSON schema in <code>output_config.format</code> constrains the reply</li><li class="pro">Python: <code>messages.parse(output_format=Model)</code> → <code>parsed_output</code></li><li class="pro">Spring AI: <code>.entity(Record.class)</code> via <code>BeanOutputConverter</code> + Jackson</li></ul><p class="when">Like <code>@RequestBody</code> binding, on the model's output.</p></div>
+    <div><h4>"Please reply in JSON"</h4><ul><li class="con">You only hope it works. You may get prose, a draft or broken JSON.</li></ul><p class="when">Fallback only.</p></div>
+    <div class="pick"><h4>Structured outputs <span class="tag">usual pick</span></h4><ul><li class="pro">A JSON schema in <code>output_config.format</code> forces the shape of the reply.</li><li class="pro">Python: <code>messages.parse(output_format=Model)</code> gives you <code>parsed_output</code>.</li><li class="pro">Spring AI: <code>.entity(Record.class)</code> uses <code>BeanOutputConverter</code> and Jackson.</li></ul><p class="when">Like <code>@RequestBody</code> binding, but on the model's output.</p></div>
   </div>
   <ul>
-    <li>Objects need <code>additionalProperties: false</code>. <code>minimum</code>/<code>maxLength</code> aren't enforced by the API; the SDK validates them locally.</li>
-    <li>Enums are supported: use them for labels such as risk levels.</li>
+    <li>Objects need <code>additionalProperties: false</code>. The API does not enforce <code>minimum</code> or <code>maxLength</code>. The SDK checks those on your side.</li>
+    <li>Enums (a fixed list of allowed values) are supported. Use them for labels such as risk levels.</li>
   </ul>
+  <p>When a call fails, the HTTP code tells you whether trying again can help.</p>
   <div class="tbl"><table>
     <thead><tr><th>HTTP</th><th>type</th><th>Retry?</th></tr></thead>
     <tbody>
-      <tr><td>400</td><td><code>invalid_request_error</code></td><td>No. Fix the request (bad schema, unsupported parameter, conversation not ending with a user turn).</td></tr>
-      <tr><td>401 / 403</td><td><code>authentication_error</code> / <code>permission_error</code></td><td>No. Page someone.</td></tr>
+      <tr><td>400</td><td><code>invalid_request_error</code></td><td>No. Fix the request. Examples: a bad schema, an unsupported parameter, or a chat that does not end with a user turn.</td></tr>
+      <tr><td>401 / 403</td><td><code>authentication_error</code> / <code>permission_error</code></td><td>No. Alert a person.</td></tr>
       <tr><td>413</td><td><code>request_too_large</code></td><td>No. The Messages API limit is 32 MB.</td></tr>
-      <tr><td>429</td><td><code>rate_limit_error</code></td><td>Yes, with backoff, honouring <code>retry-after</code>. A spend-cap 429 has no <code>retry-after</code> and will keep failing.</td></tr>
-      <tr><td>500</td><td><code>api_error</code></td><td>Yes, with exponential backoff</td></tr>
-      <tr><td>504</td><td><code>timeout_error</code></td><td>Yes, but prefer streaming for long outputs</td></tr>
-      <tr><td>529</td><td><code>overloaded_error</code></td><td>Yes, with backoff and jitter; consider falling back to another model</td></tr>
+      <tr><td>429</td><td><code>rate_limit_error</code></td><td>Yes. Wait longer each time and respect the <code>retry-after</code> header. A 429 from a spending cap has no <code>retry-after</code> and will keep failing.</td></tr>
+      <tr><td>500</td><td><code>api_error</code></td><td>Yes, waiting twice as long each time (exponential backoff)</td></tr>
+      <tr><td>504</td><td><code>timeout_error</code></td><td>Yes, but prefer streaming for long answers</td></tr>
+      <tr><td>529</td><td><code>overloaded_error</code></td><td>Yes, with backoff and a random extra wait (jitter). Consider switching to another model.</td></tr>
     </tbody>
   </table></div>
   <ul>
-    <li>SDKs already retry connection errors, 429 and 5xx <b>twice</b> by default, honouring <code>retry-after</code>. Tune with <code>max_retries</code> or <code>spring.ai.anthropic.max-retries</code>.</li>
-    <li>Log the <code>request-id</code> header (<code>message._request_id</code> in Python): support asks for it.</li>
+    <li>The SDKs already retry connection errors, 429 and 5xx errors <b>twice</b> by default. They respect <code>retry-after</code>. Change this with <code>max_retries</code> or <code>spring.ai.anthropic.max-retries</code>.</li>
+    <li>Log the <code>request-id</code> header. In Python it is <code>message._request_id</code>. Support will ask for it.</li>
   </ul>
   <details class="deep"><summary>Go deeper: structured output and SDK retries in full</summary>
-  <p>The old approach was to ask for JSON in the prompt and hope. The API now supports structured outputs: you pass a JSON schema in <code>output_config.format</code> and the model's reply is constrained to it. The Python SDK wraps this as <code>client.messages.parse(..., output_format=MyPydanticModel)</code> and gives you <code>response.parsed_output</code>. Spring AI's <code>.entity(MyRecord.class)</code> derives a JSON schema from your record (via <code>BeanOutputConverter</code>) and maps the reply back with Jackson. It is the same idea as <code>@RequestBody</code> binding, but on the model's output.</p>
-  <p>Schema limits matter: objects need <code>additionalProperties: false</code>, and numeric or string-length constraints like <code>minimum</code> or <code>maxLength</code> are not enforced by the API (the SDK moves them into descriptions and validates locally). Enums are supported, which is what you want for labels such as risk levels.</p>
-  <p>The official SDKs already retry connection errors, 429 and 5xx twice by default with exponential backoff and honour <code>retry-after</code>. You tune that with <code>max_retries</code> (Python) or <code>spring.ai.anthropic.max-retries</code> (Spring AI). Every response also carries a <code>request-id</code> header; in Python it is <code>message._request_id</code>. Log it: it is what support asks for.</p>
+  <p>The old way was to ask for JSON in the prompt and hope. The API now supports structured outputs. You pass a JSON schema in <code>output_config.format</code>. The model's reply is then forced to match it.</p>
+  <p>The Python SDK wraps this as <code>client.messages.parse(..., output_format=MyPydanticModel)</code>. It gives you <code>response.parsed_output</code>. In Spring AI, <code>.entity(MyRecord.class)</code> builds a JSON schema from your record, using <code>BeanOutputConverter</code>. It then maps the reply back with Jackson. It is the same idea as <code>@RequestBody</code> binding, but on the model's output.</p>
+  <p>The schema has limits. Objects need <code>additionalProperties: false</code>. Number and length rules like <code>minimum</code> or <code>maxLength</code> are not enforced by the API. The SDK moves them into descriptions and checks them on your side. Enums are supported, which is what you want for labels such as risk levels.</p>
+  <p>The official SDKs already retry connection errors, 429 and 5xx twice by default. They wait longer each time and respect <code>retry-after</code>. Change it with <code>max_retries</code> (Python) or <code>spring.ai.anthropic.max-retries</code> (Spring AI). Every response also has a <code>request-id</code> header. In Python it is <code>message._request_id</code>. Log it, because support asks for it.</p>
   </details>
 
   <h2 id="handson"><span class="n">05</span>Hands-on: Python, then Spring AI</h2>
@@ -185,7 +213,7 @@
   <pre><code>uv init clause-llm &amp;&amp; cd clause-llm
 uv add anthropic pydantic
 export ANTHROPIC_API_KEY=sk-ant-...   # never commit this; in prod use a secret manager</code></pre>
-  <p><code>uv</code> is your Gradle here: a virtualenv, versions pinned in <code>uv.lock</code>, and <code>uv run file.py</code>.</p>
+  <p><code>uv</code> plays the role of Gradle here. It makes a virtual environment (a private folder of libraries for this project). It pins versions in <code>uv.lock</code>. You run code with <code>uv run file.py</code>.</p>
 
   <h3>Step 2: first call, with latency and token logging</h3>
   <details class="code"><summary>Show first_call.py</summary><pre><code>import logging
@@ -217,12 +245,12 @@ log.info(
     message._request_id, message.model, message.stop_reason,
     u.input_tokens, u.output_tokens, u.cache_read_input_tokens, latency_ms,
 )</code></pre></details>
-  <p>Run <code>uv run first_call.py</code>. Expected output (wording will differ):</p>
+  <p>Run <code>uv run first_call.py</code>. Expected output (the wording will differ):</p>
   <pre><code>A limitation of liability clause caps how much one party can recover from the other ...
 2026-10-07 10:15:02 INFO request_id=req_011C... model=claude-sonnet-5-5 stop=end_turn in=38 out=71 cache_read=0 latency_ms=2140</code></pre>
   <ul>
-    <li><code>max_retries=3</code> and <code>timeout=60.0</code> are client-level, like configuring a <code>RestClient</code> bean once.</li>
-    <li>Join every <code>text</code> block; never assume <code>content[0]</code> is text (it may be <code>thinking</code> or <code>tool_use</code>).</li>
+    <li><code>max_retries=3</code> and <code>timeout=60.0</code> are set once on the client. It is like configuring a <code>RestClient</code> bean once.</li>
+    <li>Join every <code>text</code> block. Never assume <code>content[0]</code> is text. It may be a <code>thinking</code> or <code>tool_use</code> block.</li>
   </ul>
 
   <h3>Step 3: streaming, with time to first token</h3>
@@ -249,10 +277,10 @@ with client.messages.stream(
 total_ms = (time.perf_counter() - start) * 1000
 print(f"\n\nttft_ms={first_token_ms:.0f} total_ms={total_ms:.0f} "
       f"in={final.usage.input_tokens} out={final.usage.output_tokens} stop={final.stop_reason}")</code></pre></details>
-  <p>Expected: text appears progressively, then <code>ttft_ms=610 total_ms=5480 in=31 out=290 stop=end_turn</code>. <code>get_final_message()</code> returns the same <code>Message</code> a non-streaming call would, usage included.</p>
+  <p>Expected: the text appears bit by bit. Then you see <code>ttft_ms=610 total_ms=5480 in=31 out=290 stop=end_turn</code>. <code>get_final_message()</code> returns the same <code>Message</code> a normal call would, with usage.</p>
 
   <h3>Step 4: prompt templates</h3>
-  <p>Named, versioned constants filled by a function that fails on a missing variable. User content goes inside XML-style tags.</p>
+  <p>Keep each prompt as a named constant with a version number. Fill it with a function that fails if a variable is missing. Put the user's text inside XML-style tags, so the model can tell your instructions from their text.</p>
   <details class="code"><summary>Show templates.py</summary><pre><code>from string import Template
 
 CLASSIFY_V2 = Template("""Classify the contract clause below.
@@ -278,9 +306,10 @@ if __name__ == "__main__":
     except KeyError:
         pass
     print(out)</code></pre></details>
-  <p><code>uv run templates.py</code> prints the prompt and the self-check passes. Log the template id (<code>CLASSIFY_V2</code>) to tie regressions to prompt changes.</p>
+  <p><code>uv run templates.py</code> prints the prompt, and the self-check passes. Log the template id (<code>CLASSIFY_V2</code>). Then, if quality drops, you can tie it to a prompt change.</p>
 
   <h3>Step 5: structured output into a Pydantic model</h3>
+  <p>Pydantic is Python's library for typed data classes that check themselves, much like a Java record with Bean Validation.</p>
   <details class="code"><summary>Show parse.py</summary><pre><code>from typing import Literal
 
 import anthropic
@@ -316,12 +345,12 @@ print(response.usage.input_tokens, response.usage.output_tokens)</code></pre></d
   "reason": "The Customer gives an uncapped indemnity ('without limit') for any use of the Service."
 }
 212 48</code></pre>
-  <p><code>Literal[...]</code> becomes a JSON-schema <code>enum</code>, so no <code>"very high"</code>. Pydantic still validates on the way in. Haiku 4.5 is plenty for classification at half Sonnet 5.5's price.</p>
+  <p><code>Literal[...]</code> becomes a JSON-schema <code>enum</code>, so the model cannot answer <code>"very high"</code>. Pydantic still checks the data when it arrives. Haiku 4.5 is good enough for classification, at half the price of Sonnet 5.5.</p>
 
   <h3>Step 6: retries beyond the SDK</h3>
   <div class="vs">
-    <div class="pick"><h4>Interactive request</h4><ul><li class="pro">SDK retries are enough: raise <code>max_retries</code> a little, set a timeout</li></ul></div>
-    <div><h4>Overnight batch of 50,000 clauses</h4><ul><li class="pro">Add an outer backoff with full jitter</li><li class="pro">So thousands of workers don't retry in lockstep after an overload</li></ul></div>
+    <div class="pick"><h4>Interactive request</h4><ul><li class="pro">The SDK retries are enough. Raise <code>max_retries</code> a little and set a timeout.</li></ul></div>
+    <div><h4>Overnight batch of 50,000 clauses</h4><ul><li class="pro">Add an outer retry loop with full jitter (a fully random wait).</li><li class="pro">This stops thousands of workers from retrying at the same moment after an overload.</li></ul></div>
   </div>
   <details class="code"><summary>Show backoff.py</summary><pre><code>import logging
 import random
@@ -372,7 +401,7 @@ if __name__ == "__main__":
     assert with_backoff(flaky, sleep=slept.append) == "ok"
     assert len(calls) == 3 and all(s &gt;= 2 for s in slept), slept
     print("calls:", len(calls), "sleeps:", slept)</code></pre></details>
-  <p><code>uv run backoff.py</code> self-checks offline: two fake 529s, then success, each sleep ≥ the <code>retry-after</code> value.</p>
+  <p><code>uv run backoff.py</code> checks itself offline. It fakes two 529 errors, then succeeds. Each wait is at least the <code>retry-after</code> value.</p>
   <pre><code>attempt=1 error=OverloadedError sleeping=2.00s
 attempt=2 error=OverloadedError sleeping=2.00s
 calls: 3 sleeps: [2.0, 2.0]</code></pre>
@@ -382,11 +411,11 @@ calls: 3 sleeps: [2.0, 2.0]</code></pre>
     <div class="stat"><b>× 3</b><span>caller retries</span></div>
     <div class="stat"><b>= 60</b><span>requests for one user action</span></div>
   </div>
-  <div class="callout warn"><b>Retry amplification</b><p>Retry at one layer only, cap total time, and limit batch concurrency.</p></div>
-  <details class="deep"><summary>Go deeper: retry amplification</summary><p>SDK retries (3) inside an outer loop (5) inside a caller that also retries (3) means up to 4 × 5 × 3 = 60 requests for one user action during an outage. Retry at one layer only, cap total time, and add a concurrency limit for batch jobs. This is the same rule you apply to Feign or WebClient chains between microservices.</p></details>
+  <div class="callout warn"><b>Retry amplification</b><p>Retries stacked in layers multiply. Retry in one layer only. Put a limit on the total time. Limit how many batch calls run at once.</p></div>
+  <details class="deep"><summary>Go deeper: retry amplification</summary><p>Picture three layers. The SDK retries 3 times. An outer loop tries 5 times. The caller also retries 3 times. During an outage, that is up to 4 × 5 × 3 = 60 requests for one user action. So retry in one layer only. Limit the total time. Add a limit on how many batch calls run at once. It is the same rule you follow for Feign or WebClient chains between microservices.</p></details>
 
   <h3>Step 7: the same service in Spring Boot with Spring AI</h3>
-  <p>Spring AI 2.0 targets Spring Boot 4.0/4.1 and talks to Claude through the official Anthropic Java SDK. Dependencies (Gradle Kotlin DSL):</p>
+  <p>Spring AI 2.0 works with Spring Boot 4.0 and 4.1. It talks to Claude through the official Anthropic Java SDK. Here are the dependencies (Gradle Kotlin DSL):</p>
   <pre><code>dependencies {
     implementation(platform("org.springframework.ai:spring-ai-bom:2.0.1"))
     implementation("org.springframework.boot:spring-boot-starter-web")
@@ -406,7 +435,7 @@ calls: 3 sleeps: [2.0, 2.0]</code></pre>
 logging:
   level:
     org.springframework.ai.chat.client.advisor: DEBUG   # only if you add SimpleLoggerAdvisor</code></pre>
-  <p>The output type, a plain record with enums:</p>
+  <p>The output type is a plain record with enums:</p>
   <pre><code>package com.example.clauses;
 
 public record ClauseRisk(ClauseType clauseType, Risk risk, String reason) {
@@ -415,7 +444,7 @@ public record ClauseRisk(ClauseType clauseType, Risk risk, String reason) {
 
     public enum Risk { LOW, MEDIUM, HIGH }
 }</code></pre>
-  <p>The service: one thread-safe <code>ChatClient</code> built from the auto-configured builder with a default system prompt, like <code>RestClient</code>.</p>
+  <p>The service uses one <code>ChatClient</code>, which is safe to share across threads. It is built once from the auto-configured builder, with a default system prompt. Think of it like a <code>RestClient</code>.</p>
   <div class="uml">
     <div class="cls hl"><b>ClauseAiService</b><ul><li>- chatClient: ChatClient</li><li>~ CLASSIFY_V2: String</li></ul><ul><li>+ classify(id, text, party): ClauseRisk</li><li>+ summarise(text): String</li><li>+ explain(text): Flux&lt;String&gt;</li></ul></div>
     <div class="cls"><b>ClauseController</b><ul><li>- ai: ClauseAiService</li></ul><ul><li>+ POST /classify</li><li>+ POST /explain (SSE)</li></ul></div>
@@ -518,12 +547,13 @@ public class ClauseAiService {
 }</code></pre></details>
   <details class="deep"><summary>Go deeper: what each method shows</summary>
   <ul>
-    <li><b>classify</b>: a template with <code>{placeholders}</code> filled by <code>.param()</code>, and <code>.entity(ClauseRisk.class)</code> for typed output. Spring Framework 7's <code>@Retryable</code> adds an outer retry with exponential backoff and jitter. <code>includes</code> matches the thrown exception type; if your Spring AI version wraps SDK exceptions, list the wrapper type, or simply rely on <code>max-retries</code>.</li>
-    <li><b>summarise</b>: <code>.chatResponse()</code> instead of <code>.content()</code> keeps the metadata, so you can log <code>getPromptTokens()</code> and <code>getCompletionTokens()</code> along with the model and latency.</li>
-    <li><b>explain</b>: <code>.stream().content()</code> returns <code>Flux&lt;String&gt;</code>. Reactor's <code>retryWhen</code> retries only if no chunk has been emitted yet.</li>
+    <li><b>classify</b> fills a template's <code>{placeholders}</code> with <code>.param()</code>. It uses <code>.entity(ClauseRisk.class)</code> for typed output. Spring Framework 7's <code>@Retryable</code> adds an outer retry that waits longer each time, with jitter.</li>
+    <li>In <b>classify</b>, <code>includes</code> matches the type of the thrown exception. Your Spring AI version may wrap SDK exceptions in another type. If so, list that wrapper type, or just rely on <code>max-retries</code>.</li>
+    <li><b>summarise</b> uses <code>.chatResponse()</code> instead of <code>.content()</code>. This keeps the metadata. So you can log <code>getPromptTokens()</code> and <code>getCompletionTokens()</code> with the model and the time taken.</li>
+    <li><b>explain</b> uses <code>.stream().content()</code>, which returns <code>Flux&lt;String&gt;</code>. Reactor's <code>retryWhen</code> retries only if no piece has been sent yet.</li>
   </ul>
   </details>
-  <p>The controller validates at the trust boundary (cap clause length so no request sends a 32 MB prompt) and switches on <code>@Retryable</code>:</p>
+  <p>The controller checks input where it enters your system. It caps the clause length, so no request can send a 32 MB prompt. It also switches on <code>@Retryable</code>.</p>
   <details class="code"><summary>Show Java solution: ClauseController</summary><pre><code>package com.example.clauses;
 
 import jakarta.validation.Valid;
@@ -577,72 +607,74 @@ curl -N localhost:8080/api/clauses/explain -H 'content-type: application/json' \
 # data:This clause means ...
 # data: either side can end ...</code></pre>
   <div class="callout tip"><b>Production logging checklist</b><ul>
-    <li>Log: request id, model, prompt template id and version, input/output/cache tokens, TTFT, total latency, <code>stop_reason</code>, retry count, tenant id (from the JWT, never from the request body).</li>
-    <li>Do not log raw contract text or personal data by default; log a hash or the document id instead.</li>
-    <li>Export tokens and latency as Micrometer metrics with model and template tags; alert on the rate of <code>max_tokens</code> stops and 429s.</li>
+    <li>Log the request id, model, and prompt template id and version. Log input, output and cache tokens.</li>
+    <li>Also log TTFT, total time, <code>stop_reason</code>, retry count and tenant id. Take the tenant id from the JWT (login token), never from the request body.</li>
+    <li>Do not log raw contract text or personal data by default. Log a hash or the document id instead.</li>
+    <li>Export tokens and times as Micrometer metrics, tagged with model and template. Alert when <code>max_tokens</code> stops or 429s rise.</li>
   </ul></div>
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li>Reading <code>content[0].text</code> blindly.</li>
-    <li>Parsing a <code>max_tokens</code>-truncated reply as complete JSON.</li>
-    <li>Retrying a stream after the first token reached the client.</li>
-    <li>Stacking retry layers (60 requests per action).</li>
-    <li>Concatenating user text into a template instead of <code>.param()</code>.</li>
-    <li>Setting <code>temperature=0</code> on Sonnet 5.5 (400).</li>
+    <li>Reading <code>content[0].text</code> without checking the block type.</li>
+    <li>Reading a reply cut off by <code>max_tokens</code> as complete JSON.</li>
+    <li>Retrying a stream after the first token reached the user.</li>
+    <li>Stacking retry layers, which can mean 60 requests for one action.</li>
+    <li>Gluing user text into a template instead of using <code>.param()</code>.</li>
+    <li>Setting <code>temperature=0</code> on Sonnet 5.5, which returns a 400 error.</li>
   </ul></div>
 
   <h2 id="interview"><span class="n">06</span>How this shows up in interviews</h2>
-  <details class="qa"><summary>Why stream, and what do you measure?</summary><p>Streaming cuts perceived latency: the user reads the first words after TTFT (often under a second) instead of waiting for the whole generation. Measure TTFT, total latency, and output tokens per second separately. Streaming also avoids idle-connection timeouts on long outputs, which is why the docs recommend it for large <code>max_tokens</code>.</p></details>
-  <details class="qa"><summary>What is the difference between 429 and 529, and how do you handle each?</summary><p>429 <code>rate_limit_error</code> means your organisation hit its own limit (requests, tokens, or spend). Back off honouring <code>retry-after</code>, smooth traffic with a client-side limiter, and if it is a spend cap, stop retrying. 529 <code>overloaded_error</code> means the API is overloaded for everyone. Back off with jitter and, for user-facing paths, consider a fallback model. Both are retried by the SDK by default.</p></details>
-  <details class="qa"><summary>Is retrying an LLM call safe? Is it idempotent?</summary><p>A plain generation has no side effects, so retrying is safe for correctness, but it is not idempotent in output (you may get different text) and you pay for every attempt that produced tokens. If the call drives side effects (tool calls that write data), make those tools idempotent with keys. Never retry a stream after tokens have reached the client.</p></details>
-  <details class="qa"><summary>How do you get reliable JSON out of a model?</summary><p>Use structured outputs with a JSON schema (<code>output_config.format</code>, or <code>messages.parse</code> with a Pydantic model; <code>.entity()</code> in Spring AI), use enums for labels, still validate on receipt, and check <code>stop_reason</code> is not <code>max_tokens</code>. Prompt-only "reply in JSON" is a fallback, not a design.</p></details>
-  <details class="qa"><summary>Your LLM endpoint p99 is 12 seconds. What do you look at?</summary><p>Output token count first (latency scales with output), then model choice (Haiku for classification), effort level, prompt size (input tokens add prefill time; use prompt caching for a large stable prefix), retries hidden inside the SDK (log retry count), and whether the client could stream. Then set a timeout and a fallback.</p></details>
-  <details class="qa"><summary>What would you log for every LLM call?</summary><p>Request id, model, prompt template version, tenant, input/output/cache tokens, TTFT and total latency, stop reason, retry count, and the outcome of validation. That lets you compute cost per tenant and per feature, and debug regressions after a prompt change.</p></details>
-  <details class="qa"><summary>Why does a multi-turn chat get more expensive per turn?</summary><p>The API is stateless, so every turn resends all earlier turns as input tokens. Cost per turn grows roughly linearly with conversation length. Mitigate with prompt caching of the stable prefix, summarising old turns, or trimming history.</p></details>
-  <details class="qa"><summary>How is ChatClient different from calling the SDK directly?</summary><p>ChatClient is a portable, fluent API on top of a provider's <code>ChatModel</code>: templates with params, advisors (logging, memory, RAG), tools, structured output via converters, and Micrometer observations. The cost is an abstraction layer that may lag new provider features; for those, provider-specific options (for example <code>AnthropicChatOptions</code> with effort or output schema) or the raw SDK are available.</p></details>
-  <details class="qa"><summary>A teammate sets temperature=0 for deterministic output and gets a 400. Why?</summary><p>On the newest Claude models, temperature and top_p are deprecated and only the default value is accepted. Even where temperature works, 0 does not guarantee identical outputs. For consistency, use structured outputs, clear instructions with examples, and evaluation on a fixed test set.</p></details>
+  <details class="qa"><summary>Why stream, and what do you measure?</summary><p>Streaming makes the wait feel shorter. The user reads the first words after TTFT, the time to first token. That is often under a second. Without it, they wait for the whole answer. Measure TTFT, total time, and output tokens per second separately. Streaming also avoids timeouts on idle connections during long answers. That is why the docs recommend it when <code>max_tokens</code> is large.</p></details>
+  <details class="qa"><summary>What is the difference between 429 and 529, and how do you handle each?</summary><p>429 <code>rate_limit_error</code> means your own organisation hit its limit. The limit can be on requests, tokens, or spend. Back off and respect <code>retry-after</code>. Smooth your traffic with a rate limiter on your side. If it is a spending cap, stop retrying. 529 <code>overloaded_error</code> means the API is overloaded for everyone. Back off with jitter. For user-facing paths, consider a fallback model. The SDK retries both by default.</p></details>
+  <details class="qa"><summary>Is retrying an LLM call safe? Is it idempotent?</summary><p>A plain text generation changes nothing else, so retrying is safe for correctness. But it is not idempotent in its output. Idempotent means repeating it gives the same result, and here you may get different text. You also pay for every attempt that produced tokens. If the call triggers actions, like tool calls that write data, make those tools idempotent with keys. Never retry a stream after tokens reached the user.</p></details>
+  <details class="qa"><summary>How do you get reliable JSON out of a model?</summary><p>Use structured outputs with a JSON schema. That is <code>output_config.format</code>, or <code>messages.parse</code> with a Pydantic model, or <code>.entity()</code> in Spring AI. Use enums for labels. Still validate the data when it arrives. Check that <code>stop_reason</code> is not <code>max_tokens</code>. Asking "reply in JSON" in the prompt is a fallback, not a design.</p></details>
+  <details class="qa"><summary>Your LLM endpoint p99 is 12 seconds. What do you look at?</summary><p>p99 means 99 out of 100 requests are faster than this. First, look at the output token count, because time grows with output. Then check the model choice; Haiku is enough for classification. Check the effort level. Check the prompt size, since input tokens add reading time (prefill). Use prompt caching for a large prefix that never changes. Check for retries hidden inside the SDK by logging the retry count. Ask whether the client could stream. Then set a timeout and a fallback.</p></details>
+  <details class="qa"><summary>What would you log for every LLM call?</summary><p>Log the request id, model, prompt template version and tenant. Log input, output and cache tokens. Log TTFT, total time, stop reason, retry count, and whether validation passed. With that, you can work out cost per tenant and per feature. You can also debug quality drops after a prompt change.</p></details>
+  <details class="qa"><summary>Why does a multi-turn chat get more expensive per turn?</summary><p>The API is stateless, so every turn sends all earlier turns again as input tokens. Cost per turn grows roughly in line with the chat length. Reduce it with prompt caching of the part that does not change. You can also summarise or trim old turns.</p></details>
+  <details class="qa"><summary>How is ChatClient different from calling the SDK directly?</summary><p>ChatClient is a portable, fluent API on top of a provider's <code>ChatModel</code>. It gives you templates with parameters and advisors for logging, memory and RAG. It also handles tools, structured output via converters, and Micrometer observations. The price is an extra layer that may lag behind new provider features. For those, use provider-specific options, such as <code>AnthropicChatOptions</code> with effort or output schema. Or use the raw SDK.</p></details>
+  <details class="qa"><summary>A teammate sets temperature=0 for deterministic output and gets a 400. Why?</summary><p>On the newest Claude models, temperature and top_p are deprecated. Only the default value is accepted. Even where temperature works, 0 does not promise the same output every time. For consistent answers, use structured outputs and clear instructions with examples. Then test on a fixed set of cases.</p></details>
 
   <h2 id="quiz"><span class="n">07</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">Turn 10 of a chat costs far more input tokens than turn 1. Why?</p>
+  <div class="quiz" data-answer="2"><p class="q">Turn 10 of a chat uses far more input tokens than turn 1. Why?</p>
     <div class="opts"><button class="opt" type="button">The model's memory fills up</button><button class="opt" type="button">Output tokens are re-billed as input</button><button class="opt" type="button">The API is stateless, so every turn resends all earlier turns</button></div>
-    <p class="why">No server-side session. Mitigate with prompt caching, summarising or trimming history.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">A reply has <code>stop_reason: "max_tokens"</code> but the JSON happens to parse. What do you do?</p>
+    <p class="why">The server keeps no session, so you resend the whole chat each turn. Reduce it with prompt caching, or by summarising or trimming old turns.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">A reply has <code>stop_reason: "max_tokens"</code>, but the JSON happens to parse. What do you do?</p>
     <div class="opts"><button class="opt" type="button">Use it; it parsed</button><button class="opt" type="button">Treat it as truncated: raise the cap or ask for less</button><button class="opt" type="button">Retry with temperature 0</button></div>
-    <p class="why">It was cut off at your cap; it may be missing data even if it parses.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">An overload hits after 40 tokens have streamed to the user. What arrives, and should you retry?</p>
+    <p class="why">It was cut off at your limit. Data may be missing, even if it parses.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">An overload happens after 40 tokens have reached the user. What arrives, and should you retry?</p>
     <div class="opts"><button class="opt" type="button">An SSE error event; don't auto-retry, or the user sees duplicated text</button><button class="opt" type="button">An HTTP 529; retry with backoff</button><button class="opt" type="button">Nothing; the stream just pauses</button></div>
-    <p class="why">The HTTP status was already 200. That's why Spring's <code>retryWhen</code> filter checks <code>!started.get()</code>.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">SDK retries 3, outer loop 5 attempts, caller retries 3. Worst-case requests per user action?</p>
+    <p class="why">The HTTP status was already 200, so the error comes as an event. A retry would repeat text the user already saw. That is why Spring's <code>retryWhen</code> filter checks <code>!started.get()</code>.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">The SDK retries 3 times, an outer loop tries 5 times, and the caller retries 3 times. What is the worst case, in requests per user action?</p>
     <div class="opts"><button class="opt" type="button">11</button><button class="opt" type="button">45</button><button class="opt" type="button">60</button></div>
-    <p class="why">(1 + 3) × 5 × 3 = 60. Retry at one layer only.</p></div>
+    <p class="why">The layers multiply: (1 + 3) × 5 × 3 = 60. Retry in one layer only.</p></div>
 
   <h2 id="exercise"><span class="n">08</span>Exercise / checkpoint for the capstone</h2>
   <div class="keys">
-    <div class="key"><h4>Two endpoints</h4><p><code>/classify</code> returns <code>ClauseRisk</code>; <code>/explain</code> streams.</p></div>
-    <div class="key"><h4>10-clause golden set</h4><p>Python script prints accuracy.</p></div>
-    <div class="key"><h4>Cost per 1,000</h4><p>From logged tokens, Haiku 4.5 vs Sonnet 5.5.</p></div>
-    <div class="key"><h4>Network chaos</h4><p>No duplicate writes, one retry layer.</p></div>
+    <div class="key"><h4>Two endpoints</h4><p><code>/classify</code> returns <code>ClauseRisk</code>. <code>/explain</code> streams text.</p></div>
+    <div class="key"><h4>10-clause golden set</h4><p>A Python script calls your endpoint and prints the accuracy.</p></div>
+    <div class="key"><h4>Cost per 1,000</h4><p>Work it out from logged tokens, for Haiku 4.5 and Sonnet 5.5.</p></div>
+    <div class="key"><h4>Network chaos</h4><p>Cut the network briefly. Check there are no duplicate writes and only one retry layer fires.</p></div>
   </div>
   <details class="deep"><summary>Exercise steps in full</summary>
-  <p>The capstone is a contract Q&amp;A service plus a risky-clause flagger. This lesson gives you its first two endpoints.</p>
+  <p>The capstone is a contract Q&amp;A service plus a tool that flags risky clauses. This lesson gives you its first two endpoints.</p>
   <ol>
-    <li>In your capstone Spring Boot service, add <code>POST /api/clauses/classify</code> returning <code>ClauseRisk</code>, and <code>POST /api/clauses/explain</code> streaming text.</li>
-    <li>Write 10 sample clauses (two each of liability cap, uncapped indemnity, termination for convenience, auto-renewal, governing law) with the label you expect. Write a Python script that calls your endpoint for each and prints accuracy. This is your first golden set; the evals lesson builds on it.</li>
-    <li>Log the fields in the checklist above, and compute cost per 1,000 classifications from the logged tokens for both Haiku 4.5 and Sonnet 5.5.</li>
-    <li>Kill your network for a few seconds mid-batch and confirm the batch completes without duplicate writes and without more than one retry layer firing.</li>
+    <li>In your capstone Spring Boot service, add <code>POST /api/clauses/classify</code>, which returns <code>ClauseRisk</code>. Add <code>POST /api/clauses/explain</code>, which streams text.</li>
+    <li>Write 10 sample clauses, each with the label you expect. Make two each of: liability cap, uncapped indemnity, termination for convenience, auto-renewal, and governing law.</li>
+    <li>Write a Python script that calls your endpoint for each clause and prints the accuracy. This is your first golden set, a fixed list of test cases with known answers. The evals lesson builds on it.</li>
+    <li>Log the fields in the checklist above. From the logged tokens, work out the cost per 1,000 classifications for Haiku 4.5 and Sonnet 5.5.</li>
+    <li>Turn off your network for a few seconds in the middle of a batch. Confirm the batch finishes without duplicate writes. Confirm no more than one retry layer fires.</li>
   </ol>
-  <p><b>Done when:</b> both endpoints work, accuracy is at least 9/10 on your golden set, and you can state the cost per 1,000 calls and your p95 TTFT from your own logs.</p>
+  <p><b>Done when:</b> both endpoints work, and accuracy is at least 9/10 on your golden set. You can also state the cost per 1,000 calls and your p95 TTFT from your own logs. p95 means 95 out of 100 requests are faster than this.</p>
   </details>
 
   <h2 id="cheat"><span class="n">09</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Request: model, max_tokens (required), system, messages, output_config.</li>
-    <li>Response: content[] blocks, stop_reason, usage, request id. Join all text blocks.</li>
-    <li><code>max_tokens</code> stop = truncated; never trust as complete.</li>
-    <li>Price per MTok in/out: Haiku 4.5 $1/$5, Sonnet 5.5 $2/$10, Opus 5.5 $4/$20.</li>
-    <li>Stream: message_start → block start → deltas → block stop → message_delta → message_stop. Measure TTFT.</li>
-    <li>Typed output: <code>messages.parse</code> / <code>.entity()</code>, enums for labels.</li>
-    <li>Retry 429 (honour retry-after), 500, 504, 529; never 400/401/403/413. One layer only.</li>
-    <li>Spring: one ChatClient, <code>.param()</code> templates, <code>Flux</code> streaming, retry only before first chunk.</li>
+    <li>Request fields: model, max_tokens (required), system, messages, output_config.</li>
+    <li>Response: content[] blocks, stop_reason, usage, request id. Join all the text blocks.</li>
+    <li>A <code>max_tokens</code> stop means the answer was cut off. Never trust it as complete.</li>
+    <li>Price per million tokens, in and out: Haiku 4.5 $1/$5, Sonnet 5.5 $2/$10, Opus 5.5 $4/$20.</li>
+    <li>Stream order: message_start → block start → deltas → block stop → message_delta → message_stop. Measure TTFT.</li>
+    <li>Typed output: <code>messages.parse</code> or <code>.entity()</code>. Use enums for labels.</li>
+    <li>Retry 429 (respect retry-after), 500, 504 and 529. Never retry 400, 401, 403 or 413. Retry in one layer only.</li>
+    <li>Spring: one ChatClient, <code>.param()</code> templates, <code>Flux</code> streaming. Retry a stream only before the first piece.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">10</span>Sources / go deeper</h2>

@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>Parking Lot</h1>
-  <p class="lede">Build and defend a multi-gate parking lot where no two cars ever get the same spot and no ticket is charged twice.</p>
+  <p class="lede">Build a parking lot with many gates. Two cars must never get the same spot. No car should ever be charged twice. You must also explain why your design is safe.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 60–90 min</span>
     <span class="fact"><b>Seen:</b> ~6 reports, 2025–26, plus a Rubrik concurrency variant</span>
@@ -20,13 +20,24 @@
   <div class="chips"><span class="chip hot">Swiggy</span><span class="chip hot">Cashfree</span><span class="chip">Angel One</span><span class="chip">Uber</span><span class="chip">PayPal</span><span class="chip">Amazon</span><span class="chip">Rubrik</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Free spots live in a sorted concurrent set per spot type.</li>
-    <li><code>pollFirst()</code> takes the best spot atomically: no two gates share one.</li>
-    <li>Ticket state ACTIVE → PAYING → CLOSED via compare-and-set: one exit wins.</li>
-    <li>Pricing and allocation are strategies; money in paise as <code>long</code>.</li>
+    <li>Keep the free spots of each type in a sorted list that many threads can share safely.</li>
+    <li><code>pollFirst()</code> takes the best spot in one step, so two gates never get the same one.</li>
+    <li>A ticket moves ACTIVE, then PAYING, then CLOSED. Only one exit gate can make that move.</li>
+    <li>Pricing and spot choice are swappable parts. Money is stored in paise as a <code>long</code>.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A mall parking with a token dispenser at every gate. Each dispenser pulls the top token off one shared stack, so two gates can never hand out the same bay. At exit, the token is stamped "paying" first, so a second exit lane cannot charge the same car again.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a mall parking with a token machine at every gate. Each machine pulls the top token off one shared stack. So two gates can never hand out the same bay. At the exit, the token is first stamped "paying". A second exit lane then cannot charge the same car again.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Atomic</dt><dd>Happens in one step that nobody can interrupt. Another thread sees either "before" or "after", never half.</dd>
+    <dt>Race condition</dt><dd>Two threads touch the same data at the same time, and the result depends on who is faster.</dd>
+    <dt>Check-then-act</dt><dd>You read a value, then act on it in a second step. Another thread can change it in between.</dd>
+    <dt>CAS (compare-and-set)</dt><dd>"Change the value to B only if it is still A." If someone changed it first, your update fails.</dd>
+    <dt>Strategy pattern</dt><dd>A rule you can swap without changing the main code, like "hourly pricing" or "weekend pricing".</dd>
+    <dt>Comparator</dt><dd>A rule that says which of two items comes first. Here it decides which spot is "best".</dd>
+    <dt>Idempotent</dt><dd>Doing it twice has the same effect as doing it once. Pressing "Pay" twice charges you once.</dd>
+    <dt>Paise</dt><dd>1/100 of a rupee. Storing whole paise avoids rounding errors that decimals like 0.1 cause.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -47,64 +58,64 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="grid">
-    <div class="card"><h4>Runnable code</h4><p>Park, exit, pay, print availability, from a <code>main</code> or tests. A diagram alone does not pass a machine-coding round.</p></div>
-    <div class="card"><h4>Allocation correctness</h4><p>Two gates never get the same spot; a car cannot enter twice; exit cannot be paid twice.</p></div>
-    <div class="card"><h4>Extension points</h4><p>Allocation strategy, pricing strategy, vehicle-to-spot compatibility as data, observers for display boards.</p></div>
-    <div class="card"><h4>Search (Cashfree)</h4><p>Availability by type and floor without scanning every spot, and time-window search if reservations are in scope.</p></div>
+    <div class="card"><h4>Runnable code</h4><p>Park, exit, pay and show free spots, from a <code>main</code> or from tests. A diagram alone does not pass a machine-coding round.</p></div>
+    <div class="card"><h4>Correct spot assignment</h4><p>Two gates never get the same spot. A car cannot enter twice. An exit cannot be paid twice.</p></div>
+    <div class="card"><h4>Easy to extend</h4><p>You can swap how spots are chosen and how prices work. Which vehicle fits which spot is data. Display boards get told about changes.</p></div>
+    <div class="card"><h4>Search (Cashfree)</h4><p>Find free spots by type and floor without checking every spot. Also search by time window, if bookings are in scope.</p></div>
   </div>
-  <p>Everyone knows the entities. You are judged on concurrency, extension points, and finishing runnable code in time.</p>
+  <p>Everyone knows the classes. You are judged on safety when many gates work at once. You are also judged on how easy it is to extend. And you must finish runnable code in time.</p>
   <details class="deep"><summary>Go deeper: what each company asked</summary>
-  <p>The classic, still asked in 2025–26, and now graded at senior level: multiple floors and spot types, pluggable allocation and pricing, several entry and exit gates racing for the same spots, and room for EV charging and reservations. The reports show how little the prompt says and how much is expected:</p>
+  <p>This is the classic question. It is still asked in 2025–26, now at senior level. Expect many floors and spot types. Expect swappable spot choice and pricing. Expect several entry and exit gates fighting for the same spots. Leave room for EV charging and bookings. The reports show how short the prompt is, and how much is expected:</p>
   <ul>
-    <li><b>Swiggy SDE-2 (Nov 2025, rejected after the next round)</b>: parking lot in a combined DSA + LLD hour; entities (Vehicle, Slot, Ticket, Payment), allocation strategy and class diagram. The candidate's takeaway: startups expect you to "solve instantly".</li>
-    <li><b>Cashfree SDE-2 (Oct 2025, rejected)</b>: "online parking lot": search available slots, book/reserve a slot. "The interviewer wanted a more refined approach for the search functionality." Search was the deciding part.</li>
-    <li><b>Angel One SDE-2 (2026, selected)</b>: parking lot LLD inside a combined system design + DB design round.</li>
-    <li><b>Rubrik</b>: a systems-coding twist: a thread-safe car and truck parking in a 1-D array, car takes one unit, truck takes two.</li>
-    <li>Uber, PayPal (SE3, LLD and HLD) and Amazon also ask it; at senior level the follow-ups are concurrency and extensibility.</li>
+    <li><b>Swiggy SDE-2 (Nov 2025, rejected after the next round)</b>: parking lot inside one hour of DSA plus LLD. They wanted the classes (Vehicle, Slot, Ticket, Payment), a spot-choice strategy and a class diagram. The candidate's lesson: startups expect you to "solve instantly".</li>
+    <li><b>Cashfree SDE-2 (Oct 2025, rejected)</b>: an "online parking lot". Search free slots, then book or reserve one. "The interviewer wanted a more refined approach for the search functionality." Search decided the result.</li>
+    <li><b>Angel One SDE-2 (2026, selected)</b>: parking lot LLD inside a round that mixed system design and database design.</li>
+    <li><b>Rubrik</b>: a systems-coding twist. Build thread-safe car and truck parking in a one-row array. A car takes one unit. A truck takes two.</li>
+    <li>Uber, PayPal (SE3, LLD and HLD) and Amazon also ask it. At senior level, the follow-up questions are about safety with many threads, and about adding features.</li>
   </ul>
   </details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="keys">
-    <div class="key"><h4>Vehicle and spot types?</h4><p>Compatibility becomes a data table, not <code>if</code> chains.</p></div>
-    <div class="key"><h4>Reservations ahead of time?</h4><p>Turns a free flag into time intervals (the Cashfree twist).</p></div>
-    <div class="key"><h4>How many gates?</h4><p>More than one: allocation must be atomic.</p></div>
-    <div class="key"><h4>Pricing rules?</h4><p>A strategy; money in paise as <code>long</code>.</p></div>
+    <div class="key"><h4>Vehicle and spot types?</h4><p>Which vehicle fits which spot becomes a data table, not a chain of <code>if</code>s.</p></div>
+    <div class="key"><h4>Bookings ahead of time?</h4><p>Then a spot is not just "free" or "taken". It has time slots (the Cashfree twist).</p></div>
+    <div class="key"><h4>How many gates?</h4><p>More than one means taking a spot must happen in one step.</p></div>
+    <div class="key"><h4>Pricing rules?</h4><p>Make pricing a swappable strategy. Store money in paise as a <code>long</code>.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: all eight questions and why each matters</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Vehicle types and spot types? Can a bike use a car spot?</td><td>Compatibility rules become a data table, not <code>if</code> chains.</td></tr>
-    <tr><td>Drive-in only, or reservations ahead of time?</td><td>Reservations turn a free/occupied flag into time intervals (the Cashfree twist).</td></tr>
-    <tr><td>How many entry and exit gates?</td><td>More than one means concurrent allocation must be atomic.</td></tr>
-    <tr><td>Allocation rule: any free spot, lowest floor, nearest to the gate?</td><td>Allocation is a strategy; nearest-to-gate needs per-gate ordering.</td></tr>
-    <tr><td>Pricing: flat, hourly, slabs, per vehicle type, weekend rates, grace period?</td><td>Pricing is a strategy; money in paise as <code>long</code>.</td></tr>
-    <tr><td>Payment at exit only? Which modes? What if payment fails?</td><td>Defines ticket states and idempotent exit.</td></tr>
-    <tr><td>EV charging, handicapped spots, monthly passes?</td><td>Tells you which extension points to leave visible.</td></tr>
-    <tr><td>Single lot or many lots (a platform)?</td><td>Many lots pushes towards a service with a DB; one lot stays in memory.</td></tr>
+    <tr><td>Vehicle types and spot types? Can a bike use a car spot?</td><td>The "what fits where" rules become a data table, not <code>if</code> chains.</td></tr>
+    <tr><td>Drive-in only, or bookings ahead of time?</td><td>Bookings turn a simple free/taken flag into time slots (the Cashfree twist).</td></tr>
+    <tr><td>How many entry and exit gates?</td><td>More than one means gates run at the same time. Taking a spot must be a single step.</td></tr>
+    <tr><td>Spot rule: any free spot, lowest floor, or nearest to the gate?</td><td>Spot choice is a strategy. "Nearest to the gate" needs a separate order for each gate.</td></tr>
+    <tr><td>Pricing: flat, hourly, slabs, per vehicle type, weekend rates, free grace period?</td><td>Pricing is a strategy. Money is stored in paise as a <code>long</code>.</td></tr>
+    <tr><td>Pay at exit only? Which payment modes? What if payment fails?</td><td>This decides the ticket states. It also decides how a repeated exit stays safe (idempotent).</td></tr>
+    <tr><td>EV charging, spots for disabled drivers, monthly passes?</td><td>Tells you which extension points to leave visible.</td></tr>
+    <tr><td>One lot, or many lots on one platform?</td><td>Many lots push you to a service with a database. One lot can stay in memory.</td></tr>
   </table></div>
   </details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
-    <div class="card"><h4>Functional</h4><ul>
-      <li>Lot with floors; spots of type TWO_WHEELER, COMPACT, LARGE, EV.</li>
-      <li>Vehicles BIKE, CAR, EV_CAR, TRUCK with a compatibility order.</li>
-      <li>Entry gate issues a ticket and assigns a spot, or reports full.</li>
-      <li>Exit gate computes fee, takes payment, frees the spot.</li>
-      <li>Availability per spot type and floor (display boards).</li>
-      <li>Pluggable allocation and pricing.</li>
+    <div class="card"><h4>Functional (what it does)</h4><ul>
+      <li>A lot has floors. Spots are TWO_WHEELER, COMPACT, LARGE or EV.</li>
+      <li>Vehicles are BIKE, CAR, EV_CAR or TRUCK. Each has an ordered list of spot types it can use.</li>
+      <li>The entry gate gives a ticket and a spot, or says "full".</li>
+      <li>The exit gate works out the fee, takes payment and frees the spot.</li>
+      <li>Show free spots per type and floor on display boards.</li>
+      <li>Spot choice and pricing can be swapped.</li>
     </ul></div>
-    <div class="card"><h4>Non-functional</h4><ul>
-      <li>Concurrent gates: no double allocation, no double exit.</li>
-      <li>Allocation in O(log n), not a scan of every spot.</li>
-      <li>Deterministic fee tests with injected <code>Clock</code>.</li>
-      <li>Money as <code>long</code> paise, never <code>double</code>.</li>
+    <div class="card"><h4>Non-functional (how well it does it)</h4><ul>
+      <li>Many gates at once: no spot given twice, no ticket paid twice.</li>
+      <li>Finding a spot takes O(log n) time, not a scan of every spot.</li>
+      <li>Fee tests give the same result every run, because the test controls the <code>Clock</code>.</li>
+      <li>Money is a <code>long</code> in paise, never a <code>double</code>.</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>Real payment gateway (interface + stub).</li>
-      <li>ANPR cameras and hardware.</li>
-      <li>Multi-lot platform and persistence (talk only).</li>
+      <li>A real payment gateway. Use an interface and a fake.</li>
+      <li>Number-plate cameras (ANPR) and other hardware.</li>
+      <li>Many lots and a database. Only talk about these.</li>
     </ul></div>
   </div>
 
@@ -130,87 +141,87 @@
     <span class="arrow">→</span>
     <span class="node">DisplayBoard<small>AvailabilityListener</small></span>
   </div>
-  <p class="flow-caption">Figure: gates are thin; the lot owns the free-spot pool and active tickets; pricing and payment are injected; boards observe availability.</p>
+  <p class="flow-caption">Figure: the gates do very little. The lot owns the free spots and the open tickets. Pricing and payment are passed in from outside. Display boards listen for changes in free spots.</p>
   <h3>Patterns and why</h3>
   <div class="keys">
-    <div class="key"><h4>Strategy</h4><p>For pricing and allocation order. These are what product changes most.</p></div>
-    <div class="key"><h4>Decorator</h4><p>Add-on charges (EV energy, valet) on top of base pricing.</p></div>
-    <div class="key"><h4>Observer</h4><p>Display boards and metrics.</p></div>
-    <div class="key"><h4>State</h4><p>As an enum with CAS transitions for the ticket: ACTIVE → PAYING → CLOSED.</p></div>
-    <div class="key"><h4>Façade, not Singleton</h4><p><code>ParkingLot</code>. A second lot or a test should just be <code>new ParkingLot(...)</code>.</p></div>
-    <div class="key"><h4>No class per vehicle</h4><p>No <code>Car extends Vehicle</code> unless behaviour differs; an enum plus a compatibility table is less code and easier to extend.</p></div>
+    <div class="key"><h4>Strategy</h4><p>Use it for pricing and for the order spots are chosen in. Product teams change these the most.</p></div>
+    <div class="key"><h4>Decorator</h4><p>Wraps base pricing to add extra charges, such as EV energy or valet.</p></div>
+    <div class="key"><h4>Observer</h4><p>Display boards and metrics get told when free counts change.</p></div>
+    <div class="key"><h4>State</h4><p>The ticket's state is an enum: ACTIVE, PAYING, CLOSED. Each move uses CAS, so only one thread wins it.</p></div>
+    <div class="key"><h4>Façade, not Singleton</h4><p><code>ParkingLot</code> is the one front door. A second lot or a test just calls <code>new ParkingLot(...)</code>.</p></div>
+    <div class="key"><h4>No class per vehicle</h4><p>Skip <code>Car extends Vehicle</code> unless behaviour differs. An enum plus a "what fits where" table is less code. It is also easier to extend.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: responsibility table for every class</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
     <tr><td><code>Vehicle</code> (record)</td><td>Who is parking</td><td>plate, <code>VehicleType</code></td></tr>
-    <tr><td><code>Spot</code> (record)</td><td>Immutable spot description</td><td>id, floor, <code>SpotType</code>, distance</td></tr>
-    <tr><td><code>Compatibility</code></td><td>Which spot types a vehicle may use, in preference order</td><td><code>EnumMap&lt;VehicleType, List&lt;SpotType&gt;&gt;</code></td></tr>
-    <tr><td><code>SpotPool</code></td><td>Free spots per type, atomic take/return</td><td><code>ConcurrentSkipListSet&lt;Spot&gt;</code> per type; <code>take</code>, <code>release</code>, <code>freeCount</code></td></tr>
-    <tr><td><code>Ticket</code></td><td>Session and its state machine</td><td>id, vehicle, spot, entryTime, gate, <code>AtomicReference&lt;State&gt;</code></td></tr>
-    <tr><td><code>PricingStrategy</code></td><td>Fee for a ticket at exit time</td><td><code>HourlyPricing</code>, <code>EvChargingPricing</code> (decorator)</td></tr>
-    <tr><td><code>PaymentProcessor</code></td><td>Charge with idempotency key</td><td><code>charge(ticketId, paise)</code></td></tr>
-    <tr><td><code>ParkingLot</code></td><td>Façade: park, exit, availability</td><td>pool, active tickets, plates inside, pricing, clock, listeners</td></tr>
-    <tr><td><code>EntryGate</code>, <code>ExitGate</code></td><td>Thin I/O wrappers that call the lot</td><td>gateId</td></tr>
-    <tr><td><code>AvailabilityListener</code></td><td>Observer: display boards</td><td><code>onChange(SpotType, freeCount)</code></td></tr>
+    <tr><td><code>Spot</code> (record)</td><td>A fixed description of one spot</td><td>id, floor, <code>SpotType</code>, distance</td></tr>
+    <tr><td><code>Compatibility</code></td><td>Which spot types a vehicle may use, best first</td><td><code>EnumMap&lt;VehicleType, List&lt;SpotType&gt;&gt;</code></td></tr>
+    <tr><td><code>SpotPool</code></td><td>Free spots per type. Takes and returns a spot in one step.</td><td>One <code>ConcurrentSkipListSet&lt;Spot&gt;</code> per type. <code>take</code>, <code>release</code>, <code>freeCount</code></td></tr>
+    <tr><td><code>Ticket</code></td><td>One parking visit and its state</td><td>id, vehicle, spot, entryTime, gate, <code>AtomicReference&lt;State&gt;</code></td></tr>
+    <tr><td><code>PricingStrategy</code></td><td>The fee for a ticket at exit time</td><td><code>HourlyPricing</code>, <code>EvChargingPricing</code> (decorator)</td></tr>
+    <tr><td><code>PaymentProcessor</code></td><td>Charges money. A repeat with the same key does not charge again.</td><td><code>charge(ticketId, paise)</code></td></tr>
+    <tr><td><code>ParkingLot</code></td><td>Front door: park, exit, free counts</td><td>pool, active tickets, plates inside, pricing, clock, listeners</td></tr>
+    <tr><td><code>EntryGate</code>, <code>ExitGate</code></td><td>Thin wrappers that call the lot</td><td>gateId</td></tr>
+    <tr><td><code>AvailabilityListener</code></td><td>Observer for display boards</td><td><code>onChange(SpotType, freeCount)</code></td></tr>
   </table></div>
   </details>
 
   <h2 id="watch"><span class="n">05</span>Watch it work</h2>
-  <p>A small lot: 3 COMPACT spots and 1 LARGE, sorted lowest floor then nearest. Spot ids read floor-type-number. Example prices: first hour ₹40, each extra hour ₹20.</p>
+  <p>A small lot has 3 COMPACT spots and 1 LARGE spot. They are sorted by lowest floor, then nearest. A spot id reads floor-type-number. Example prices: ₹40 for the first hour, ₹20 for each extra hour.</p>
   <div class="stepper"><b class="title">Four gates, five cars, one exit</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell win">0-C-1</span><span class="cell win">0-C-2</span><span class="cell win">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell win">0-L-1</span></div>
       <div class="ptrs"><span>platesInside={}</span><span>active tickets=0</span></div>
-      <figcaption>Every free spot sits in a sorted set for its type. The comparator (floor, then distance) is the allocation strategy.</figcaption>
+      <figcaption>Each free spot sits in a sorted set for its type. The sort rule (floor, then distance) decides which spot is "best".</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell hl">0-C-1</span><span class="cell win">0-C-2</span><span class="cell win">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell win">0-L-1</span></div>
       <div class="ptrs"><span class="on">G1: car KA01 enters</span><span>platesInside.add → true</span></div>
-      <figcaption>The plate is claimed first, atomically, so the same car cannot enter at another gate. Then <code>pollFirst()</code> on COMPACT.</figcaption>
+      <figcaption>First the gate notes the number plate as "inside", in one step. So the same car cannot also enter at another gate. Then the gate takes the best free COMPACT spot (<code>pollFirst()</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell bad">0-C-1</span><span class="cell win">0-C-2</span><span class="cell win">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell win">0-L-1</span></div>
       <div class="ptrs"><span class="on">T1 → 0-C-1, ACTIVE</span><span>entry 10:00</span><span>board: COMPACT 2</span></div>
-      <figcaption>The spot left the free set and became ticket T1. Display boards hear the new count.</figcaption>
+      <figcaption>The spot left the free set and now belongs to ticket T1. Display boards get the new count.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell bad">0-C-1</span><span class="cell hl">0-C-2</span><span class="cell hl">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell win">0-L-1</span></div>
       <div class="ptrs"><span class="on">G2: KA02 → 0-C-2</span><span class="on">G3: KA03 → 1-C-1</span></div>
-      <figcaption>Two gates poll at the same instant. Each <code>pollFirst</code> removes a different element, so the spots are distinct.</figcaption>
+      <figcaption>Two gates ask for a spot at the same moment. Each one removes a different spot from the free set, so they never clash.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell bad">0-C-1</span><span class="cell bad">0-C-2</span><span class="cell bad">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell hl">0-L-1</span></div>
       <div class="ptrs"><span class="on">G4: KA04, COMPACT empty</span><span>falls back to LARGE</span></div>
-      <figcaption>A car's preference list is COMPACT then LARGE. With COMPACT empty, it gets the LARGE spot.</figcaption>
+      <figcaption>A car prefers COMPACT, then LARGE. COMPACT is empty, so this car gets the LARGE spot.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell bad">0-C-1</span><span class="cell bad">0-C-2</span><span class="cell bad">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell bad">0-L-1</span></div>
       <div class="ptrs"><span class="on">KA05 → LotFullException</span><span>plate removed again</span></div>
-      <figcaption>No spot left. The plate claim is undone, so KA05 can try again later.</figcaption>
+      <figcaption>No spot is left. The plate claim is undone, so KA05 can try again later.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell hl">0-C-1</span><span class="cell bad">0-C-2</span><span class="cell bad">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell bad">0-L-1</span></div>
       <div class="ptrs"><span class="on">exit T1 at 11:01</span><span>CAS ACTIVE → PAYING</span><span>61 min → 2 h → ₹40 + ₹20 = 6000 paise</span></div>
-      <figcaption>The CAS makes this exit the only winner. Every started hour is charged.</figcaption>
+      <figcaption>The ticket is switched from ACTIVE to PAYING in one step (CAS). So only this exit can go ahead. Every started hour is charged, so 61 minutes counts as 2 hours.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell">COMPACT</span><span class="cell ok">0-C-1</span><span class="cell bad">0-C-2</span><span class="cell bad">1-C-1</span></div>
       <div class="cells"><span class="cell">LARGE</span><span class="cell bad">0-L-1</span></div>
       <div class="ptrs"><span class="on">charge ok → CLOSED</span><span>spot released</span><span>board: COMPACT 1</span></div>
-      <figcaption>Only after payment succeeds does the spot go back into the free set. A failed payment rolls the ticket back to ACTIVE.</figcaption>
+      <figcaption>The spot goes back to the free set only after payment works. If payment fails, the ticket goes back to ACTIVE.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="code"><span class="n">06</span>Core code</h2>
-  <p>The free pool is the concurrency core. <code>ConcurrentSkipListSet.pollFirst()</code> removes and returns the best spot atomically, so two gates can never receive the same spot, with no explicit lock.</p>
+  <p>The free-spot pool is the heart of the thread safety. <code>ConcurrentSkipListSet.pollFirst()</code> removes and returns the best spot in one step. So two gates can never get the same spot. You do not need to write any lock yourself.</p>
   <pre><code>    Optional&lt;Spot&gt; take(VehicleType vehicle) {
         for (SpotType type : Compatibility.preferenceFor(vehicle)) {
             Spot s = free.get(type).pollFirst(); // atomic remove-and-return
@@ -235,7 +246,7 @@ final class Compatibility {
     static List&lt;SpotType&gt; preferenceFor(VehicleType t) { return ALLOWED.get(t); }
 }</code></pre></details>
   <details class="code"><summary>Show Java: SpotPool</summary>
-  <p>The free pool is the concurrency core. <code>ConcurrentSkipListSet.pollFirst()</code> removes and returns the best spot atomically, so two gates can never receive the same spot, with no explicit lock. The comparator is the allocation strategy.</p>
+  <p>The free-spot pool is the heart of the thread safety. <code>ConcurrentSkipListSet.pollFirst()</code> removes and returns the best spot in one step. So two gates can never get the same spot, and you need no lock. The sort rule (comparator) is the spot-choice strategy.</p>
   <pre><code>final class SpotPool {
     private final Map&lt;SpotType, ConcurrentSkipListSet&lt;Spot&gt;&gt; free = new EnumMap&lt;&gt;(SpotType.class);
 
@@ -391,10 +402,10 @@ public record EntryGate(String id, ParkingLot lot) {
 public record ExitGate(String id, ParkingLot lot) {
     public Receipt release(String ticketId) throws PaymentException { return lot.exit(ticketId); }
 }</code></pre></details>
-  <div class="callout tip"><b>The demo that proves concurrency</b><p>Build a lot with 50 COMPACT spots, start 4 entry gates on an executor, fire 200 car entries through a <code>CountDownLatch</code> start line. Assert exactly 50 tickets, 150 <code>LotFullException</code>s, and 50 distinct spot ids. Print it. That replaces five minutes of arguing about thread safety.</p></div>
+  <div class="callout tip"><b>The demo that proves it is thread-safe</b><p>Build a lot with 50 COMPACT spots. Start 4 entry gates on an executor (a pool of threads). Send 200 cars at once, using a <code>CountDownLatch</code> as a shared start line. Check that you get exactly 50 tickets and 150 <code>LotFullException</code>s. Check that the 50 spot ids are all different. Print the result. This ends five minutes of arguing about thread safety.</p></div>
 
   <h2 id="concurrency"><span class="n">07</span>Concurrency and edge cases</h2>
-  <p>The bug every reviewer looks for: <code>isFree()</code> then <code>occupy()</code> as two calls (<dfn title="Reading a value and acting on it in separate steps, so another thread can change it in between">check-then-act</dfn>).</p>
+  <p>Every reviewer looks for one bug. It is calling <code>isFree()</code> and then <code>occupy()</code> as two separate calls. This is called <dfn title="Reading a value and acting on it in separate steps, so another thread can change it in between">check-then-act</dfn>. Another gate can take the spot between your two calls.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Gate 1</th><th>Gate 2</th><th>Spot 1-C-1</th></tr></thead><tbody>
     <tr><td>t1</td><td><code>isFree(1-C-1)</code> → true</td><td></td><td>FREE</td></tr>
     <tr><td>t2</td><td></td><td><code>isFree(1-C-1)</code> → true</td><td>FREE</td></tr>
@@ -402,24 +413,24 @@ public record ExitGate(String id, ParkingLot lot) {
     <tr><td>fixed</td><td><code>pollFirst()</code> → 1-C-1</td><td><code>pollFirst()</code> → next spot or null</td><td class="ok">one owner</td></tr>
   </tbody></table></div>
   <ul>
-    <li>Same plate at two gates: <code>platesInside.add</code> is atomic.</li>
-    <li>Two exits for one ticket: CAS ACTIVE → PAYING; only one thread proceeds.</li>
-    <li>Payment fails: roll back to ACTIVE; release the spot only after a successful charge.</li>
+    <li>Same plate at two gates: <code>platesInside.add</code> happens in one step, so only one gate wins.</li>
+    <li>Two exits for one ticket: a CAS from ACTIVE to PAYING lets only one thread continue.</li>
+    <li>Payment fails: move the ticket back to ACTIVE. Free the spot only after a successful charge.</li>
   </ul>
   <details class="deep"><summary>Go deeper: every race and edge case, the DB version, and the Rubrik variant</summary>
   <div class="tbl"><table>
     <tr><th>Race / edge</th><th>What goes wrong</th><th>Prevention</th></tr>
-    <tr><td>Two gates, one last spot</td><td>Both see "free" and both assign it (check-then-act)</td><td><code>pollFirst()</code> is a single atomic remove. Alternatives: <code>synchronized</code> allocate (fine for a handful of gates), or a CAS on a spot's occupant field while scanning.</td></tr>
-    <tr><td>Same plate at two gates</td><td>Two tickets for one car</td><td><code>platesInside.add</code> is atomic; undone if the lot is full.</td></tr>
-    <tr><td>Two exit attempts for one ticket</td><td>Double charge, spot released twice (duplicate in pool)</td><td>CAS ACTIVE → PAYING; only one thread proceeds. Payment is idempotent on ticket id for retries after timeouts.</td></tr>
-    <tr><td>Payment fails</td><td>Spot freed while car still inside</td><td>Release only after a successful charge; state rolls back to ACTIVE.</td></tr>
-    <tr><td>Display counts slightly stale</td><td>Board shows 1 free, car finds none</td><td>Acceptable and stated; entry is the source of truth.</td></tr>
-    <tr><td>Stay under grace period, midnight or DST</td><td>Wrong fee</td><td>Durations from <code>Instant</code> (UTC), injected <code>Clock</code>; time-of-day pricing converts with the lot's <code>ZoneId</code> explicitly.</td></tr>
-    <tr><td>Lost ticket</td><td>No ticket id</td><td>Lookup by plate (add <code>Map&lt;plate, ticketId&gt;</code>) and a lost-ticket flat fee strategy.</td></tr>
-    <tr><td>Spot under maintenance</td><td>Allocated broken spot</td><td>Remove from the pool; return when fixed. No flag checks in the hot path.</td></tr>
+    <tr><td>Two gates, one last spot</td><td>Both see "free" and both give it out (check-then-act)</td><td><code>pollFirst()</code> removes in one step. Other options: a <code>synchronized</code> allocate method (fine for a few gates). Or a CAS on each spot's "occupant" field while scanning.</td></tr>
+    <tr><td>Same plate at two gates</td><td>Two tickets for one car</td><td><code>platesInside.add</code> is one step. It is undone if the lot is full.</td></tr>
+    <tr><td>Two exit attempts for one ticket</td><td>Charged twice. Spot freed twice, so it sits in the pool twice.</td><td>CAS from ACTIVE to PAYING, so only one thread goes on. Payment is idempotent on the ticket id. So a retry after a timeout does not charge again.</td></tr>
+    <tr><td>Payment fails</td><td>Spot freed while the car is still inside</td><td>Free the spot only after a successful charge. The state goes back to ACTIVE.</td></tr>
+    <tr><td>Board counts slightly out of date</td><td>Board shows 1 free, but the car finds none</td><td>This is acceptable, and you say so. The entry gate is the real source of truth.</td></tr>
+    <tr><td>Stay inside the grace period, past midnight, or across a daylight-saving change (DST)</td><td>Wrong fee</td><td>Measure time with <code>Instant</code> (UTC) and a <code>Clock</code> passed in. Time-of-day pricing converts using the lot's <code>ZoneId</code> on purpose.</td></tr>
+    <tr><td>Lost ticket</td><td>No ticket id</td><td>Look up by plate (add a <code>Map&lt;plate, ticketId&gt;</code>). Add a flat "lost ticket" fee strategy.</td></tr>
+    <tr><td>Spot under repair</td><td>A broken spot is given out</td><td>Take it out of the pool. Put it back when fixed. No flag checks on the busy path.</td></tr>
   </table></div>
-  <div class="callout info"><b>If the lot lives in a database</b><p>The same guarantee comes from <code>SELECT ... FROM spot WHERE type = ? AND status = 'FREE' ORDER BY floor, distance LIMIT 1 FOR UPDATE SKIP LOCKED</code> then an update in the same transaction, or a conditional <code>UPDATE ... WHERE id = ? AND status = 'FREE'</code> checking the row count. A unique partial index on active tickets per plate replaces <code>platesInside</code>. Say this when PayPal-style rounds move from LLD to HLD.</p></div>
-  <h3>The Rubrik variant: 1-D lot, car = 1 unit, truck = 2 contiguous units</h3>
+  <div class="callout info"><b>If the lot lives in a database</b><p>You get the same safety from <code>SELECT ... FROM spot WHERE type = ? AND status = 'FREE' ORDER BY floor, distance LIMIT 1 FOR UPDATE SKIP LOCKED</code>, then an update in the same transaction. <code>SKIP LOCKED</code> means "skip rows another gate has already locked". Another option is a conditional <code>UPDATE ... WHERE id = ? AND status = 'FREE'</code>. Then check how many rows changed. A unique partial index on active tickets per plate replaces <code>platesInside</code>. Say this when a PayPal-style round moves from LLD to HLD.</p></div>
+  <h3>The Rubrik variant: a one-row lot, car = 1 unit, truck = 2 units side by side</h3>
   <details class="code"><summary>Show Java: LinearParking</summary><pre><code>public final class LinearParking {
     private final String[] slots;                          // null = free; guarded by this
     private final Map&lt;String, Integer&gt; startOf = new HashMap&lt;&gt;();
@@ -457,105 +468,105 @@ public record ExitGate(String id, ParkingLot lot) {
         return -1;
     }
 }</code></pre></details>
-  <p>What they probe next: <b>fragmentation</b> (cars in every other slot block all trucks; place cars best-fit into single gaps, or fill cars from the left and trucks from the right), <b>truck starvation</b> under the blocking API (a FIFO queue of waiters so a waiting truck reserves the next adjacent pair), and <b>finer locking</b> (segment locks fail when a truck spans a boundary unless you always lock both segments in index order, which avoids deadlock).</p>
+  <p>Here is what they ask next. <b>Fragmentation</b>: cars in every other slot block all trucks. Fix it by putting cars into single gaps first (best fit). Or fill cars from the left and trucks from the right. <b>Truck starvation</b>: with the waiting version, a truck may wait forever while cars keep taking slots. Use a first-come-first-served queue of waiters, so a waiting truck holds the next free pair. <b>Finer locking</b>: you may lock sections of the row instead of the whole row. A truck can cross a section border. So always lock both sections, in index order, to avoid a deadlock.</p>
   </details>
 
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <div class="grid">
-    <div class="card"><h4>Search and reserve a window (Cashfree)</h4><p>Bookings per spot in a <code>TreeMap</code>; per-hour counters per (type, floor) for search.</p></div>
-    <div class="card"><h4>EV charging</h4><p><code>ChargingSession</code> + <code>EvChargingPricing</code> decorator: base fee + kWh × rate.</p></div>
-    <div class="card"><h4>Weekend / peak / slabs</h4><p>New <code>PricingStrategy</code> classes. <code>ParkingLot</code> unchanged.</p></div>
-    <div class="card"><h4>Nearest to entry gate</h4><p>One order per gate; claim with <code>AtomicBoolean.compareAndSet</code>.</p></div>
-    <div class="card"><h4>Passes, handicapped spots</h4><p>Pricing decorator returns 0 for passes; compatibility takes (vehicle, driver).</p></div>
-    <div class="card"><h4>Many lots, one app</h4><p>Lot registry, Postgres, <code>SKIP LOCKED</code>, Redis availability.</p></div>
+    <div class="card"><h4>Search and book a time window (Cashfree)</h4><p>Keep each spot's bookings in a <code>TreeMap</code>. For search, keep an hourly count of free spots per (type, floor).</p></div>
+    <div class="card"><h4>EV charging</h4><p>Add a <code>ChargingSession</code> and an <code>EvChargingPricing</code> decorator. Fee = base fee + kWh × rate.</p></div>
+    <div class="card"><h4>Weekend, peak hours, slabs</h4><p>Write new <code>PricingStrategy</code> classes. <code>ParkingLot</code> does not change.</p></div>
+    <div class="card"><h4>Nearest to the entry gate</h4><p>Keep one spot order per gate. Claim a spot with <code>AtomicBoolean.compareAndSet</code>.</p></div>
+    <div class="card"><h4>Passes, spots for disabled drivers</h4><p>A pricing decorator returns 0 for pass holders. The "what fits where" check looks at vehicle and driver.</p></div>
+    <div class="card"><h4>Many lots, one app</h4><p>A lot registry, Postgres, <code>SKIP LOCKED</code>, and free counts cached in Redis.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>"Search available slots and reserve one for a time window" (Cashfree)</summary><p>A spot is no longer free or occupied; it has bookings. Per spot keep a <code>TreeMap&lt;Instant, Booking&gt;</code> keyed by start; a window [s, e) is free if <code>floorEntry(s)</code> ends at or before s and <code>ceilingEntry(s)</code> starts at or after e: O(log b). To avoid checking every spot on search, index spots by (type, floor) and keep per-hour available counts per (type, floor) so "is anything free 6–8 pm on floor 2" is answered from counters, then pick the concrete spot at booking time under a per-spot lock (or a DB exclusion constraint on overlapping ranges). Reservations hold for a no-show grace period, then expire. This is the "more refined search" the Cashfree interviewer was after.</p></details>
-  <details class="qa"><summary>"Add EV charging"</summary><p>EV spots already exist as a type. Add a <code>ChargingSession</code> (kWh delivered, start, stop) linked to the ticket, and an <code>EvChargingPricing</code> decorator: <code>base.feePaise(t, exit) + kwh * ratePerKwh</code>. Policy question to raise: should a fully charged EV keep blocking a charger (idle fee after charge completes)?</p></details>
-  <details class="qa"><summary>"Different pricing on weekends / peak hours / slabs"</summary><p>New <code>PricingStrategy</code> implementations: <code>SlabPricing</code> (0–2 h, 2–6 h, 6 h+), <code>TimeOfDayPricing</code> splitting the stay at boundaries in the lot's <code>ZoneId</code>. Choose per lot or per vehicle type through a small composite. No change to <code>ParkingLot</code>.</p></details>
-  <details class="qa"><summary>"Nearest spot to the gate the car entered from"</summary><p>One comparator per gate means one ordered set per gate over the same spots. Keep a shared <code>AtomicBoolean occupied</code> per spot; each gate iterates its own order and claims with <code>compareAndSet(false, true)</code>, skipping taken ones. Slower than <code>pollFirst</code> under heavy occupancy but correct; mention a per-floor free counter to skip full floors.</p></details>
-  <details class="qa"><summary>"Monthly passes and handicapped spots"</summary><p>Pass: a <code>PassRepository</code> checked at exit; pricing returns 0 for active passes (a decorator again). Handicapped: a spot type plus an eligibility flag on the vehicle or driver; compatibility becomes a function of (vehicle, driver) instead of vehicle only.</p></details>
-  <details class="qa"><summary>"Multiple lots, one app"</summary><p><code>ParkingLot</code> gets an id; a <code>LotRegistry</code> routes by lot id. Data moves to Postgres (spots, tickets, bookings), allocation uses <code>FOR UPDATE SKIP LOCKED</code>, availability is cached in Redis per (lot, type) and updated by events.</p></details>
+  <details class="qa"><summary>"Search available slots and reserve one for a time window" (Cashfree)</summary><p>Now a spot is not just free or taken. It has bookings. For each spot, keep a <code>TreeMap&lt;Instant, Booking&gt;</code> sorted by start time. A window [s, e) includes s but not e. It is free if <code>floorEntry(s)</code> ends at or before s. It also needs <code>ceilingEntry(s)</code> to start at or after e. That check costs O(log b), where b is the number of bookings. Search should not check every spot. So group spots by (type, floor). Keep an hourly count of free spots for each (type, floor). Then "is anything free 6–8 pm on floor 2?" is answered from the counters. Pick the actual spot only at booking time. Do it under a per-spot lock, or with a database rule that blocks overlapping time ranges (an exclusion constraint). A booking is held for a short grace period. If the driver does not show up, it expires. This is the "more refined search" the Cashfree interviewer wanted.</p></details>
+  <details class="qa"><summary>"Add EV charging"</summary><p>EV spots already exist as a type. Add a <code>ChargingSession</code> linked to the ticket. It stores kWh delivered, start and stop. Add an <code>EvChargingPricing</code> decorator: <code>base.feePaise(t, exit) + kwh * ratePerKwh</code>. Raise one policy question. Should a fully charged EV be allowed to keep blocking a charger? Maybe charge an idle fee after charging ends.</p></details>
+  <details class="qa"><summary>"Different pricing on weekends / peak hours / slabs"</summary><p>Write new <code>PricingStrategy</code> classes. <code>SlabPricing</code> uses bands: 0–2 h, 2–6 h, 6 h+. <code>TimeOfDayPricing</code> splits the stay at each price boundary, using the lot's <code>ZoneId</code>. Pick one per lot or per vehicle type with a small composite. <code>ParkingLot</code> does not change.</p></details>
+  <details class="qa"><summary>"Nearest spot to the gate the car entered from"</summary><p>Each gate has its own sort rule. That means one ordered set per gate, all over the same spots. Each spot has one shared <code>AtomicBoolean occupied</code>. A gate walks its own order and claims a spot with <code>compareAndSet(false, true)</code>. It skips spots already taken. This is slower than <code>pollFirst</code> when the lot is nearly full, but it is correct. Mention a free counter per floor, so gates can skip full floors.</p></details>
+  <details class="qa"><summary>"Monthly passes and handicapped spots"</summary><p>Pass: check a <code>PassRepository</code> at exit. Pricing returns 0 for an active pass (a decorator again). Spots for disabled drivers: add a spot type. Add an "eligible" flag on the vehicle or driver. The "what fits where" rule now looks at (vehicle, driver), not only the vehicle.</p></details>
+  <details class="qa"><summary>"Multiple lots, one app"</summary><p>Give <code>ParkingLot</code> an id. A <code>LotRegistry</code> finds the right lot by id. Data moves to Postgres: spots, tickets and bookings. Spot choice uses <code>FOR UPDATE SKIP LOCKED</code>. Free counts per (lot, type) are cached in Redis and updated by events.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Never share a spot</h4><p>200 parallel entries, 50 spots → 50 tickets, 50 distinct spot ids.</p></div>
-    <div class="key"><h4>Double exit charges once</h4><p>Two threads exit one ticket → one receipt, one charge.</p></div>
-    <div class="key"><h4>Every started hour</h4><p>61 minutes → first hour + one extra hour.</p></div>
+    <div class="key"><h4>Never share a spot</h4><p>200 cars enter at once, 50 spots. Expect 50 tickets with 50 different spot ids.</p></div>
+    <div class="key"><h4>Double exit charges once</h4><p>Two threads exit the same ticket. Expect one receipt and one charge.</p></div>
+    <div class="key"><h4>Every started hour</h4><p>61 minutes costs the first hour plus one extra hour.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: all twelve tests</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>carGetsCompactBeforeLarge</code></td><td>With both free, a car is assigned COMPACT.</td></tr>
-    <tr><td><code>bikeFallsBackWhenTwoWheelerFull</code></td><td>No TWO_WHEELER left → COMPACT assigned.</td></tr>
-    <tr><td><code>truckRejectedWhenNoLargeSpot</code></td><td><code>LotFullException</code>, plate not left in <code>platesInside</code>.</td></tr>
-    <tr><td><code>allocationFollowsLowestFloorThenNearest</code></td><td>Comparator order respected.</td></tr>
-    <tr><td><code>concurrentEntriesNeverShareSpot</code></td><td>200 parallel entries, 50 spots → 50 tickets, 50 distinct spot ids.</td></tr>
-    <tr><td><code>samePlateCannotEnterTwice</code></td><td>Second <code>park</code> throws even from another gate.</td></tr>
-    <tr><td><code>feeWithinGraceIsZero</code></td><td>Clock advanced 9 min with 10-min grace → 0.</td></tr>
-    <tr><td><code>feeChargesEveryStartedHour</code></td><td>61 minutes → first hour + one extra hour.</td></tr>
-    <tr><td><code>failedPaymentKeepsSpotOccupied</code></td><td>Stub throws → ticket ACTIVE, free count unchanged, retry succeeds.</td></tr>
-    <tr><td><code>doubleExitChargesOnce</code></td><td>Two threads exit the same ticket → one receipt, one charge, spot released once.</td></tr>
-    <tr><td><code>displayBoardNotifiedOnParkAndExit</code></td><td>Listener receives decreasing then increasing counts.</td></tr>
-    <tr><td><code>linearParkingTruckNeedsTwoContiguous</code></td><td>Pattern C _ C _ → truck rejected; after one car leaves, truck fits.</td></tr>
+    <tr><td><code>carGetsCompactBeforeLarge</code></td><td>Both are free, and the car gets COMPACT.</td></tr>
+    <tr><td><code>bikeFallsBackWhenTwoWheelerFull</code></td><td>No TWO_WHEELER spot left, so the bike gets COMPACT.</td></tr>
+    <tr><td><code>truckRejectedWhenNoLargeSpot</code></td><td><code>LotFullException</code> is thrown. The plate is not left in <code>platesInside</code>.</td></tr>
+    <tr><td><code>allocationFollowsLowestFloorThenNearest</code></td><td>Spots are given in the comparator's order.</td></tr>
+    <tr><td><code>concurrentEntriesNeverShareSpot</code></td><td>200 cars at once, 50 spots. Expect 50 tickets with 50 different spot ids.</td></tr>
+    <tr><td><code>samePlateCannotEnterTwice</code></td><td>The second <code>park</code> throws, even from another gate.</td></tr>
+    <tr><td><code>feeWithinGraceIsZero</code></td><td>Move the clock 9 min with a 10-min grace period. The fee is 0.</td></tr>
+    <tr><td><code>feeChargesEveryStartedHour</code></td><td>61 minutes costs the first hour plus one extra hour.</td></tr>
+    <tr><td><code>failedPaymentKeepsSpotOccupied</code></td><td>The fake payment throws. The ticket stays ACTIVE and the free count does not change. A retry works.</td></tr>
+    <tr><td><code>doubleExitChargesOnce</code></td><td>Two threads exit the same ticket. One receipt, one charge, and the spot is freed once.</td></tr>
+    <tr><td><code>displayBoardNotifiedOnParkAndExit</code></td><td>The listener sees the count go down, then up.</td></tr>
+    <tr><td><code>linearParkingTruckNeedsTwoContiguous</code></td><td>Pattern C _ C _ rejects the truck. After one car leaves, the truck fits.</td></tr>
   </table></div>
   </details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected, and review questions</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
-      <li>Search that scans every spot when the interviewer wanted indexed availability (Cashfree: "wanted a more refined approach for the search functionality").</li>
-      <li>Slow, hesitant delivery of a "standard" problem (Swiggy: expectations are to move fast through entities and spend time on allocation and concurrency).</li>
-      <li><code>ParkingLot</code> as a Singleton with static state; tests interfere with each other.</li>
-      <li><code>Car</code>, <code>Bike</code>, <code>Truck</code> subclasses with no behaviour, and an <code>instanceof</code> chain for spot fitting.</li>
-      <li><code>isFree()</code> then <code>occupy()</code> in two calls from multiple gates.</li>
-      <li>Fees in <code>double</code> rupees; <code>LocalDateTime.now()</code> inside pricing.</li>
-      <li>Spending 40 minutes on the class diagram and ending without runnable code.</li>
+      <li>Search that checks every spot, when the interviewer wanted indexed counts (Cashfree: "wanted a more refined approach for the search functionality").</li>
+      <li>Slow, unsure delivery of a "standard" problem. At Swiggy you are expected to finish the classes fast. Then spend your time on spot choice and thread safety.</li>
+      <li><code>ParkingLot</code> as a Singleton with static state. Tests then break each other.</li>
+      <li><code>Car</code>, <code>Bike</code> and <code>Truck</code> subclasses with no behaviour, plus an <code>instanceof</code> chain to decide which spot fits.</li>
+      <li><code>isFree()</code> then <code>occupy()</code> as two calls, from many gates.</li>
+      <li>Fees stored as <code>double</code> rupees. Calling <code>LocalDateTime.now()</code> inside pricing, so tests cannot control time.</li>
+      <li>Spending 40 minutes on the class diagram and ending with no runnable code.</li>
     </ul>
   </div>
   <h3>Interview questions</h3>
-  <details class="qa"><summary>Why a skip-list set instead of a <code>PriorityQueue</code> with a lock?</summary><p>Both work. <code>ConcurrentSkipListSet</code> gives sorted order plus atomic <code>pollFirst</code> and lock-free concurrent <code>add</code>, so no lock to reason about. A <code>PriorityBlockingQueue</code> also works but cannot remove a specific spot efficiently (maintenance), which the set can.</p></details>
-  <details class="qa"><summary>Why does the comparator need <code>thenComparing(Spot::id)</code>?</summary><p>A sorted set treats compare == 0 as duplicates. Two spots on the same floor at the same distance would silently collapse into one.</p></details>
-  <details class="qa"><summary>Where does the ticket state machine matter?</summary><p>Exit is the only multi-step operation (price, pay, release). The CAS on ACTIVE → PAYING makes it single-winner, and the rollback on failure keeps the spot consistent with reality.</p></details>
-  <details class="qa"><summary>How do you add a new vehicle type?</summary><p>Add the enum value and one row in the compatibility table, plus prices. No class hierarchy to touch.</p></details>
-  <details class="qa"><summary>Is your free count accurate?</summary><p><code>size()</code> on a concurrent skip list is O(n) and weakly consistent. For boards, keep an <code>AtomicInteger</code> per type updated on take and release; display is advisory anyway.</p></details>
+  <details class="qa"><summary>Why a skip-list set instead of a <code>PriorityQueue</code> with a lock?</summary><p>Both work. <code>ConcurrentSkipListSet</code> keeps spots sorted. Its <code>pollFirst</code> works in one step. Many threads can <code>add</code> at once without a lock. So there is no lock to think about. A <code>PriorityBlockingQueue</code> also works. But it cannot quickly remove one specific spot, for example for repairs. The set can.</p></details>
+  <details class="qa"><summary>Why does the comparator need <code>thenComparing(Spot::id)</code>?</summary><p>A sorted set treats "compare returns 0" as "same item". Two spots on the same floor at the same distance would then merge into one. One spot would silently disappear.</p></details>
+  <details class="qa"><summary>Where does the ticket state machine matter?</summary><p>Exit is the only step with several parts: price, pay, free the spot. The CAS from ACTIVE to PAYING lets only one thread win. If payment fails, the rollback keeps the spot's state true to reality.</p></details>
+  <details class="qa"><summary>How do you add a new vehicle type?</summary><p>Add the enum value and one row in the "what fits where" table. Add its prices. There is no class tree to change.</p></details>
+  <details class="qa"><summary>Is your free count accurate?</summary><p><code>size()</code> on a concurrent skip list is O(n). It is also only roughly right while threads are changing it. For boards, keep one <code>AtomicInteger</code> per type. Update it on take and release. The board is only a hint anyway.</p></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan (and the 60-minute cut)</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–7 min</span><span>Clarify: types and compatibility, gates, allocation rule, pricing, reservations yes/no. Write assumptions at the top.</span></div>
-    <div class="step"><span class="t">7–12 min</span><span>Entities table and the three strategies (allocation, pricing, payment). Skip the UML drawing beyond a few boxes.</span></div>
-    <div class="step"><span class="t">12–30 min</span><span>Enums, <code>Vehicle</code>, <code>Spot</code>, <code>Compatibility</code>, <code>SpotPool</code>, <code>Ticket</code>.</span></div>
-    <div class="step"><span class="t">30–45 min</span><span><code>ParkingLot.park</code> and <code>exit</code>, <code>HourlyPricing</code>, stub payment, gates. Demo <code>main</code> parks and exits a few vehicles.</span></div>
-    <div class="step"><span class="t">45–55 min</span><span>Concurrency demo: 4 gates, 200 cars, 50 spots. Explain atomic poll, plate set, CAS on exit. <b>60-minute rounds stop here</b> and talk through extensions.</span></div>
-    <div class="step"><span class="t">55–70 min</span><span>Display-board observer, EV pricing decorator, failure path for payment.</span></div>
-    <div class="step"><span class="t">70–82 min</span><span>Whatever they add: reservations with time windows and indexed search, or nearest-to-gate.</span></div>
-    <div class="step"><span class="t">82–90 min</span><span>JUnit tests for fees and races; summarise trade-offs and the DB version (<code>SKIP LOCKED</code>).</span></div>
+    <div class="step"><span class="t">0–7 min</span><span>Ask questions: types and what fits where, gates, spot rule, pricing, bookings yes or no. Write your assumptions at the top.</span></div>
+    <div class="step"><span class="t">7–12 min</span><span>List the classes and the three strategies (spot choice, pricing, payment). Draw only a few boxes of UML.</span></div>
+    <div class="step"><span class="t">12–30 min</span><span>Write the enums, <code>Vehicle</code>, <code>Spot</code>, <code>Compatibility</code>, <code>SpotPool</code> and <code>Ticket</code>.</span></div>
+    <div class="step"><span class="t">30–45 min</span><span>Write <code>ParkingLot.park</code> and <code>exit</code>, <code>HourlyPricing</code>, a fake payment and the gates. A demo <code>main</code> parks and exits a few vehicles.</span></div>
+    <div class="step"><span class="t">45–55 min</span><span>Thread-safety demo: 4 gates, 200 cars, 50 spots. Explain the one-step poll, the plate set and the CAS on exit. <b>60-minute rounds stop here</b> and talk through extensions.</span></div>
+    <div class="step"><span class="t">55–70 min</span><span>Add the display-board observer, the EV pricing decorator and the failed-payment path.</span></div>
+    <div class="step"><span class="t">70–82 min</span><span>Whatever they add: bookings with time windows and indexed search, or nearest-to-gate.</span></div>
+    <div class="step"><span class="t">82–90 min</span><span>JUnit tests for fees and races. Sum up the trade-offs and the database version (<code>SKIP LOCKED</code>).</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">Two entry gates want the last COMPACT spot at the same moment. What makes it safe here?</p>
+  <div class="quiz" data-answer="2"><p class="q">Two entry gates want the last COMPACT spot at the same moment. What keeps this safe?</p>
     <div class="opts"><button class="opt" type="button">Checking <code>isFree()</code> before <code>occupy()</code></button><button class="opt" type="button">A <code>volatile</code> flag on the spot</button><button class="opt" type="button"><code>pollFirst()</code> removes and returns the spot in one atomic step</button></div>
-    <p class="why">Only one thread can remove a given element. The other gets the next spot or null.</p></div>
+    <p class="why">Only one thread can remove a given spot. The other thread gets the next spot, or null if none is left.</p></div>
   <div class="quiz" data-answer="0"><p class="q">Why does the spot comparator end with <code>thenComparing(Spot::id)</code>?</p>
     <div class="opts"><button class="opt" type="button">A sorted set drops elements that compare equal, so tied spots would vanish</button><button class="opt" type="button">It makes allocation faster</button><button class="opt" type="button">Ids encode the floor</button></div>
-    <p class="why">Two spots on the same floor at the same distance compare as 0 and the set keeps only one.</p></div>
+    <p class="why">Two spots on the same floor at the same distance compare as 0. The set thinks they are the same and keeps only one.</p></div>
   <div class="quiz" data-answer="1"><p class="q">Payment fails at the exit. What state should the system be in?</p>
     <div class="opts"><button class="opt" type="button">Ticket CLOSED, spot free</button><button class="opt" type="button">Ticket back to ACTIVE, spot still occupied, driver can retry</button><button class="opt" type="button">Ticket PAYING forever</button></div>
-    <p class="why">The car is still inside. Release the spot only after a successful charge.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">The interviewer adds an electric scooter. What changes?</p>
+    <p class="why">The car is still inside. So the spot must stay taken. Free it only after a successful charge.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">The interviewer adds an electric scooter. What do you change?</p>
     <div class="opts"><button class="opt" type="button">A new <code>Scooter extends Vehicle</code> class and an <code>instanceof</code> check</button><button class="opt" type="button">The <code>ParkingLot.park</code> method</button><button class="opt" type="button">One enum value, one compatibility row, and its prices</button></div>
-    <p class="why">Compatibility is data, so a new vehicle type touches no logic.</p></div>
+    <p class="why">"What fits where" is data, not code. So a new vehicle type changes no logic.</p></div>
 
   <div class="cheat" id="cheat"><b>Cheat sheet</b><ul>
-    <li>Free spots: <code>ConcurrentSkipListSet</code> per <code>SpotType</code>; comparator = allocation strategy (+ id tiebreak).</li>
-    <li><code>pollFirst()</code> = atomic take; never <code>isFree()</code> then <code>occupy()</code>.</li>
-    <li>Compatibility as an <code>EnumMap</code> preference list; no vehicle subclasses.</li>
-    <li><code>platesInside.add</code> blocks double entry; undo on lot full.</li>
-    <li>Ticket CAS ACTIVE → PAYING → CLOSED; roll back on failed payment; release after charge.</li>
-    <li>Fees in <code>long</code> paise, every started hour, grace period, injected <code>Clock</code>.</li>
-    <li>DB version: <code>FOR UPDATE SKIP LOCKED</code> or conditional <code>UPDATE</code>.</li>
-    <li>Strategy (pricing, allocation), Decorator (EV), Observer (boards), Façade, no Singleton.</li>
+    <li>Free spots: one <code>ConcurrentSkipListSet</code> per <code>SpotType</code>. The comparator is the spot-choice rule, with the id as a tie-breaker.</li>
+    <li><code>pollFirst()</code> takes a spot in one step. Never call <code>isFree()</code> and then <code>occupy()</code>.</li>
+    <li>"What fits where" is an <code>EnumMap</code> of preference lists. No vehicle subclasses.</li>
+    <li><code>platesInside.add</code> stops a car entering twice. Undo it when the lot is full.</li>
+    <li>Ticket moves ACTIVE, PAYING, CLOSED with CAS. Roll back if payment fails. Free the spot only after the charge.</li>
+    <li>Fees in <code>long</code> paise. Charge every started hour. Have a grace period. Pass in the <code>Clock</code>.</li>
+    <li>Database version: <code>FOR UPDATE SKIP LOCKED</code>, or a conditional <code>UPDATE</code>.</li>
+    <li>Patterns: Strategy (pricing, spot choice), Decorator (EV), Observer (boards), Façade. No Singleton.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">13</span>Sources</h2>

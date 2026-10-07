@@ -12,22 +12,32 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>Rate Limiter</h1>
-  <p class="lede">You will be able to code a thread-safe rate limiter with swappable algorithms in 90 minutes, and explain how it scales across pods.</p>
+  <p class="lede">A rate limiter decides how many requests one client may send in a given time. By the end, you can code one in 90 minutes. It will be safe when many threads call it at once. You will also be able to switch its algorithm, and explain how it works across many servers.</p>
   <div class="facts">
-    <span class="fact"><b>Time-box:</b> 45–90 min coding + 30–45 min viva</span>
-    <span class="fact"><b>Seen:</b> ~12 reports, 2025–26</span>
-    <span class="fact"><b>Format:</b> HackerRank / IDE share / whiteboard</span>
+    <span class="fact"><b>Time-box:</b> 45–90 min coding, then 30–45 min of questions</span>
+    <span class="fact"><b>Seen:</b> about 12 interview reports, 2025–26</span>
+    <span class="fact"><b>Format:</b> HackerRank, a shared IDE, or a whiteboard</span>
   </div>
   <div class="chips"><span class="chip hot">Razorpay</span><span class="chip hot">Media.net</span><span class="chip hot">Swiggy</span><span class="chip">Atlassian</span><span class="chip">Apple</span><span class="chip">Salesforce</span><span class="chip">Microsoft</span><span class="chip">Agoda</span><span class="chip">Rapido</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>One <code>RateLimiter</code> interface; each algorithm is a Strategy behind it.</li>
-    <li>Token bucket refills lazily from elapsed time; no background thread.</li>
-    <li>Thread safety: CAS on tiny state, per-client lock on collections.</li>
-    <li>Inject the clock, then prove the limit with a 100-thread test.</li>
+    <li>Write one <code>RateLimiter</code> interface. Each algorithm is a separate class behind it, so you can swap them.</li>
+    <li>The token bucket adds tokens back only when a request arrives. It works out the refill from the time that passed. No background thread is needed.</li>
+    <li>For small state, use an atomic compare-and-set. For a list of timestamps, use one lock per client.</li>
+    <li>Pass the clock in from outside. Then a test with 100 threads can prove the limit holds.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A toll lane with a jar of 10 passes. Each car takes one; the attendant adds one every 6 seconds, never overfilling. Ten cars can rush through; the 11th waits.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a toll lane with a jar of 10 passes. Each car takes one pass. The attendant adds one pass every 6 seconds, but never more than the jar holds. Ten cars can rush through together. The 11th car must wait for a new pass.</p></div>
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Rate limit</dt><dd>A cap such as "100 requests per minute" for one client. Requests over the cap are refused.</dd>
+    <dt>Token bucket</dt><dd>A bucket of tokens that refills at a steady speed. Each request spends one token. No token means the request is refused.</dd>
+    <dt>Window</dt><dd>The time period the limit counts over, such as one second or one minute.</dd>
+    <dt>Burst</dt><dd>Many requests arriving at almost the same moment, like everyone hitting "Book" when Tatkal opens.</dd>
+    <dt>Thread-safe</dt><dd>Gives correct results even when many threads call it at the same time.</dd>
+    <dt>CAS (compare-and-set)</dt><dd>Write the new value only if the old value is still the one you read. If someone changed it first, the write fails and you try again.</dd>
+    <dt>Strategy pattern</dt><dd>Put each algorithm in its own class behind one interface, so you can swap one for another.</dd>
+    <dt>429</dt><dd>The HTTP status code for "Too Many Requests". It tells the client to slow down.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -48,60 +58,60 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Correct</h4><p>Fake-clock tests for burst, refill, window edges.</p></div>
-    <div class="key"><h4>Extensible</h4><p>New algorithm = one new class + a factory line.</p></div>
-    <div class="key"><h4>Concurrent</h4><p>CAS or per-key lock, never one global lock.</p></div>
-    <div class="key"><h4>Fits the brief</h4><p>No <code>clientId</code> on an already per-client object.</p></div>
+    <div class="key"><h4>Correct</h4><p>Tests use a fake clock. They check bursts, refills and the edges of each window.</p></div>
+    <div class="key"><h4>Extensible</h4><p>Adding a new algorithm means one new class and one new line in the factory.</p></div>
+    <div class="key"><h4>Concurrent</h4><p>Use compare-and-set or one lock per client. Never use one lock for all clients.</p></div>
+    <div class="key"><h4>Fits the brief</h4><p>If each client already has its own limiter object, don't ask for a <code>clientId</code> again.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: how the rounds actually ran</summary><p>The reports show the same pattern: a working core in the first half, then an extension or a "now make it concurrent / distributed" push. Razorpay ran it as two rounds: a 45-minute HackerRank round to implement a token bucket, then a 60-minute extension with an interviewer to make the sliding window work in a concurrent environment. Media.net gave 90 minutes in which each client owns one limiter instance and can switch algorithm at runtime, followed by scaling questions. Swiggy's bar raiser had the candidate code both sliding window and leaky bucket. Atlassian expects production-quality code with tests.</p>
-    <p>Full grading notes: Strategy interface for the algorithm, so adding a new one touches one new class and the factory. No lost updates under contention: CAS loop or a per-key lock, never a global lock across all clients. API shaped to the brief. Memory for idle keys, 429 + <code>Retry-After</code>, fail-open vs fail-closed, Redis + Lua for the distributed version. Explaining the trade-offs between algorithms in two sentences each, and why your code is thread-safe.</p></details>
+  <details class="deep"><summary>Go deeper: how the rounds actually ran</summary><p>The reports show the same pattern. You build a working core in the first half. Then the interviewer adds a feature, or says "now make it concurrent" or "now make it distributed". Razorpay ran it as two rounds. First came a 45-minute HackerRank round to build a token bucket. Then came a 60-minute round with an interviewer. There, the sliding window had to work with many threads at once. Media.net gave 90 minutes. Each client owned one limiter object and could switch algorithm while running. Scaling questions followed. Swiggy's bar raiser had the candidate code both a sliding window and a leaky bucket. Atlassian expects production-quality code with tests.</p>
+    <p>Full grading notes follow. Put the algorithm behind a Strategy interface. Then adding a new one touches only one new class and the factory. No update may be lost when many threads compete. Use a compare-and-set loop or a lock per key, never one global lock for all clients. Shape the API to match the brief. Also expect questions on these topics. How do you free memory for idle keys? Do you return 429 with a <code>Retry-After</code> header? Do you fail open or fail closed? How does Redis with a Lua script handle the distributed version? Explain the trade-off of each algorithm in two sentences. Explain why your code is thread-safe.</p></details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Key: user, API key, IP, (client, endpoint)?</td><td>Decides the map key.</td></tr>
-    <tr><td>One limiter object per client, or one service taking a client id?</td><td><code>tryAcquire()</code> vs <code>allow(clientId)</code>. Media.net rejected the wrong one.</td></tr>
-    <tr><td>Bursts allowed? Smooth output?</td><td>Bursts → token bucket. Smooth → leaky bucket. Strict rolling N → sliding window.</td></tr>
-    <tr><td>How exact at window edges?</td><td>Fixed window allows 2N across a boundary.</td></tr>
-    <tr><td>Change algorithm or limit at runtime?</td><td>Needs a swappable delegate.</td></tr>
-    <tr><td>One process or many pods?</td><td>In-memory is only correct if a key always hits one process.</td></tr>
+    <tr><td>What do we limit by? User, API key, IP address, or client plus endpoint?</td><td>This becomes the key in your map.</td></tr>
+    <tr><td>Does each client get its own limiter object? Or is there one service that takes a client id?</td><td>It decides <code>tryAcquire()</code> or <code>allow(clientId)</code>. Media.net rejected a candidate who picked the wrong one.</td></tr>
+    <tr><td>Are bursts allowed? Must the output be smooth?</td><td>Bursts allowed: token bucket. Smooth output: leaky bucket. A strict N in any rolling window: sliding window.</td></tr>
+    <tr><td>How exact must it be at window edges?</td><td>A fixed window can let in 2N requests around the boundary.</td></tr>
+    <tr><td>Can the algorithm or limit change while running?</td><td>You then need a wrapper whose inner limiter you can replace.</td></tr>
+    <tr><td>One process, or many pods?</td><td>An in-memory limiter is only correct if a key always reaches the same process.</td></tr>
   </table></div>
   <details class="deep"><summary>Go deeper: the longer "why it matters" notes</summary><ul>
-    <li>The key decides the map key and whether one client can hold several limiters.</li>
-    <li>Fixed window allows 2N across a boundary; sliding log is exact but O(N) memory; sliding counter is approximate in O(1).</li>
-    <li>Runtime changes need a swappable delegate (atomic reference) and a policy store.</li>
-    <li>Queueing = leaky bucket as a queue with a drain thread; fail fast = boolean result.</li>
-    <li>Weighted requests: add <code>tryAcquire(int permits)</code> early; retrofitting is awkward.</li>
+    <li>The key decides the map key. It also decides whether one client can hold several limiters.</li>
+    <li>A fixed window can allow 2N across a boundary. A sliding log is exact but uses O(N) memory, meaning memory grows with the limit. A sliding counter is approximate but uses O(1), a fixed small amount.</li>
+    <li>Changing things at runtime needs a replaceable inner limiter (an atomic reference) and a place to store policies.</li>
+    <li>If requests should wait in line, use a leaky bucket as a queue with a thread that drains it. If they should fail fast, return a simple true or false.</li>
+    <li>Some requests may cost more than one unit. Add <code>tryAcquire(int permits)</code> early, because adding it later is awkward.</li>
   </ul></details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li><code>limit</code> per <code>window</code> per client, plus burst.</li>
-      <li><code>tryAcquire</code> returns allow / deny at once.</li>
-      <li>Five algorithms; swap at runtime.</li>
-      <li>Remaining quota and retry-after.</li>
+      <li>Each client gets <code>limit</code> requests per <code>window</code>, plus a burst size.</li>
+      <li><code>tryAcquire</code> says allow or deny straight away.</li>
+      <li>Five algorithms, swappable while running.</li>
+      <li>Report the remaining quota and when to retry.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>Thread-safe, O(1) per call.</li>
-      <li>Microseconds; no blocking I/O.</li>
-      <li>Idle clients evicted.</li>
-      <li>Time from an injected source.</li>
+      <li>Thread-safe, with constant work per call.</li>
+      <li>Takes microseconds. No waiting on disk or network.</li>
+      <li>Remove clients that have gone idle.</li>
+      <li>Time comes from a clock you pass in.</li>
     </ul></div>
     <div class="card"><h4>Out of scope (say so)</h4><ul>
-      <li>Distributed state (discuss only).</li>
-      <li>Persisted config; admin UI.</li>
-      <li>Global load shedding.</li>
+      <li>Shared state across servers (discuss only).</li>
+      <li>Saving config to a database, or an admin screen.</li>
+      <li>Dropping load for the whole system.</li>
     </ul></div>
   </div>
   <details class="deep"><summary>Go deeper: full requirement list</summary><ul>
-    <li>Configure a limit per client: <code>limit</code> requests per <code>window</code> (and burst capacity for token bucket).</li>
-    <li>Algorithms: token bucket, fixed window, sliding window log, sliding window counter, leaky bucket.</li>
-    <li>Report remaining quota and retry-after for headers.</li>
-    <li>Thread-safe; O(1) per call (sliding log is O(limit) memory, call it out).</li>
-    <li>Decision cost in microseconds; no blocking I/O in the in-memory version.</li>
-    <li>Deterministic under test: time comes from an injected source.</li>
-    <li>Out of scope: distributed state (discuss, do not code unless asked); persisting configuration; admin UI; global load shedding and concurrency limits (mention Stripe's four limiter types as context).</li>
+    <li>Set a limit per client: <code>limit</code> requests per <code>window</code>. For the token bucket, also set the burst capacity.</li>
+    <li>Support five algorithms. They are token bucket, fixed window, sliding window log, sliding window counter and leaky bucket.</li>
+    <li>Report the remaining quota and the retry time, for response headers.</li>
+    <li>Be thread-safe, with O(1) work per call. Say out loud that the sliding log uses O(limit) memory.</li>
+    <li>Decide in microseconds. The in-memory version must not wait on disk or network.</li>
+    <li>Give the same result every test run. To do that, take time from a clock passed in from outside.</li>
+    <li>Out of scope: shared state across servers. Discuss it, but don't code it unless asked. Also out of scope are saved configuration and an admin screen. So are dropping load for the whole system and limits on parallel requests. Mention Stripe's four limiter types as background.</li>
   </ul></details>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
@@ -119,11 +129,11 @@
 
   <h3>Patterns: what and why here</h3>
   <div class="keys">
-    <div class="key"><h4>Strategy → algorithms</h4><p>The brief says algorithms are interchangeable, and the interviewer will add one.</p></div>
-    <div class="key"><h4>Factory → creation</h4><p>The registry never names a concrete class.</p></div>
-    <div class="key"><h4>Proxy delegate → swap</h4><p>Swapping is one atomic write; callers holding the object never see a half-switched state.</p></div>
-    <div class="key"><h4>Registry, not Singleton</h4><p>Inject it, so each test builds a fresh one.</p></div>
-    <div class="key"><h4>Decorator → metrics, dark launch</h4><p>Wrap a limiter to log but never block, as Stripe recommends before enforcing.</p></div>
+    <div class="key"><h4>Strategy → algorithms</h4><p>The brief says algorithms can be swapped. The interviewer will also ask you to add one.</p></div>
+    <div class="key"><h4>Factory → creation</h4><p>The registry never names a concrete class. The factory builds the right one.</p></div>
+    <div class="key"><h4>Proxy delegate → swap</h4><p>A swap is one atomic write. A caller holding the object never sees a half-finished switch.</p></div>
+    <div class="key"><h4>Registry, not Singleton</h4><p>Pass the registry in. Then each test can build a fresh one.</p></div>
+    <div class="key"><h4>Decorator → metrics, dark launch</h4><p>Wrap a limiter so it only logs and never blocks. Stripe recommends this before you start enforcing a limit.</p></div>
   </div>
 
   <h3>Algorithm cheat sheet</h3>
@@ -139,15 +149,15 @@
     <div class="tbl"><table>
       <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
       <tr><td><code>RateLimiter</code> (interface)</td><td>Strategy: one algorithm, one client's state</td><td><code>tryAcquire(int permits)</code>, <code>tryAcquire()</code></td></tr>
-      <tr><td><code>TokenBucket</code></td><td>Burst up to capacity, refill at a fixed rate, lazily computed</td><td><code>AtomicReference&lt;State&gt;</code> (tokens, lastRefillNanos)</td></tr>
-      <tr><td><code>SlidingWindowLog</code></td><td>Exact N per rolling window</td><td><code>ArrayDeque&lt;Long&gt;</code> timestamps + lock</td></tr>
-      <tr><td><code>SlidingWindowCounter</code></td><td>Approximate rolling window in O(1) memory</td><td>window start, current count, previous count</td></tr>
-      <tr><td><code>LeakyBucket</code></td><td>Constant outflow; water level drains at a fixed rate</td><td>level, lastLeakNanos</td></tr>
-      <tr><td><code>RateLimitPolicy</code> (record)</td><td>Immutable configuration</td><td>algorithm, limit, window, burst</td></tr>
+      <tr><td><code>TokenBucket</code></td><td>Allows a burst up to capacity. Refills at a fixed rate, worked out only when needed.</td><td><code>AtomicReference&lt;State&gt;</code> (tokens, lastRefillNanos)</td></tr>
+      <tr><td><code>SlidingWindowLog</code></td><td>Exactly N per rolling window</td><td><code>ArrayDeque&lt;Long&gt;</code> timestamps + lock</td></tr>
+      <tr><td><code>SlidingWindowCounter</code></td><td>An approximate rolling window in O(1) memory</td><td>window start, current count, previous count</td></tr>
+      <tr><td><code>LeakyBucket</code></td><td>Steady outflow. The water level drains at a fixed rate.</td><td>level, lastLeakNanos</td></tr>
+      <tr><td><code>RateLimitPolicy</code> (record)</td><td>Configuration that never changes once built</td><td>algorithm, limit, window, burst</td></tr>
       <tr><td><code>RateLimiterFactory</code></td><td>Builds a limiter from a policy</td><td><code>create(RateLimitPolicy)</code></td></tr>
-      <tr><td><code>SwappableRateLimiter</code></td><td>Lets a client change algorithm without changing callers</td><td><code>AtomicReference&lt;RateLimiter&gt;</code>, <code>swap(...)</code></td></tr>
-      <tr><td><code>RateLimiterRegistry</code></td><td>Map from client key to its limiter; lazy creation; eviction</td><td><code>ConcurrentHashMap</code>, <code>allow(clientId)</code>, <code>changePolicy(...)</code></td></tr>
-      <tr><td><code>TimeSource</code></td><td>Injectable monotonic clock</td><td><code>nanoTime()</code>; <code>FakeTimeSource</code> in tests</td></tr>
+      <tr><td><code>SwappableRateLimiter</code></td><td>Lets a client change algorithm without changing the callers</td><td><code>AtomicReference&lt;RateLimiter&gt;</code>, <code>swap(...)</code></td></tr>
+      <tr><td><code>RateLimiterRegistry</code></td><td>Maps each client key to its limiter. Creates it on first use and removes idle ones.</td><td><code>ConcurrentHashMap</code>, <code>allow(clientId)</code>, <code>changePolicy(...)</code></td></tr>
+      <tr><td><code>TimeSource</code></td><td>A clock you pass in, which never goes backwards</td><td><code>nanoTime()</code>; <code>FakeTimeSource</code> in tests</td></tr>
     </table></div>
   <div class="flow">
     <span class="node">API filter<small>HandlerInterceptor</small></span><span class="arrow">→</span>
@@ -156,15 +166,15 @@
     <span class="node">RateLimiter<small>TokenBucket | SlidingWindow | LeakyBucket</small></span><span class="arrow">→</span>
     <span class="node store">TimeSource<small>injected</small></span>
   </div>
-  <p class="flow-caption">Figure: a request resolves its client's limiter via the registry; the algorithm sits behind a swappable delegate; all time comes from one injected source.</p>
-    <p>The sliding window counter's accuracy assumes uniform spread of requests in the previous window.</p>
+  <p class="flow-caption">Figure: a request finds its client's limiter through the registry. The algorithm sits behind a replaceable wrapper. All time comes from one clock that is passed in.</p>
+    <p>The sliding window counter assumes requests in the previous window were spread evenly. Its accuracy depends on that.</p>
     <div class="tbl"><table>
       <tr><th>Algorithm</th><th>Accuracy</th><th>Use when (full)</th></tr>
       <tr><td>Fixed window counter</td><td>Coarse</td><td>Cheap quotas (per day), Redis <code>INCR</code> + <code>EXPIRE</code></td></tr>
       <tr><td>Sliding window log</td><td>Exact</td><td>Low limits where exactness matters (OTP sends, logins)</td></tr>
-      <tr><td>Sliding window counter</td><td>Approximate (assumes uniform spread in previous window)</td><td>High-volume APIs; Cloudflare's choice at edge scale</td></tr>
-      <tr><td>Token bucket</td><td>Exact long-run rate</td><td>Public APIs; Stripe's request limiter; Bucket4j and Guava</td></tr>
-      <tr><td>Leaky bucket</td><td>Exact outflow</td><td>Protecting a fragile downstream that needs a steady rate</td></tr>
+      <tr><td>Sliding window counter</td><td>Approximate (assumes even spread in the previous window)</td><td>High-volume APIs. Cloudflare uses it at the edge, at huge scale.</td></tr>
+      <tr><td>Token bucket</td><td>Exact long-run rate</td><td>Public APIs. Stripe's request limiter, Bucket4j and Guava use it.</td></tr>
+      <tr><td>Leaky bucket</td><td>Exact outflow</td><td>Protecting a fragile downstream service that needs a steady rate</td></tr>
     </table></div></details>
 
   <h2 id="flow"><span class="n">05</span>Watch a request flow</h2>
@@ -172,32 +182,32 @@
     <figure class="frame">
       <div class="cells"><span class="cell ok">●</span><span class="cell ok">●</span><span class="cell ok">●</span></div>
       <div class="ptrs"><span class="on">t=0s</span><span>tokens=3.0</span><span>lastRefill=0s</span></div>
-      <figcaption>First call for client <code>A</code>: <code>computeIfAbsent</code> builds its limiter. The bucket starts full.</figcaption>
+      <figcaption>Client <code>A</code> sends its first request. The registry creates a limiter for A (with <code>computeIfAbsent</code>). The bucket starts full.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell dim">○</span><span class="cell ok">●</span><span class="cell ok">●</span></div>
       <div class="ptrs"><span class="on">t=0s</span><span>tokens=2.0</span><span>result=ALLOW</span></div>
-      <figcaption>Request 1: available 3 ≥ 1, so CAS swaps <code>State(3, 0)</code> for <code>State(2, 0)</code>.</figcaption>
+      <figcaption>Request 1: 3 tokens are there, so it is allowed. The count drops from 3 to 2 in one safe step (compare-and-set swaps <code>State(3, 0)</code> for <code>State(2, 0)</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell dim">○</span><span class="cell dim">○</span><span class="cell dim">○</span></div>
       <div class="ptrs"><span class="on">t=0s</span><span>tokens=0.0</span><span>result=ALLOW ×2</span></div>
-      <figcaption>Requests 2 and 3 in the same instant spend the burst. The bucket is empty.</figcaption>
+      <figcaption>Requests 2 and 3 arrive at the same instant and use up the burst. The bucket is now empty.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">✕</span><span class="cell dim">○</span><span class="cell dim">○</span></div>
       <div class="ptrs"><span class="on">t=0s</span><span>tokens=0.0</span><span>result=DENY</span><span>Retry-After=1s</span></div>
-      <figcaption>Request 4: available 0 &lt; 1, return false. No state change. <code>nanosUntil(1)</code> gives the <code>Retry-After</code> header.</figcaption>
+      <figcaption>Request 4: no tokens are left, so it is refused and nothing changes. The limiter works out when the next token arrives (<code>nanosUntil(1)</code>). It tells the client to retry in 1 second (the <code>Retry-After</code> header).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">◐</span><span class="cell dim">○</span><span class="cell dim">○</span></div>
       <div class="ptrs"><span class="on">t=1.5s</span><span>refill +1.5</span><span>tokens=0.5</span><span>result=ALLOW</span></div>
-      <figcaption>Request 5 at 1.5s: refill is computed lazily, 0 + 1.5 × 1 = 1.5. Spend one, keep 0.5. No background thread ran.</figcaption>
+      <figcaption>Request 5 at 1.5s: the refill is worked out now, 0 + 1.5 × 1 = 1.5. One is spent and 0.5 stays. No background thread ran.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">●</span><span class="cell ok">●</span><span class="cell ok">●</span></div>
       <div class="ptrs"><span class="on">t=60s</span><span>min(3, 0.5 + 58.5)</span><span>tokens=3.0</span></div>
-      <figcaption>After a long idle gap, refill caps at capacity. A full bucket equals a fresh one.</figcaption>
+      <figcaption>After a long quiet gap, the refill stops at capacity. A full bucket is the same as a brand new one.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -207,19 +217,19 @@
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">TokenBucket<small>old</small></span><span class="node hl">SlidingWindowLog<small>new, fresh state</small></span></div>
       </div>
-      <figcaption><code>changePolicy("A", SLIDING_LOG)</code>: one atomic write. In-flight calls finish on the old bucket; new calls hit the log.</figcaption>
+      <figcaption>Client A is switched to a different algorithm. The wrapper simply points at a new limiter, in one step (<code>changePolicy("A", SLIDING_LOG)</code>). Calls already running finish on the old bucket. New calls use the new one.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="concurrency"><span class="n">06</span>The race and the fix</h2>
-  <p>The bug: <dfn title="Read a value, decide, then write; another thread can act between the read and the write">check-then-act</dfn> as three separate steps. One token left, two threads:</p>
+  <p>The bug is <dfn title="Read a value, decide, then write; another thread can act between the read and the write">check-then-act</dfn> done as three separate steps. Read the value, decide, then write. Here is what happens with one token left and two threads:</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>tokens</th></tr></thead><tbody>
     <tr><td>t1</td><td>reads tokens = 1</td><td></td><td>1</td></tr>
     <tr><td>t2</td><td></td><td>reads tokens = 1</td><td>1</td></tr>
     <tr><td>t3</td><td>1 ≥ 1, writes 0, ALLOW</td><td></td><td>0</td></tr>
     <tr><td>t4</td><td></td><td>1 ≥ 1, writes 0, ALLOW</td><td class="bad">2 admitted for 1 token</td></tr>
   </tbody></table></div>
-  <p>The fix: an immutable <code>State</code> record swapped with <dfn title="compareAndSet: write only if the value is still the one you read; otherwise fail and retry">CAS</dfn>.</p>
+  <p>The fix is to keep the state in a <code>State</code> record that never changes. You replace the whole record using <dfn title="compareAndSet: write only if the value is still the one you read; otherwise fail and retry">CAS</dfn>. If another thread got there first, your write fails and you try again.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>state</th></tr></thead><tbody>
     <tr><td>t1</td><td>cur = State(1, t0)</td><td>cur = State(1, t0)</td><td>State(1, t0)</td></tr>
     <tr><td>t2</td><td>CAS(cur → State(0, t2)) succeeds</td><td></td><td class="ok">State(0, t2)</td></tr>
@@ -227,26 +237,26 @@
     <tr><td>t4</td><td></td><td>retries, reads 0, returns DENY</td><td class="ok">1 admitted, correct</td></tr>
   </tbody></table></div>
   <div class="vs">
-    <div class="pick"><h4>CAS loop <span class="tag">token bucket</span></h4><ul><li class="pro">Lock-free; state is two numbers</li><li class="con">Retries under heavy contention</li></ul><p class="when">Use for tiny O(1) state.</p></div>
-    <div><h4>Per-instance lock</h4><ul><li class="pro">Simple for a deque</li><li class="con">Blocks within one client</li></ul><p class="when">Use when state is a collection (sliding log).</p></div>
+    <div class="pick"><h4>CAS loop <span class="tag">token bucket</span></h4><ul><li class="pro">No lock needed. The state is just two numbers.</li><li class="con">Threads retry a lot when many hit one key.</li></ul><p class="when">Use it for tiny state of fixed size.</p></div>
+    <div><h4>Per-instance lock</h4><ul><li class="pro">Simple for a queue of timestamps</li><li class="con">Requests from one client wait for each other</li></ul><p class="when">Use it when the state is a collection, as in the sliding log.</p></div>
   </div>
-  <p><b>Razorpay's extension</b> (sliding window, concurrent): per-client lock, lock-free <code>AtomicLong</code> counter, or striped cells. Details below.</p>
+  <p><b>Razorpay's extension</b> asked for a sliding window that is safe with many threads. You have three options. Use a lock per client, a lock-free <code>AtomicLong</code> counter, or a counter split into several cells. Details are below.</p>
   <details class="deep"><summary>Go deeper: every concurrency and edge case</summary><ul>
-    <li><b>Check-then-act race.</b> "Read tokens, compare, write tokens minus one" as three steps lets two threads spend one token. Fix with a CAS loop over an immutable state (token bucket above) or a per-instance lock (sliding log). Both are acceptable; say why you chose each: CAS for tiny O(1) state, lock when state is a collection.</li>
-    <li><b>Never one global lock.</b> <code>synchronized</code> on the registry serialises every client. Per-key locking comes for free when the lock lives inside the limiter instance.</li>
-    <li><b><code>computeIfAbsent</code> vs <code>get</code> then <code>put</code>.</b> The second creates two limiters for the same key under a race, and one client gets double quota for a while.</li>
-    <li><b>Don't do slow work inside <code>computeIfAbsent</code>.</b> It holds a bin lock; a remote policy fetch there blocks other keys in the same bin. Resolve the policy first or cache it.</li>
-    <li><b>Monotonic time.</b> <code>System.nanoTime()</code>, plus <code>Math.max(now, last)</code> because two threads can read the clock in one order and CAS in the other.</li>
-    <li><b>Permits larger than capacity.</b> Reject immediately; otherwise a waiting implementation would block forever.</li>
-    <li><b>Long idle gaps.</b> Cap the refill at capacity; in the counter, a gap of two or more windows zeroes the previous count.</li>
-    <li><b>Idle-key memory.</b> One million one-off IPs leak one million buckets. Use Caffeine with <code>expireAfterAccess(window * 2)</code>, or a periodic sweep removing limiters that are full (token bucket) or empty (window). A full bucket is identical to a fresh one, so eviction is lossless.</li>
-    <li><b>Swap semantics.</b> Swapping the algorithm resets state. Say whether that is acceptable (usually yes) or whether to carry over "used in current window" when the window length is unchanged.</li>
-    <li><b>Virtual threads.</b> <code>synchronized</code> pinned carrier threads before JDK 24 (JEP 491 removed most pinning). With very short critical sections it does not matter; <code>ReentrantLock</code> avoids the question.</li>
+    <li><b>Check-then-act race.</b> Suppose you read the tokens, compare, then write tokens minus one, as three steps. Two threads can then spend the same token. Fix it with a CAS loop over a state that never changes (the token bucket above). Or use a lock per limiter object (the sliding log). Both are fine, but say why you chose each. Use CAS for tiny fixed-size state. Use a lock when the state is a collection.</li>
+    <li><b>Never one global lock.</b> <code>synchronized</code> on the registry makes every client wait in a single line. If the lock lives inside each limiter object, you get one lock per key for free.</li>
+    <li><b><code>computeIfAbsent</code> vs <code>get</code> then <code>put</code>.</b> With <code>get</code> then <code>put</code>, two threads can create two limiters for the same key. One client then gets double quota for a while.</li>
+    <li><b>Don't do slow work inside <code>computeIfAbsent</code>.</b> It holds a lock on part of the map. A remote policy lookup there blocks other keys that share that part. Look up the policy first, or cache it.</li>
+    <li><b>Time that never goes backwards.</b> Use <code>System.nanoTime()</code>. Also use <code>Math.max(now, last)</code>. Two threads can read the clock in one order but finish their CAS in the other order.</li>
+    <li><b>Asking for more permits than capacity.</b> Reject at once. Otherwise a waiting version would wait forever.</li>
+    <li><b>Long quiet gaps.</b> Stop the refill at capacity. In the counter, a gap of two or more windows sets the previous count to zero.</li>
+    <li><b>Memory for idle keys.</b> One million one-time IP addresses leave one million buckets in memory. Use Caffeine with <code>expireAfterAccess(window * 2)</code>. Or run a regular sweep. It removes limiters that are full (token bucket) or empty (window). A full bucket is the same as a new one, so removing it loses nothing.</li>
+    <li><b>What a swap does.</b> Swapping the algorithm resets the state. Say whether that is fine (usually yes). The other option is carrying over "used in the current window" when the window length stays the same.</li>
+    <li><b>Virtual threads.</b> Before JDK 24, <code>synchronized</code> could pin a virtual thread to its carrier thread, blocking that carrier. JEP 491 removed most of this pinning. With very short locked sections it does not matter. <code>ReentrantLock</code> avoids the question.</li>
   </ul>
-  <p>Razorpay's extension in full: show three levels and pick one. (1) Per-client <code>ReentrantLock</code> around the deque, as above: simple and correct, contention only within one client. (2) Lock-free sliding counter: pack window id and count into one <code>AtomicLong</code> and CAS. (3) Striped: shard each client's counter into N <code>LongAdder</code>-like cells for very hot keys, accepting slight over-admission. Then write the 100-thread test that proves exactly <code>limit</code> requests pass.</p></details>
+  <p>Here is Razorpay's extension in full. Show three levels and pick one. (1) A <code>ReentrantLock</code> per client around the queue of timestamps, as above. It is simple and correct, and only one client's requests wait for each other. (2) A lock-free sliding counter. Pack the window id and the count into one <code>AtomicLong</code> and use CAS. (3) Split counters. For very busy keys, split each client's counter into N cells, like <code>LongAdder</code>. You accept letting in slightly too many requests. Then write the 100-thread test that proves exactly <code>limit</code> requests pass.</p></details>
 
   <h2 id="code"><span class="n">07</span>Core code</h2>
-  <p>Java 21. The heart of it, the token bucket's CAS loop:</p>
+  <p>This is Java 21. Here is the heart of it, the token bucket's CAS loop:</p>
   <pre><code>        while (true) {
             State cur = state.get();
             // Another thread may have stored a later timestamp than the one we read; never go backwards.
@@ -257,7 +267,7 @@
             // CAS lost: someone else changed the bucket; retry with fresh state.
         }</code></pre>
   <details class="code"><summary>Show TimeSource, RateLimiter, RateLimitPolicy</summary>
-    <p>Time is in nanoseconds from a monotonic source, never <code>System.currentTimeMillis()</code> (wall clock can jump back on NTP sync).</p>
+    <p>Time is in nanoseconds from a clock that never goes backwards. Never use <code>System.currentTimeMillis()</code>. That wall clock can jump back when the server syncs its time with NTP.</p>
     <pre><code>public interface TimeSource {
     long nanoTime();
     TimeSource SYSTEM = System::nanoTime;
@@ -277,7 +287,7 @@ public record RateLimitPolicy(Algorithm algorithm, int limit, Duration window, i
     }
 }</code></pre></details>
   <details class="code"><summary>Show TokenBucket (lock-free)</summary>
-    <p>Refill lazily on each call from elapsed time; no background thread. State is an immutable record swapped with CAS, so two threads cannot both spend the last token.</p>
+    <p>Tokens are refilled on each call, based on the time that passed. There is no background thread. The state is a record that never changes, replaced with CAS. So two threads can never both spend the last token.</p>
     <pre><code>public final class TokenBucket implements RateLimiter {
     private record State(double tokens, long lastRefillNanos) {}
 
@@ -315,9 +325,9 @@ public record RateLimitPolicy(Algorithm algorithm, int limit, Duration window, i
         return available &gt;= permits ? 0 : (long) Math.ceil((permits - available) / tokensPerNano);
     }
 }</code></pre>
-    <p>Floating-point tokens are fine at interview scope. If asked, switch to integer "nano-tokens" (scale by 10<sup>9</sup>) as Bucket4j does to avoid drift.</p></details>
+    <p>Decimal (floating-point) tokens are fine in an interview. If asked, switch to whole-number "nano-tokens", scaled by 10<sup>9</sup>. Bucket4j does this to avoid small rounding errors piling up.</p></details>
   <details class="code"><summary>Show SlidingWindowLog (locked per instance)</summary>
-    <p>Exact. The deque never holds more than <code>limit</code> entries because denied requests are not recorded. The lock is per limiter, so contention is only between requests of the same client.</p>
+    <p>This one is exact. The queue never holds more than <code>limit</code> entries, because refused requests are not recorded. Each limiter has its own lock. So only requests from the same client wait for each other.</p>
     <pre><code>public final class SlidingWindowLog implements RateLimiter {
     private final int limit;
     private final long windowNanos;
@@ -344,7 +354,7 @@ public record RateLimitPolicy(Algorithm algorithm, int limit, Duration window, i
     }
 }</code></pre></details>
   <details class="code"><summary>Show SlidingWindowCounter</summary>
-    <p>Weighted estimate: <code>prev * (1 - elapsedFraction) + curr</code>. Two integers per key; this is what you would put in Redis at scale.</p>
+    <p>It gives a weighted estimate: <code>prev * (1 - elapsedFraction) + curr</code>. It stores only two whole numbers per key. At scale, this is what you would keep in Redis.</p>
     <pre><code>public final class SlidingWindowCounter implements RateLimiter {
     private final int limit;
     private final long windowNanos;
@@ -419,7 +429,7 @@ public final class FixedWindowCounter implements RateLimiter {
         return true;
     }
 }</code></pre>
-    <p>As a meter it is the token bucket mirrored. The "queue" variant (Swiggy asked for the behaviour, not just the maths) holds requests in an <code>ArrayBlockingQueue</code> of size capacity, and a <code>ScheduledExecutorService</code> drains one every <code>1/rate</code> seconds. That variant shapes traffic instead of rejecting it, at the cost of added latency.</p></details>
+    <p>As a meter, the leaky bucket is the token bucket in reverse. Swiggy asked for the queue version, meaning the behaviour and not just the maths. It holds requests in an <code>ArrayBlockingQueue</code> of size capacity. A <code>ScheduledExecutorService</code> takes one out every <code>1/rate</code> seconds. This version smooths traffic instead of refusing it. The cost is extra waiting time.</p></details>
   <details class="code"><summary>Show RateLimiterFactory, SwappableRateLimiter, RateLimiterRegistry</summary>
     <pre><code>public final class RateLimiterFactory {
     private final TimeSource time;
@@ -468,118 +478,118 @@ public final class RateLimiterRegistry {
         });
     }
 }</code></pre>
-    <p>If the brief is Media.net's "every client holds its own limiter object", hand out <code>SwappableRateLimiter</code> directly and drop the registry from the public API. The interface stays <code>tryAcquire()</code> with no client id.</p></details>
+    <p>Media.net's brief said "every client holds its own limiter object". In that case, hand out <code>SwappableRateLimiter</code> directly and remove the registry from the public API. The method stays <code>tryAcquire()</code> with no client id.</p></details>
 
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <h3>Run it across many pods</h3>
   <div class="vs">
-    <div><h4>Sticky routing</h4><ul><li class="pro">Consistent-hash the key at the gateway; in-memory stays exact</li><li class="con">Rebalance or pod death resets moved keys</li><li class="con">A hot key overloads one pod</li></ul></div>
-    <div class="pick"><h4>Redis + Lua <span class="tag">usual pick</span></h4><ul><li class="pro">One atomic script: refill, decrement, <code>PEXPIRE</code></li><li class="pro">Redis <code>TIME</code>, not app clocks</li><li class="con">~0.5–1 ms round trip per request</li></ul><p class="when">Key by <code>{clientId}</code> hash tag in Redis Cluster.</p></div>
+    <div><h4>Sticky routing</h4><ul><li class="pro">The gateway always sends a key to the same pod, using consistent hashing. In-memory counts stay exact.</li><li class="con">Moving keys between pods, or a pod dying, resets their counts.</li><li class="con">One very busy key overloads one pod.</li></ul></div>
+    <div class="pick"><h4>Redis + Lua <span class="tag">usual pick</span></h4><ul><li class="pro">One Lua script refills, subtracts and sets the expiry (<code>PEXPIRE</code>), all in one atomic step.</li><li class="pro">Use the Redis server clock (<code>TIME</code>), not each app server's clock.</li><li class="con">Each request costs one Redis round trip, about 0.5–1 ms.</li></ul><p class="when">In Redis Cluster, wrap the key as a <code>{clientId}</code> hash tag, so all of one client's keys sit on one shard.</p></div>
   </div>
   <div class="grid">
-    <div class="card"><h4>Swap algorithm at runtime</h4><p>Already absorbed: <code>swap</code> is one atomic reference write.</p></div>
-    <div class="card"><h4>In production</h4><p>Bucket4j + Redis, dark launch, tenant from JWT.</p></div>
-    <div class="card"><h4>10/s and 1000/day</h4><p>Composite; refund on partial consume.</p></div>
-    <div class="card"><h4>Block, not reject</h4><p>Park for <code>nanosUntil</code>, then retry.</p></div>
-    <div class="card"><h4>Weighted requests</h4><p><code>tryAcquire(int permits)</code>.</p></div>
+    <div class="card"><h4>Swap algorithm at runtime</h4><p>Already handled. <code>swap</code> is one atomic reference write.</p></div>
+    <div class="card"><h4>In production</h4><p>Use Bucket4j with Redis. Test new limits in log-only mode first. Take the tenant from the JWT login token.</p></div>
+    <div class="card"><h4>10/s and 1000/day</h4><p>Combine two limiters. Give tokens back if only one of them allows the request.</p></div>
+    <div class="card"><h4>Block, not reject</h4><p>Wait for <code>nanosUntil</code>, then try again.</p></div>
+    <div class="card"><h4>Weighted requests</h4><p>Some requests cost more. <code>tryAcquire(int permits)</code> already handles this.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>Swap the algorithm for a client at runtime (Media.net)</summary><p>Already absorbed: <code>SwappableRateLimiter.swap</code> is one atomic reference write. In-flight calls finish on the old instance; new calls go to the new one. No caller changes.</p></details>
+  <details class="qa"><summary>Swap the algorithm for a client at runtime (Media.net)</summary><p>This is already handled. <code>SwappableRateLimiter.swap</code> is one atomic reference write. Calls already running finish on the old object. New calls go to the new one. No caller has to change.</p></details>
   <details class="qa"><summary>Run it across multiple servers (Media.net, Rapido, Atlassian)</summary>
-    <p>Two answers, say both. <b>Sticky routing:</b> consistent-hash the client key at the gateway so one pod owns each client; in-memory stays exact, but a rebalance or pod death resets counts for the moved keys, and a hot key overloads one pod. <b>Central store:</b> Redis. Token bucket as a Lua script (read tokens and timestamp from a hash, refill, decrement, <code>PEXPIRE</code>, all atomic on the server), or sliding log as a sorted set (<code>ZREMRANGEBYSCORE</code>, <code>ZCARD</code>, <code>ZADD</code> in one script). Key by <code>{clientId}</code> hash tag in Redis Cluster so a script's keys live on one shard. Use Redis server time (<code>TIME</code>) inside the script, not app-node clocks.</p>
-    <p>Then the production details: one Redis round trip (~0.5–1 ms) per request; decide fail-open (availability, the usual choice for API quotas) vs fail-closed (security limits such as login attempts); add a small local token cache that pre-fetches batches of tokens for very hot keys to cut Redis calls.</p></details>
-  <details class="qa"><summary>"How would you run a token bucket in production?" (Rapido director)</summary><p>Gateway or a servlet filter / Spring <code>HandlerInterceptor</code>, before auth-heavy work. Bucket4j with a Redis (Redisson or Lettuce) proxy manager rather than hand-rolled Lua, unless you need custom semantics. Policies per tenant and plan stored in config, cached locally. Return 429 with <code>Retry-After</code> and remaining-quota headers. Metrics: allowed/denied per key and per policy, Redis latency. Dark-launch new limits in log-only mode, keep a kill switch. Multi-tenancy: key on tenant from the JWT, not on a request parameter, and give each tenant its own bucket so one noisy tenant cannot starve others.</p></details>
-  <details class="qa"><summary>Different limits per endpoint, or several limits at once (10/s and 1000/day)</summary><p>A <code>CompositeRateLimiter</code> holding a list; allow only if all allow. Watch the partial-consume problem: if the second limiter denies, the first has already spent a token. Either check all then consume all under a lock, or refund (token bucket supports refund cleanly).</p></details>
-  <details class="qa"><summary>Block instead of rejecting</summary><p>Add <code>acquire(permits, timeout)</code>: compute <code>nanosUntil</code>, park for that long, retry. Guava's <code>RateLimiter</code> works this way (it reserves future permits). Never sleep while holding the lock.</p></details>
-  <details class="qa"><summary>Weighted requests (a bulk API costs 10)</summary><p>Already supported by <code>tryAcquire(int permits)</code>. Reject a cost larger than capacity.</p></details>
+    <p>There are two answers, and you should give both. <b>Sticky routing:</b> the gateway uses consistent hashing on the client key, so one pod owns each client. In-memory counts stay exact. But if keys move between pods, or a pod dies, the moved keys lose their counts. A very busy key can also overload one pod. <b>Central store:</b> use Redis. Write the token bucket as a Lua script. It reads tokens and timestamp from a hash, refills, subtracts and sets <code>PEXPIRE</code>. All of this runs as one atomic step on the Redis server. Or write the sliding log as a sorted set, with <code>ZREMRANGEBYSCORE</code>, <code>ZCARD</code> and <code>ZADD</code> in one script. In Redis Cluster, wrap the key as a <code>{clientId}</code> hash tag. Then all keys a script touches live on one shard. Inside the script, use the Redis server time (<code>TIME</code>), not the app servers' clocks.</p>
+    <p>Then cover the production details. Each request costs one Redis round trip, about 0.5–1 ms. Decide what happens when Redis is down. Fail-open means you let requests through. That keeps the service available, and it is the usual choice for API quotas. Fail-closed means you refuse them. Use it for security limits such as login attempts. For very busy keys, add a small local cache that fetches tokens from Redis in batches. This cuts Redis calls.</p></details>
+  <details class="qa"><summary>"How would you run a token bucket in production?" (Rapido director)</summary><p>Put it in the gateway, or in a servlet filter or Spring <code>HandlerInterceptor</code>. Run it before heavy work such as authentication. Use Bucket4j with a Redis proxy manager (through Redisson or Lettuce) rather than your own Lua. Write your own only if you need special behaviour. Store policies per tenant and per plan in config, and cache them locally. Return 429 with <code>Retry-After</code> and remaining-quota headers. Track allowed and denied counts per key and per policy, plus Redis latency. Launch new limits in log-only mode first ("dark launch"), and keep a kill switch. For multi-tenancy, key on the tenant from the JWT, not on a request parameter. Give each tenant its own bucket. Then one noisy tenant cannot starve the others.</p></details>
+  <details class="qa"><summary>Different limits per endpoint, or several limits at once (10/s and 1000/day)</summary><p>Use a <code>CompositeRateLimiter</code> that holds a list of limiters. It allows a request only if all of them allow it. Watch out for the partial-spend problem. If the second limiter refuses, the first has already spent a token. Either check all and then spend all under one lock, or give the token back. A token bucket supports giving tokens back cleanly.</p></details>
+  <details class="qa"><summary>Block instead of rejecting</summary><p>Add <code>acquire(permits, timeout)</code>. It works out <code>nanosUntil</code>, waits that long, then tries again. Guava's <code>RateLimiter</code> works this way, by reserving future permits. Never sleep while holding the lock.</p></details>
+  <details class="qa"><summary>Weighted requests (a bulk API costs 10)</summary><p>This is already supported by <code>tryAcquire(int permits)</code>. Refuse any cost larger than the capacity.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Fake clock</h4><p><code>FakeTimeSource</code>: an <code>AtomicLong</code> with <code>advance(Duration)</code>. No <code>Thread.sleep</code>.</p></div>
-    <div class="key"><h4>Algorithm behaviour</h4><p>Burst then deny, proportional refill, cap after idle, window boundaries.</p></div>
-    <div class="key"><h4>The proof</h4><p>100 threads × 100 calls behind a <code>CountDownLatch</code>: admitted == limit exactly, per algorithm.</p></div>
+    <div class="key"><h4>Fake clock</h4><p><code>FakeTimeSource</code> is an <code>AtomicLong</code> with <code>advance(Duration)</code>. Tests move time forward by hand, with no <code>Thread.sleep</code>.</p></div>
+    <div class="key"><h4>Algorithm behaviour</h4><p>Check a burst then a refusal, refill in proportion to time, the cap after a quiet gap, and window edges.</p></div>
+    <div class="key"><h4>The proof</h4><p>Start 100 threads × 100 calls together with a <code>CountDownLatch</code>. Exactly <code>limit</code> calls must pass, for every algorithm.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full test list</summary>
-  <p>All with <code>FakeTimeSource</code> (a mutable <code>AtomicLong</code> with <code>advance(Duration)</code>). No <code>Thread.sleep</code> in unit tests.</p>
+  <p>Every test uses <code>FakeTimeSource</code>, an <code>AtomicLong</code> you can change, with <code>advance(Duration)</code>. Unit tests never call <code>Thread.sleep</code>.</p>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>tokenBucket_allowsBurstUpToCapacityThenDenies</code></td><td>Capacity 5: five true, sixth false at the same instant.</td></tr>
-    <tr><td><code>tokenBucket_refillsProportionallyToElapsedTime</code></td><td>Advance half a period: exactly half the tokens are back.</td></tr>
-    <tr><td><code>tokenBucket_neverExceedsCapacityAfterLongIdle</code></td><td>Advance one hour: still only capacity requests pass.</td></tr>
-    <tr><td><code>tokenBucket_rejectsPermitsAboveCapacity</code></td><td>Returns false, does not loop.</td></tr>
-    <tr><td><code>slidingLog_allowsExactlyLimitInAnyRollingWindow</code></td><td>Requests at t=0..9 with limit 10/10s; one at t=9.9 denied; at t=10 the first expires and one passes.</td></tr>
-    <tr><td><code>fixedWindow_allowsDoubleAtBoundary</code></td><td>Documents the known flaw: N at end of window, N at start of the next.</td></tr>
-    <tr><td><code>slidingCounter_weightsPreviousWindow</code></td><td>prev=10, 30% into current window: at most 3 more allowed with limit 10.</td></tr>
-    <tr><td><code>leakyBucket_drainsAtConstantRate</code></td><td>Full bucket, advance one leak interval: exactly one more accepted.</td></tr>
-    <tr><td><code>concurrent_100Threads_neverAdmitMoreThanLimit</code></td><td>Fixed clock, <code>CountDownLatch</code> start gate, 100 threads × 100 calls; count of true == limit exactly. Run per algorithm (parameterised).</td></tr>
-    <tr><td><code>registry_createsOneLimiterPerClientUnderRace</code></td><td>Concurrent first calls for one key: total admitted == limit, not 2 × limit.</td></tr>
-    <tr><td><code>registry_clientsAreIsolated</code></td><td>Exhausting A does not affect B.</td></tr>
-    <tr><td><code>swap_changesAlgorithmWithoutNewReference</code></td><td>Same object; behaviour follows new policy.</td></tr>
+    <tr><td><code>tokenBucket_allowsBurstUpToCapacityThenDenies</code></td><td>Capacity 5: five true, then the sixth is false at the same instant.</td></tr>
+    <tr><td><code>tokenBucket_refillsProportionallyToElapsedTime</code></td><td>Move time forward half a period. Exactly half the tokens come back.</td></tr>
+    <tr><td><code>tokenBucket_neverExceedsCapacityAfterLongIdle</code></td><td>Move time forward one hour. Still only capacity requests pass.</td></tr>
+    <tr><td><code>tokenBucket_rejectsPermitsAboveCapacity</code></td><td>Returns false and does not loop.</td></tr>
+    <tr><td><code>slidingLog_allowsExactlyLimitInAnyRollingWindow</code></td><td>Limit 10 per 10s, requests at t=0..9. One at t=9.9 is refused. At t=10 the first expires, so one passes.</td></tr>
+    <tr><td><code>fixedWindow_allowsDoubleAtBoundary</code></td><td>Records the known flaw: N at the end of one window, then N at the start of the next.</td></tr>
+    <tr><td><code>slidingCounter_weightsPreviousWindow</code></td><td>prev=10, 30% into the current window, limit 10: at most 3 more allowed.</td></tr>
+    <tr><td><code>leakyBucket_drainsAtConstantRate</code></td><td>Full bucket, move forward one leak interval: exactly one more accepted.</td></tr>
+    <tr><td><code>concurrent_100Threads_neverAdmitMoreThanLimit</code></td><td>Fixed clock, a <code>CountDownLatch</code> start gate, 100 threads × 100 calls. The count of true must equal limit exactly. Run it for each algorithm (parameterised).</td></tr>
+    <tr><td><code>registry_createsOneLimiterPerClientUnderRace</code></td><td>Many first calls at once for one key: total allowed is limit, not 2 × limit.</td></tr>
+    <tr><td><code>registry_clientsAreIsolated</code></td><td>Using up A's quota does not affect B.</td></tr>
+    <tr><td><code>swap_changesAlgorithmWithoutNewReference</code></td><td>Same object, but the behaviour follows the new policy.</td></tr>
   </table></div></details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li><code>allowRequest(clientId, timestamp)</code> on an already per-client object (Media.net, Jan 2026, no offer).</li>
-    <li><code>HashMap</code> + <code>synchronized</code> on the whole service, or no sync at all.</li>
-    <li>A refill thread per bucket: 10,000 clients, 10,000 threads.</li>
-    <li><code>System.currentTimeMillis()</code> inside the algorithm: untestable without sleeping.</li>
-    <li>"Use Redis" with <code>GET</code> then <code>SET</code>: same race, now across pods.</li>
-    <li>40 minutes on five algorithms, zero tests. Ship one, tested, first.</li>
+    <li>Writing <code>allowRequest(clientId, timestamp)</code> on an object that already belongs to one client (Media.net, Jan 2026, no offer).</li>
+    <li>A <code>HashMap</code> with <code>synchronized</code> on the whole service. Or no thread safety at all.</li>
+    <li>A refill thread for every bucket. With 10,000 clients, that is 10,000 threads.</li>
+    <li>Calling <code>System.currentTimeMillis()</code> inside the algorithm. You can't test it without sleeping.</li>
+    <li>"Use Redis", but with <code>GET</code> then <code>SET</code>. That is the same race, now across pods.</li>
+    <li>40 minutes on five algorithms and zero tests. Ship one tested algorithm first.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: the rejection notes in full</summary><ul>
-    <li>API that ignores the brief: <code>allowRequest(clientId, timestamp)</code> on an object that is already per-client (Media.net, Jan 2026, no offer).</li>
-    <li><code>HashMap</code> plus <code>synchronized</code> on the whole service, or no synchronisation at all, then failing the "make it concurrent" extension.</li>
-    <li>A background thread per bucket to add tokens. Ten thousand clients means ten thousand threads; lazy refill on access is the expected answer.</li>
-    <li><code>System.currentTimeMillis()</code> called directly in the algorithm, so nothing is testable without sleeping.</li>
-    <li>Only fixed window, unable to explain the 2N boundary burst or the alternatives.</li>
-    <li>Saying "use Redis" without atomicity: <code>GET</code> then <code>SET</code> from the app has the same race as the in-memory version, now across pods.</li>
-    <li>Spending 40 minutes on all five algorithms with no tests. Ship one fully tested algorithm, then add others behind the interface.</li>
+    <li>An API that ignores the brief. One candidate wrote <code>allowRequest(clientId, timestamp)</code> on an object that already belonged to one client (Media.net, Jan 2026, no offer).</li>
+    <li>A <code>HashMap</code> with <code>synchronized</code> on the whole service, or no thread safety at all. These candidates then failed the "make it concurrent" extension.</li>
+    <li>A background thread per bucket to add tokens. Ten thousand clients means ten thousand threads. The expected answer is to refill only when a request arrives.</li>
+    <li>Calling <code>System.currentTimeMillis()</code> directly in the algorithm. Then nothing can be tested without sleeping.</li>
+    <li>Knowing only the fixed window. These candidates could not explain the 2N burst at the boundary, or the other options.</li>
+    <li>Saying "use Redis" without making it atomic. A <code>GET</code> then <code>SET</code> from the app has the same race as the in-memory version, now across pods.</li>
+    <li>Spending 40 minutes on all five algorithms with no tests. Ship one fully tested algorithm. Then add others behind the interface.</li>
   </ul></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–8 min</span><span>Clarify key, object vs service, bursts, pods. Write the interface; get a nod.</span></div>
-    <div class="step"><span class="t">8–15 min</span><span>Class list; Strategy + Factory + Registry sketch. Name the first algorithm.</span></div>
-    <div class="step"><span class="t">15–35 min</span><span>TimeSource, TokenBucket with CAS, registry with <code>computeIfAbsent</code>. Three fake-clock tests green.</span></div>
-    <div class="step"><span class="t">35–55 min</span><span>Sliding window log (lock) and counter. Boundary tests.</span></div>
-    <div class="step"><span class="t">55–65 min</span><span>100-thread latch test, parameterised over algorithms.</span></div>
-    <div class="step"><span class="t">65–75 min</span><span>Swappable delegate and runtime policy change; leaky bucket if asked.</span></div>
-    <div class="step"><span class="t">75–90 min</span><span>Walk the code; discuss Redis + Lua, fail-open, eviction, 429.</span></div>
+    <div class="step"><span class="t">0–8 min</span><span>Ask about the key, object or service, bursts and pods. Write the interface and get the interviewer to agree.</span></div>
+    <div class="step"><span class="t">8–15 min</span><span>List the classes. Sketch Strategy, Factory and Registry. Name the first algorithm.</span></div>
+    <div class="step"><span class="t">15–35 min</span><span>Write TimeSource, TokenBucket with CAS, and the registry with <code>computeIfAbsent</code>. Get three fake-clock tests passing.</span></div>
+    <div class="step"><span class="t">35–55 min</span><span>Add the sliding window log (with a lock) and the counter. Write the boundary tests.</span></div>
+    <div class="step"><span class="t">55–65 min</span><span>Write the 100-thread latch test and run it for each algorithm.</span></div>
+    <div class="step"><span class="t">65–75 min</span><span>Add the swappable wrapper and runtime policy change. Add the leaky bucket if asked.</span></div>
+    <div class="step"><span class="t">75–90 min</span><span>Walk through the code. Discuss Redis with Lua, fail-open, removing idle keys, and 429.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">Two threads both read "1 token left" and both get ALLOW. What fixes it with no lock?</p>
+  <div class="quiz" data-answer="2"><p class="q">Two threads both read "1 token left", and both get ALLOW. What fixes this without a lock?</p>
     <div class="opts"><button class="opt" type="button">Make <code>tokens</code> volatile</button><button class="opt" type="button">Use <code>System.nanoTime()</code></button><button class="opt" type="button">Swap an immutable State with <code>compareAndSet</code> and retry on failure</button></div>
-    <p class="why">volatile gives visibility, not atomicity. With CAS the loser retries and sees 0.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Why no background thread to refill tokens?</p>
+    <p class="why"><code>volatile</code> makes threads see the latest value. It does not make read-then-write one step. With CAS, the losing thread's write fails. It retries, sees 0 tokens, and is refused.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why is there no background thread to refill tokens?</p>
     <div class="opts"><button class="opt" type="button">Threads cannot read the clock</button><button class="opt" type="button">Refill is computable from elapsed time on each call; a thread per bucket does not scale</button><button class="opt" type="button">The interviewer forbids threads</button></div>
-    <p class="why">Lazy refill costs one multiply per call. 10,000 clients would otherwise need 10,000 threads.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">Limit 100/min, fixed window. What is the worst case in any rolling minute?</p>
+    <p class="why">Working out the refill on each call costs one multiplication. Otherwise, 10,000 clients would need 10,000 threads.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">The limit is 100 per minute with a fixed window. What is the most that can pass in any rolling minute?</p>
     <div class="opts"><button class="opt" type="button">200: 100 at 0:59 and 100 at 1:00</button><button class="opt" type="button">100</button><button class="opt" type="button">150</button></div>
-    <p class="why">Counts reset at the boundary, so two full windows can sit back to back.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Your Redis limiter does <code>GET</code>, checks, then <code>SET</code> from the app. What is wrong?</p>
+    <p class="why">The count resets at the boundary. So two full windows can sit right next to each other.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Your Redis limiter does <code>GET</code>, checks the value, then does <code>SET</code> from the app. What is wrong?</p>
     <div class="opts"><button class="opt" type="button">Redis is too slow</button><button class="opt" type="button">Same check-then-act race, now across pods; do it atomically in a Lua script</button><button class="opt" type="button">Nothing, Redis is single-threaded</button></div>
-    <p class="why">Each command is atomic; your sequence is not. A Lua script is.</p></div>
+    <p class="why">Each Redis command is atomic on its own. Your sequence of commands is not. Another pod can act between your GET and SET. A Lua script runs as one step.</p></div>
 
   <h2 id="viva"><span class="n">13</span>Interview questions</h2>
-  <details class="qa"><summary>Why CAS in the token bucket but a lock in the sliding log?</summary><p>Token bucket state is two numbers, cheap to copy into an immutable record and swap. The log is a mutable deque; making it lock-free would need a persistent structure. Per-instance locks only contend within one client, which is fine.</p></details>
-  <details class="qa"><summary>Can your CAS loop livelock?</summary><p>Under extreme contention on one key some threads retry several times, but each failed CAS means another thread succeeded, so the system makes progress. If a single key is that hot, shard it or move to a lock with fair queueing.</p></details>
-  <details class="qa"><summary>Token bucket vs leaky bucket in one line each?</summary><p>Token bucket limits the average rate and permits bursts up to capacity. Leaky bucket enforces a constant output rate and absorbs bursts by queueing or rejecting them.</p></details>
-  <details class="qa"><summary>How accurate is the sliding window counter?</summary><p>It assumes requests in the previous window were evenly spread. Cloudflare reported a very small error rate on real traffic. Good enough for API quotas, not for hard security limits.</p></details>
-  <details class="qa"><summary>What status code and headers do you return?</summary><p>429 Too Many Requests with <code>Retry-After</code> (seconds), plus limit / remaining / reset headers (<code>X-RateLimit-*</code> or the IETF <code>RateLimit</code> fields). Use 503 for load shedding, which is about server health rather than the client's quota.</p></details>
-  <details class="qa"><summary>Where does the tenant id come from?</summary><p>From the authenticated principal (JWT claim), never a header or query parameter the client controls, otherwise a client rotates ids to bypass limits.</p></details>
-  <details class="qa"><summary>How do you stop the map growing forever?</summary><p>Time-based eviction (Caffeine <code>expireAfterAccess</code>) or a sweep. Evicting a full token bucket loses nothing, because a new one starts full.</p></details>
+  <details class="qa"><summary>Why CAS in the token bucket but a lock in the sliding log?</summary><p>The token bucket's state is just two numbers. It is cheap to copy them into a record that never changes and swap it with CAS. The log is a deque, a queue that changes in place. Making it lock-free would need a special persistent data structure. A lock per limiter only makes requests from the same client wait, which is fine.</p></details>
+  <details class="qa"><summary>Can your CAS loop livelock?</summary><p>Livelock means threads keep retrying but nobody makes progress. When many threads hit one key, some will retry several times. But each failed CAS means another thread succeeded. So the system as a whole always makes progress. If one key is that busy, split it, or move to a fair lock where threads wait in line.</p></details>
+  <details class="qa"><summary>Token bucket vs leaky bucket in one line each?</summary><p>A token bucket limits the average rate and allows bursts up to its capacity. A leaky bucket lets requests out at a constant rate. It absorbs bursts by queueing or refusing them.</p></details>
+  <details class="qa"><summary>How accurate is the sliding window counter?</summary><p>It assumes requests in the previous window were spread evenly. Cloudflare reported a very small error rate on real traffic. That is good enough for API quotas. It is not good enough for hard security limits.</p></details>
+  <details class="qa"><summary>What status code and headers do you return?</summary><p>Return 429 Too Many Requests with <code>Retry-After</code> in seconds. Also send limit, remaining and reset headers. These are <code>X-RateLimit-*</code> or the IETF <code>RateLimit</code> fields. Use 503 for load shedding instead. Load shedding means refusing work because the server itself is overloaded, not because a client used up its quota.</p></details>
+  <details class="qa"><summary>Where does the tenant id come from?</summary><p>It comes from the logged-in identity, as a claim in the JWT. Never take it from a header or query parameter the client controls. Otherwise a client can keep changing ids to dodge the limits.</p></details>
+  <details class="qa"><summary>How do you stop the map growing forever?</summary><p>Remove entries after a period of no use (Caffeine <code>expireAfterAccess</code>), or run a regular sweep. Removing a full token bucket loses nothing, because a new one also starts full.</p></details>
 
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li><code>tryAcquire(int permits)</code>; Strategy + Factory + Registry + delegate.</li>
-    <li>Token bucket: lazy refill, <code>min(capacity, tokens + elapsed × rate)</code>, CAS on immutable State.</li>
-    <li>Sliding log: exact, O(N), per-instance lock. Counter: <code>prev × (1 − f) + curr</code>, O(1).</li>
-    <li>Fixed window allows 2N at a boundary; leaky bucket smooths output.</li>
-    <li>Registry: <code>computeIfAbsent</code>, no slow work inside, Caffeine eviction.</li>
-    <li>Injected <code>TimeSource</code>, <code>nanoTime</code>, <code>Math.max(now, last)</code>.</li>
-    <li>Multi-pod: Redis + Lua, Redis <code>TIME</code>, hash tags; fail-open for quotas.</li>
-    <li>429 + <code>Retry-After</code>; tenant from the JWT.</li>
+    <li><code>tryAcquire(int permits)</code>. Patterns: Strategy, Factory, Registry and a swappable delegate.</li>
+    <li>Token bucket: refill on each call with <code>min(capacity, tokens + elapsed × rate)</code>. Use CAS on a State record that never changes.</li>
+    <li>Sliding log: exact, O(N) memory, one lock per limiter. Counter: <code>prev × (1 − f) + curr</code>, O(1) memory.</li>
+    <li>A fixed window allows 2N at a boundary. A leaky bucket smooths the output.</li>
+    <li>Registry: use <code>computeIfAbsent</code>, do no slow work inside it, and remove idle keys with Caffeine.</li>
+    <li>Pass in a <code>TimeSource</code>. Use <code>nanoTime</code> and <code>Math.max(now, last)</code>.</li>
+    <li>Many pods: Redis with Lua, the Redis <code>TIME</code> clock, and hash tags. Fail open for quotas.</li>
+    <li>Return 429 with <code>Retry-After</code>. Take the tenant from the JWT.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>

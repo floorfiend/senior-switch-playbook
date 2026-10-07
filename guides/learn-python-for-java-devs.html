@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>Python for a Java engineer</h1>
-  <p class="lede">Map your Java and Spring Boot habits onto Python, then build the FastAPI service EPAM asked a Senior AI Engineer to build live.</p>
+  <p class="lede">You already know Java and Spring Boot. This lesson shows the Python version of each habit you have. Then you build the small FastAPI web service that EPAM asked a Senior AI Engineer to build live.</p>
   <div class="facts">
     <span class="fact"><b>Time to do:</b> 1 evening + 1 weekend morning</span>
     <span class="fact"><b>Stack:</b> Python 3.12+, uv, FastAPI, Pydantic v2, httpx</span>
@@ -21,13 +21,24 @@
   <div class="chips"><span class="chip hot">EPAM</span><span class="chip">AI engineer rounds</span><span class="chip">FastAPI</span><span class="chip">Pydantic</span><span class="chip">asyncio</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Python is Java with optional, linter-style types and indentation as syntax.</li>
-    <li>Pydantic = DTO + Bean Validation + Jackson; use it at trust boundaries.</li>
-    <li>asyncio is one event loop; one blocking call freezes every request.</li>
-    <li>FastAPI + httpx + retries with jitter is the classic live-coding round.</li>
+    <li>Python feels like Java with two changes. Types are optional hints, and indentation is part of the syntax.</li>
+    <li>Pydantic does the job of a Java DTO, Bean Validation and Jackson together. Use it wherever outside data enters your code.</li>
+    <li>asyncio runs all requests on one thread, called the event loop. One call that blocks freezes every request.</li>
+    <li>The classic live-coding round is FastAPI plus httpx, with retries that wait a random time between attempts.</li>
   </ul></div>
 
   <div class="analogy"><b>Picture it</b><p>A single dabbawala carrying many tiffins. He hands one over, moves on while that office signs, and comes back when it is ready. That is asyncio. If he stops to wait at one desk (a blocking call), every other tiffin is late.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Type hint</dt><dd>A label like <code>x: int</code> that says what type a value should be. Python does not enforce it while running. Tools and libraries read it.</dd>
+    <dt>Pydantic</dt><dd>A Python library that checks incoming data against a class you define. It fixes small mistakes and rejects bad data with clear errors.</dd>
+    <dt>Trust boundary</dt><dd>Any place where data comes from outside your code. Examples are an HTTP request, an LLM (large language model) answer or a config file.</dd>
+    <dt>Event loop</dt><dd>One thread that juggles many tasks. It runs a task until that task has to wait, then switches to another one.</dd>
+    <dt>Blocking call</dt><dd>A call that holds the thread until it finishes, like <code>time.sleep</code>. On an event loop, it stops every other task too.</dd>
+    <dt>Virtual environment</dt><dd>A private folder of libraries for one project. Two projects can then use different versions of the same library.</dd>
+    <dt>Jitter</dt><dd>A random extra wait before a retry. It stops many clients from all retrying at the exact same moment.</dd>
+    <dt>Idempotent</dt><dd>Doing it twice has the same effect as doing it once. Pressing "Pay" twice on a UPI app should charge you once.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#outcomes">What you'll be able to do</a></li>
@@ -43,57 +54,57 @@
 
   <h2 id="outcomes"><span class="n">01</span>What you'll be able to do after this lesson</h2>
   <div class="keys">
-    <div class="key"><h4>Read idiomatic Python</h4><p>Hints, dataclasses, comprehensions, context managers, generators.</p></div>
-    <div class="key"><h4>Pick the right model</h4><p><code>@dataclass</code> vs Pydantic, and why boundaries use Pydantic.</p></div>
-    <div class="key"><h4>Set up with uv</h4><p><code>uv</code>: the Gradle-plus-SDKMAN of Python.</p></div>
-    <div class="key"><h4>Reason about async</h4><p>Explain <code>async</code>/<code>await</code> via <code>CompletableFuture</code> and Reactor, and the one rule: never block the event loop.</p></div>
-    <div class="key"><h4>Ship the EPAM service</h4><p>Validation, timeouts, retries with jitter, clean errors, offline tests, in under an hour.</p></div>
+    <div class="key"><h4>Read idiomatic Python</h4><p>Read the common Python styles with ease. These are type hints, dataclasses, comprehensions, context managers and generators.</p></div>
+    <div class="key"><h4>Pick the right model</h4><p>Choose between <code>@dataclass</code> and Pydantic. Know why data from outside should go through Pydantic.</p></div>
+    <div class="key"><h4>Set up with uv</h4><p>Use <code>uv</code>, which does for Python what Gradle and SDKMAN do for Java.</p></div>
+    <div class="key"><h4>Reason about async</h4><p>Explain <code>async</code>/<code>await</code> using <code>CompletableFuture</code> and Reactor. Remember the one rule: never block the event loop.</p></div>
+    <div class="key"><h4>Ship the EPAM service</h4><p>Build it in under an hour. It has input checks, timeouts, retries with jitter, clean errors and tests that need no network.</p></div>
   </div>
 
   <h2 id="concepts"><span class="n">02</span>Concepts, mapped to Java</h2>
   <div class="tbl"><table>
     <tr><th>Java / Spring</th><th>Python</th><th>Note</th></tr>
-    <tr><td><code>List&lt;String&gt; ids = new ArrayList&lt;&gt;();</code></td><td><code>ids: list[str] = []</code></td><td>Hints use built-in generics since 3.9.</td></tr>
-    <tr><td><code>Map&lt;String, Integer&gt;</code></td><td><code>dict[str, int]</code></td><td>Dicts keep insertion order (like <code>LinkedHashMap</code>).</td></tr>
-    <tr><td><code>Optional&lt;String&gt;</code> / nullable</td><td><code>str | None</code></td><td><code>None</code> is <code>null</code>; check with <code>is None</code>.</td></tr>
-    <tr><td><code>record Clause(String id, String type)</code></td><td><code>@dataclass(frozen=True) class Clause</code></td><td>Equals, hash, repr generated.</td></tr>
-    <tr><td>Bean Validation DTO (<code>@NotNull @Pattern</code>)</td><td>Pydantic <code>BaseModel</code> + <code>Field(...)</code></td><td>Validates and coerces at runtime.</td></tr>
-    <tr><td><code>stream().filter().map().toList()</code></td><td><code>[f(x) for x in xs if p(x)]</code></td><td>List comprehension.</td></tr>
-    <tr><td><code>try (var r = open()) {}</code></td><td><code>with open() as r:</code></td><td>Context manager.</td></tr>
-    <tr><td><code>Iterator&lt;T&gt;</code> implementation</td><td>function with <code>yield</code></td><td>Generator, lazy.</td></tr>
-    <tr><td><code>CompletableFuture.allOf(...)</code></td><td><code>await asyncio.gather(...)</code></td><td>Single-threaded event loop.</td></tr>
-    <tr><td><code>future.get(2, SECONDS)</code></td><td><code>await asyncio.wait_for(coro, 2)</code></td><td>Raises <code>TimeoutError</code>.</td></tr>
-    <tr><td>Gradle + <code>build.gradle</code> + lockfile</td><td><code>uv</code> + <code>pyproject.toml</code> + <code>uv.lock</code></td><td>Per-project virtualenv in <code>.venv</code>.</td></tr>
-    <tr><td><code>RestClient</code> / <code>WebClient</code></td><td><code>httpx.Client</code> / <code>httpx.AsyncClient</code></td><td>Reuse one client: it owns the connection pool.</td></tr>
-    <tr><td><code>@RestController</code> + <code>@ControllerAdvice</code></td><td>FastAPI path functions + <code>@app.exception_handler</code></td><td>Validation errors become 422 automatically.</td></tr>
-    <tr><td><code>@Bean</code> init / <code>@PreDestroy</code></td><td>FastAPI <code>lifespan</code> context manager</td><td>Code before <code>yield</code> = startup.</td></tr>
+    <tr><td><code>List&lt;String&gt; ids = new ArrayList&lt;&gt;();</code></td><td><code>ids: list[str] = []</code></td><td>Since Python 3.9, hints use the built-in <code>list</code> and <code>dict</code> types.</td></tr>
+    <tr><td><code>Map&lt;String, Integer&gt;</code></td><td><code>dict[str, int]</code></td><td>Dicts remember the order you added keys, like <code>LinkedHashMap</code>.</td></tr>
+    <tr><td><code>Optional&lt;String&gt;</code> / nullable</td><td><code>str | None</code></td><td><code>None</code> is Python's <code>null</code>. Check it with <code>is None</code>.</td></tr>
+    <tr><td><code>record Clause(String id, String type)</code></td><td><code>@dataclass(frozen=True) class Clause</code></td><td>Python writes equals, hash and toString (<code>repr</code>) for you.</td></tr>
+    <tr><td>Bean Validation DTO (<code>@NotNull @Pattern</code>)</td><td>Pydantic <code>BaseModel</code> + <code>Field(...)</code></td><td>Checks and converts values while the program runs.</td></tr>
+    <tr><td><code>stream().filter().map().toList()</code></td><td><code>[f(x) for x in xs if p(x)]</code></td><td>Called a list comprehension.</td></tr>
+    <tr><td><code>try (var r = open()) {}</code></td><td><code>with open() as r:</code></td><td>Called a context manager. It closes the resource for you.</td></tr>
+    <tr><td><code>Iterator&lt;T&gt;</code> implementation</td><td>function with <code>yield</code></td><td>Called a generator. It makes values only when asked.</td></tr>
+    <tr><td><code>CompletableFuture.allOf(...)</code></td><td><code>await asyncio.gather(...)</code></td><td>Runs on one thread, the event loop.</td></tr>
+    <tr><td><code>future.get(2, SECONDS)</code></td><td><code>await asyncio.wait_for(coro, 2)</code></td><td>Raises <code>TimeoutError</code> if it takes too long.</td></tr>
+    <tr><td>Gradle + <code>build.gradle</code> + lockfile</td><td><code>uv</code> + <code>pyproject.toml</code> + <code>uv.lock</code></td><td>Each project gets its own virtual environment in <code>.venv</code>.</td></tr>
+    <tr><td><code>RestClient</code> / <code>WebClient</code></td><td><code>httpx.Client</code> / <code>httpx.AsyncClient</code></td><td>Reuse one client. It keeps a pool of open connections.</td></tr>
+    <tr><td><code>@RestController</code> + <code>@ControllerAdvice</code></td><td>FastAPI path functions + <code>@app.exception_handler</code></td><td>Bad input becomes a 422 response on its own.</td></tr>
+    <tr><td><code>@Bean</code> init / <code>@PreDestroy</code></td><td>FastAPI <code>lifespan</code> context manager</td><td>Code before <code>yield</code> runs at startup. Code after it runs at shutdown.</td></tr>
   </table></div>
 
   <h3>Dataclass vs Pydantic</h3>
   <div class="vs">
-    <div><h4>@dataclass</h4><ul><li class="pro">A Java record: generated <code>__init__</code>, <code>__eq__</code>, <code>__repr__</code></li><li class="pro">Zero ceremony</li><li class="con">Validates nothing: <code>page="three"</code> is stored as is</li></ul><p class="when">Use for trusted internal values.</p></div>
-    <div class="pick"><h4>Pydantic BaseModel <span class="tag">at boundaries</span></h4><ul><li class="pro">Coerces <code>"3"</code> to <code>3</code>, rejects <code>0</code> when <code>ge=1</code></li><li class="pro">Structured errors; JSON in/out (<code>model_validate</code>, <code>model_dump_json</code>)</li><li class="con">Runtime cost and a bit more ceremony</li></ul><p class="when">Use for HTTP bodies, LLM outputs, config, Kafka messages.</p></div>
+    <div><h4>@dataclass</h4><ul><li class="pro">Like a Java record. Python writes <code>__init__</code>, <code>__eq__</code> and <code>__repr__</code> for you.</li><li class="pro">Almost no extra code to write</li><li class="con">Checks nothing. <code>page="three"</code> is stored exactly as given.</li></ul><p class="when">Use for values your own code created and trusts.</p></div>
+    <div class="pick"><h4>Pydantic BaseModel <span class="tag">at boundaries</span></h4><ul><li class="pro">Turns <code>"3"</code> into <code>3</code>. Rejects <code>0</code> when you set <code>ge=1</code> (greater than or equal to 1).</li><li class="pro">Gives clear error lists. Reads and writes JSON (<code>model_validate</code>, <code>model_dump_json</code>).</li><li class="con">Costs a little speed and a little more code</li></ul><p class="when">Use for HTTP bodies, LLM outputs, config and Kafka messages.</p></div>
   </div>
-  <div class="callout tip"><b>Why AI engineers care</b><p>Pydantic is how you turn an LLM's JSON into a typed object and reject it when it is malformed. The Anthropic SDK's <code>client.messages.parse(..., output_format=MyModel)</code> takes a Pydantic class, and FastAPI uses the same classes for request bodies. One model definition serves the API contract, the LLM output contract and the OpenAPI docs.</p></div>
+  <div class="callout tip"><b>Why AI engineers care</b><p>An LLM often answers in JSON. Pydantic turns that JSON into a typed object, and rejects it when it is broken. The Anthropic SDK's <code>client.messages.parse(..., output_format=MyModel)</code> takes a Pydantic class. FastAPI uses the same classes for request bodies. So one class describes your API input, the LLM's expected output and your OpenAPI docs.</p></div>
 
   <h3>Four idioms side by side</h3>
   <div class="keys">
-    <div class="key"><h4>Comprehensions</h4><p>Replace most streams: <code>[c.clause_id for c in clauses if c.clause_type == "termination"]</code>. Also <code>{k: v for ...}</code>, <code>{x for ...}</code>. One condition max.</p></div>
-    <div class="key"><h4>Exceptions</h4><p>All unchecked. Catch narrowly (<code>except httpx.ConnectError</code>), never bare <code>except:</code>. <code>raise New(...) from exc</code> keeps the cause.</p></div>
-    <div class="key"><h4>Context managers</h4><p>try-with-resources: <code>with</code> / <code>async with</code>. Write one with <code>@contextmanager</code> and a single <code>yield</code>.</p></div>
-    <div class="key"><h4>Generators</h4><p>Functions that <code>yield</code> values lazily: stream a 500-page contract chunk by chunk. LLM streaming is generator-shaped too.</p></div>
+    <div class="key"><h4>Comprehensions</h4><p>They replace most Java streams: <code>[c.clause_id for c in clauses if c.clause_type == "termination"]</code>. Dicts and sets work too. Use at most one condition.</p></div>
+    <div class="key"><h4>Exceptions</h4><p>All are unchecked. Catch a specific type like <code>except httpx.ConnectError</code>, never a bare <code>except:</code>. <code>raise New(...) from exc</code> keeps the original cause.</p></div>
+    <div class="key"><h4>Context managers</h4><p>Python's try-with-resources is <code>with</code> (or <code>async with</code>). Write your own with <code>@contextmanager</code> and a single <code>yield</code>.</p></div>
+    <div class="key"><h4>Generators</h4><p>Functions that <code>yield</code> values one at a time. You can stream a 500-page contract piece by piece. Streamed LLM output works the same way.</p></div>
   </div>
 
   <details class="deep"><summary>Go deeper: type hints, exceptions, context managers, generators, uv, httpx</summary>
-  <p>Python is dynamically typed at runtime, but modern Python is written with type hints that tools (mypy, pyright, your IDE) check statically and libraries (Pydantic, FastAPI) read at runtime. Think of it as Java where the compiler is optional and runs as a linter, while frameworks use the annotations the way Spring uses reflection. There are no checked exceptions, no <code>public/private</code> keywords (a leading underscore means "internal, please don't"), and indentation is syntax.</p>
-  <p><b>Type hints.</b> Hints are not enforced by the interpreter: <code>def f(x: int) -&gt; str</code> still accepts a string at runtime. They earn their keep in three places: your IDE, a static checker in CI (<code>mypy</code> or <code>pyright</code>, the equivalent of compiling), and libraries that read them at runtime. FastAPI reads the hint on a parameter to decide whether it is a path variable, a query parameter or a JSON body; Pydantic reads field hints to build validators. <code>Annotated[int, Field(ge=1)]</code> attaches metadata to a type, which is how you put a constraint on a type rather than a field, much like a Bean Validation annotation.</p>
-  <p><b>Dataclasses vs Pydantic.</b> A <code>@dataclass</code> is a Java record: a plain container with generated <code>__init__</code>, <code>__eq__</code> and <code>__repr__</code>. It does not validate anything. Pass <code>page="three"</code> and it stores the string. A Pydantic <code>BaseModel</code> is a DTO with Bean Validation and Jackson built in: it coerces <code>"3"</code> to <code>3</code>, rejects <code>0</code> when you declared <code>ge=1</code>, produces structured error lists, and serialises to and from JSON (<code>model_validate</code>, <code>model_dump_json</code>). Rule of thumb: Pydantic at trust boundaries (HTTP bodies, LLM outputs, config, messages off Kafka), dataclasses for internal values where validation cost and ceremony buy nothing.</p>
-  <p><b>Comprehensions</b> replace most stream pipelines: <code>[c.clause_id for c in clauses if c.clause_type == "termination"]</code> for a list, <code>{k: v for ...}</code> for a dict, <code>{x for ...}</code> for a set. Keep them to one condition; past that, write a loop.</p>
-  <p><b>Exceptions</b> are all unchecked. Catch the narrowest type (<code>except httpx.ConnectError</code>), never a bare <code>except:</code>, and use <code>raise NewError(...) from exc</code> to keep the cause chain, the equivalent of passing the cause to an exception constructor. <code>try/except/else/finally</code> exists; <code>else</code> runs only when no exception was raised.</p>
-  <p><b>Context managers</b> are try-with-resources. Anything with <code>__enter__</code>/<code>__exit__</code> works with <code>with</code>; the <code>@contextmanager</code> decorator lets you write one as a generator with a single <code>yield</code>. The async version is <code>async with</code>, and FastAPI's <code>lifespan</code> is an async context manager.</p>
-  <p><b>Generators</b> are functions that <code>yield</code>. Calling one returns an iterator that produces values lazily, so you can stream a 500-page contract chunk by chunk without holding every chunk in memory. Streaming LLM output in Python is generator-shaped too: <code>for text in stream.text_stream:</code>.</p>
-  <p><b>Packaging with uv and virtual environments.</b> Each project gets its own virtual environment (<code>.venv</code>), an isolated interpreter plus site-packages, so two projects can pin different library versions. <code>uv</code> (from Astral) replaces <code>pip</code>, <code>venv</code>, <code>pip-tools</code> and <code>pyenv</code> with one fast binary: <code>uv init</code> creates <code>pyproject.toml</code> (your <code>build.gradle</code>), <code>uv add</code> adds a dependency and updates <code>uv.lock</code> (commit it), and <code>uv run</code> executes inside the project's environment, creating it if needed. If a team still uses plain pip: <code>python3 -m venv .venv &amp;&amp; source .venv/bin/activate &amp;&amp; pip install -r requirements.txt</code>.</p>
-  <p><b>httpx: the HTTP client.</b> <code>httpx</code> has a <code>requests</code>-style API with sync and async clients. Create one client per application (it pools connections, like a single <code>WebClient</code> bean), close it on shutdown, and always set a timeout. <code>httpx.Timeout(connect=1.0, read=3.0, write=3.0, pool=1.0)</code> sets each phase separately; <code>pool</code> is how long to wait for a free connection from the pool, the setting people forget until the pool is exhausted under load. Timeouts raise <code>httpx.ConnectTimeout</code>, <code>httpx.ReadTimeout</code> and friends (all subclasses of <code>httpx.TimeoutException</code>); <code>resp.raise_for_status()</code> raises <code>httpx.HTTPStatusError</code> for 4xx/5xx.</p>
+  <p>Python checks types only while the program runs. Modern Python code still carries type hints. Tools like mypy, pyright and your IDE check them before you run. Libraries like Pydantic and FastAPI read them while the program runs. Think of Java where the compiler is optional and acts like a linter. Frameworks use the hints the way Spring uses reflection. Python has no checked exceptions. It has no <code>public</code> or <code>private</code> keywords. A leading underscore means "internal, please don't use". Indentation is part of the syntax.</p>
+  <p><b>Type hints.</b> The interpreter does not enforce hints. <code>def f(x: int) -&gt; str</code> still accepts a string at runtime. Hints help in three places. The first is your IDE. The second is a checker in CI, <code>mypy</code> or <code>pyright</code>, which plays the role of the compiler. The third is libraries that read hints at runtime. FastAPI reads a parameter's hint to decide if it is a path variable, a query parameter or a JSON body. Pydantic reads field hints to build its checks. <code>Annotated[int, Field(ge=1)]</code> attaches extra rules to a type. That puts a rule on the type itself, much like a Bean Validation annotation.</p>
+  <p><b>Dataclasses vs Pydantic.</b> A <code>@dataclass</code> is like a Java record. It is a plain container with generated <code>__init__</code>, <code>__eq__</code> and <code>__repr__</code>. It does not check anything. Pass <code>page="three"</code> and it stores the string. A Pydantic <code>BaseModel</code> is a DTO with Bean Validation and Jackson built in. It turns <code>"3"</code> into <code>3</code>. It rejects <code>0</code> when you declared <code>ge=1</code>. It gives structured error lists. It reads and writes JSON with <code>model_validate</code> and <code>model_dump_json</code>. The rule of thumb is simple. Use Pydantic where outside data comes in: HTTP bodies, LLM outputs, config and Kafka messages. Use dataclasses for internal values, where checks would only add cost and code.</p>
+  <p><b>Comprehensions</b> replace most stream pipelines. <code>[c.clause_id for c in clauses if c.clause_type == "termination"]</code> builds a list. <code>{k: v for ...}</code> builds a dict, and <code>{x for ...}</code> builds a set. Keep them to one condition. If you need more, write a normal loop.</p>
+  <p><b>Exceptions</b> are all unchecked. Catch the most specific type, such as <code>except httpx.ConnectError</code>. Never write a bare <code>except:</code>, because it hides every error. Use <code>raise NewError(...) from exc</code> to keep the chain of causes. In Java, you would pass the cause to the exception constructor. Python also has <code>try/except/else/finally</code>. The <code>else</code> part runs only when no exception happened.</p>
+  <p><b>Context managers</b> are Python's try-with-resources. Any object with <code>__enter__</code> and <code>__exit__</code> works with <code>with</code>. The <code>@contextmanager</code> decorator lets you write one as a generator with a single <code>yield</code>. The async version is <code>async with</code>. FastAPI's <code>lifespan</code> is an async context manager.</p>
+  <p><b>Generators</b> are functions that <code>yield</code>. Calling one gives you an iterator that makes values only when asked. So you can stream a 500-page contract piece by piece, without holding every piece in memory. Streamed LLM output in Python looks the same: <code>for text in stream.text_stream:</code>.</p>
+  <p><b>Packaging with uv and virtual environments.</b> Each project gets its own virtual environment in <code>.venv</code>. It holds a private Python and its own installed libraries. So two projects can pin different versions of the same library. <code>uv</code> comes from a company called Astral. It replaces <code>pip</code>, <code>venv</code>, <code>pip-tools</code> and <code>pyenv</code> with one fast program. <code>uv init</code> creates <code>pyproject.toml</code>, your <code>build.gradle</code>. <code>uv add</code> adds a library and updates <code>uv.lock</code>, which you commit. <code>uv run</code> runs a command inside the project's environment, and creates it if needed. Some teams still use plain pip. Then the setup is <code>python3 -m venv .venv &amp;&amp; source .venv/bin/activate &amp;&amp; pip install -r requirements.txt</code>.</p>
+  <p><b>httpx: the HTTP client.</b> <code>httpx</code> works like the popular <code>requests</code> library. It has both a normal client and an async client. Create one client for the whole application. It keeps a pool of open connections, like a single <code>WebClient</code> bean. Close it on shutdown, and always set a timeout. <code>httpx.Timeout(connect=1.0, read=3.0, write=3.0, pool=1.0)</code> sets each phase on its own. <code>pool</code> is how long to wait for a free connection from the pool. People forget it until the pool runs out under heavy load. Timeouts raise <code>httpx.ConnectTimeout</code>, <code>httpx.ReadTimeout</code> and similar errors. All of them are subclasses of <code>httpx.TimeoutException</code>. <code>resp.raise_for_status()</code> raises <code>httpx.HTTPStatusError</code> for any 4xx or 5xx status.</p>
   </details>
 
   <h2 id="async"><span class="n">03</span>async/await, one thread</h2>
@@ -103,52 +114,52 @@
     <span class="node">Request B runs<small>while A waits</small></span><span class="arrow">→</span>
     <span class="node store">Socket ready<small>A resumes</small></span>
   </div>
-  <p class="flow-caption">Figure: one event loop interleaves many requests at their <code>await</code> points. A blocking call anywhere stops all of them.</p>
+  <p class="flow-caption">Figure: one event loop takes turns between many requests. It switches at each <code>await</code>. One blocking call anywhere stops all of them.</p>
 
   <div class="stepper"><b class="title">asyncio.gather(fetch a, fetch b, fetch c), each 100 ms</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell hl">a</span><span class="cell">b</span><span class="cell">c</span></div>
       <div class="ptrs"><span class="on">t=0 ms</span><span>loop runs a</span></div>
-      <figcaption>The single loop thread starts coroutine <b>a</b>. It reaches <code>await asyncio.sleep(0.1)</code> and yields.</figcaption>
+      <figcaption>The one thread starts task <b>a</b>. Task a soon has to wait 100 ms, so it hands the thread back (<code>await asyncio.sleep(0.1)</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">a</span><span class="cell hl">b</span><span class="cell">c</span></div>
       <div class="ptrs"><span class="on">t≈0 ms</span><span>a waiting</span><span>loop runs b</span></div>
-      <figcaption>While <b>a</b> waits, the loop starts <b>b</b>, which also awaits and yields.</figcaption>
+      <figcaption>While <b>a</b> waits, the loop starts <b>b</b>. It also reaches an await and hands the thread back.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">a</span><span class="cell win">b</span><span class="cell hl">c</span></div>
       <div class="ptrs"><span class="on">t≈0 ms</span><span>a, b waiting</span><span>loop runs c</span></div>
-      <figcaption>Same for <b>c</b>. All three waits now overlap; no thread is busy.</figcaption>
+      <figcaption>The same happens for <b>c</b>. All three are now waiting at once, and the thread is free.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">a</span><span class="cell ok">b</span><span class="cell ok">c</span></div>
       <div class="ptrs"><span class="on">t≈102 ms</span><span>gather returns ['a','b','c']</span></div>
-      <figcaption>All three wake up near 100 ms. Total ≈ the slowest one, which is why the warm-up prints <code>gather took 102 ms</code>.</figcaption>
+      <figcaption>All three wake up near 100 ms. So the total time is about the time of the slowest one, not the sum. The warm-up script prints this (<code>gather took 102 ms</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">a: time.sleep</span><span class="cell dim">b</span><span class="cell dim">c</span></div>
       <div class="ptrs"><span class="on">t=300 ms</span><span>sequential</span></div>
-      <figcaption>Swap in a blocking <code>time.sleep</code> or <code>requests.get</code>: the loop thread is stuck, so b and c wait their turn. Total 300 ms.</figcaption>
+      <figcaption>Now make each task wait in a way that holds the thread (a blocking call such as <code>time.sleep</code> or <code>requests.get</code>). Nobody else can run, so b and c wait their turn. The total becomes 300 ms.</figcaption>
     </figure>
   </div></div>
 
   <div class="vs">
-    <div><h4>Python asyncio</h4><ul><li class="pro">One thread, switches at <code>await</code>; I/O-bound work is fine despite the <dfn title="Global interpreter lock: only one thread runs Python bytecode at a time in standard CPython">GIL</dfn></li><li class="pro">No locks needed for in-memory state between awaits</li><li class="con">Any blocking call freezes the worker</li></ul></div>
-    <div><h4>Java CompletableFuture / Reactor</h4><ul><li class="pro">Thread pools can run CPU work in parallel</li><li class="con">Blocking JDBC inside WebFlux has the same trap</li></ul></div>
+    <div><h4>Python asyncio</h4><ul><li class="pro">One thread that switches tasks at each <code>await</code>. Work that mostly waits on the network runs fine, even with the <dfn title="Global interpreter lock: only one thread runs Python bytecode at a time in standard CPython">GIL</dfn>.</li><li class="pro">Between awaits, no locks are needed for data in memory</li><li class="con">Any blocking call freezes the whole worker</li></ul></div>
+    <div><h4>Java CompletableFuture / Reactor</h4><ul><li class="pro">Thread pools can run heavy computing work in parallel</li><li class="con">Blocking JDBC inside WebFlux has the same trap</li></ul></div>
   </div>
   <details class="deep"><summary>Go deeper: asyncio vs CompletableFuture in full</summary>
-  <p>Python's <code>asyncio</code> runs coroutines on a single-threaded event loop, like a Netty event loop or Reactor's non-blocking scheduler, not like a thread pool. <code>await</code> is a point where the coroutine yields control until I/O completes. <code>asyncio.gather(a(), b(), c())</code> is <code>CompletableFuture.allOf</code>: three HTTP calls overlap and the total time is roughly the slowest one. The trap is the same as calling a blocking JDBC driver inside a WebFlux handler: a synchronous call (<code>requests.get</code>, <code>time.sleep</code>, a sync database driver) inside an <code>async def</code> freezes every request on that worker. Use async libraries (<code>httpx.AsyncClient</code>, <code>asyncpg</code>/<code>psycopg</code> async), or declare the endpoint with plain <code>def</code> so FastAPI runs it on a thread pool.</p>
-  <p>The GIL (global interpreter lock) means CPU-bound Python code does not run in parallel across threads; for I/O-bound services, which is what LLM gateways and RAG APIs are, asyncio or threads both work well. For CPU-heavy work (local embedding models, PDF parsing at scale) use processes or push it to a worker.</p>
+  <p>Python's <code>asyncio</code> runs coroutines on one thread, the event loop. A coroutine is a function that can pause and resume later. This is like a Netty event loop or Reactor's non-blocking scheduler. It is not like a thread pool. <code>await</code> marks a point where the coroutine pauses until its input or output is ready. <code>asyncio.gather(a(), b(), c())</code> is like <code>CompletableFuture.allOf</code>. Three HTTP calls wait at the same time, so the total time is about the slowest one. The trap is the same as a blocking JDBC driver inside a WebFlux handler. Some calls hold the thread until they finish, like <code>requests.get</code>, <code>time.sleep</code> or a non-async database driver. Inside an <code>async def</code>, such a call freezes every request on that worker. Use async libraries instead, like <code>httpx.AsyncClient</code> or the async modes of <code>asyncpg</code>/<code>psycopg</code>. Or declare the endpoint with plain <code>def</code>, and FastAPI will run it on a thread pool.</p>
+  <p>The GIL is the global interpreter lock. Because of it, heavy computing in Python does not run in parallel across threads. Most LLM gateways and RAG (retrieval-augmented generation) APIs spend their time waiting on the network. For that kind of service, asyncio or threads both work well. For heavy computing, use separate processes or send it to a worker. Examples are running embedding models locally or parsing many PDFs.</p>
   </details>
 
   <h2 id="handson"><span class="n">04</span>Hands-on: build the service</h2>
   <ol class="walk">
-    <li><span class="who">uv</span><span>Create the project and add FastAPI, uvicorn, httpx, Pydantic</span></li>
-    <li><span class="who">basics.py</span><span>Warm up: every idiom from section 02 once</span></li>
-    <li><span class="who">app.py</span><span>The EPAM service: validate, call downstream, retry, map errors</span></li>
-    <li><span class="who">curl</span><span>Run it and watch a 422 and a 502</span></li>
-    <li><span class="who">test_app.py</span><span>Test offline with <code>httpx.MockTransport</code></span></li>
+    <li><span class="who">uv</span><span>Create the project folder and install the libraries: FastAPI (web framework), uvicorn (server), httpx (HTTP client), Pydantic (data checks)</span></li>
+    <li><span class="who">basics.py</span><span>Warm up: try each Python habit from section 02 once</span></li>
+    <li><span class="who">app.py</span><span>The EPAM service: check the input, call another service, try again on failure, and turn failures into clear errors</span></li>
+    <li><span class="who">curl</span><span>Run it. Send bad input and see it rejected (HTTP 422). Break the other service and see a clean failure (HTTP 502).</span></li>
+    <li><span class="who">test_app.py</span><span>Test without a network, using a fake other service (<code>httpx.MockTransport</code>)</span></li>
   </ol>
 
   <h3>Step 1: create the project</h3>
@@ -161,7 +172,7 @@ uv add --dev pytest
 uv run python --version</code></pre>
 
   <h3>Step 2: the language warm-up</h3>
-  <p>Save as <code>basics.py</code> and run <code>uv run python basics.py</code>. Every construct from section 02 appears once.</p>
+  <p>Save this as <code>basics.py</code> and run <code>uv run python basics.py</code>. It uses every idea from section 02 once.</p>
   <details class="code"><summary>Show basics.py</summary><pre><code>import asyncio
 import time
 from contextlib import contextmanager
@@ -243,7 +254,7 @@ async def main() -&gt; None:
 
 
 asyncio.run(main())</code></pre></details>
-  <p>Expected output (the timing varies by a millisecond or two):</p>
+  <p>Expected output (the timing can differ by a millisecond or two):</p>
   <pre><code>['c1', 'c3'] {'termination': ['c1', 'c3'], 'liability': ['c2']} {'c1': 45, 'c2': 46, 'c3': 35}
 clause_id='c9' clause_type='ip' page=3
 1 error: Input should be greater than or equal to 1
@@ -252,46 +263,46 @@ gather took 102 ms
 ['a', 'b', 'c']
 timed out</code></pre>
   <ul>
-    <li><code>gather took 102 ms</code> for three 100 ms waits: they overlapped.</li>
-    <li><code>page="3"</code> became <code>3</code>: Pydantic's default "lax" mode coerces. Use <code>model_config = ConfigDict(strict=True)</code> to reject mismatches.</li>
+    <li><code>gather took 102 ms</code> for three 100 ms waits. The waits happened at the same time.</li>
+    <li><code>page="3"</code> became <code>3</code>. By default, Pydantic runs in "lax" mode and converts types. Set <code>model_config = ConfigDict(strict=True)</code> to reject wrong types instead.</li>
   </ul>
 
   <h3>Step 3: the service (the EPAM round)</h3>
-  <p>The interviewer grades four things. Each maps to a Spring idea you know:</p>
+  <p>The interviewer checks a few pieces. Each one matches a Spring idea you already know:</p>
   <div class="tbl"><table>
     <tr><th>Piece in app.py</th><th>Spring equivalent</th><th>What it does</th></tr>
-    <tr><td><code>SummaryRequest</code> + <code>field_validator</code></td><td>Request DTO + Bean Validation, <code>@JsonDeserialize</code></td><td>Auto 422 on bad input; normalises types list.</td></tr>
-    <tr><td><code>lifespan</code></td><td><code>@Bean</code> + <code>@PreDestroy</code></td><td>One pooled client, closed on shutdown.</td></tr>
-    <tr><td><code>get_with_retry</code></td><td><code>@Retryable(maxRetries = 2, delay = 200, multiplier = 2, jitter = ...)</code></td><td>Retries only transient failures, with jitter.</td></tr>
-    <tr><td><code>UpstreamError</code> + <code>@app.exception_handler</code></td><td><code>@ControllerAdvice</code></td><td>Timeout → 504, else 502.</td></tr>
-    <tr><td><code>response_model=SummaryResponse</code></td><td>Response DTO</td><td>No field leaks out.</td></tr>
+    <tr><td><code>SummaryRequest</code> + <code>field_validator</code></td><td>Request DTO + Bean Validation, <code>@JsonDeserialize</code></td><td>Bad input gets a 422 on its own. It also cleans up the list of types.</td></tr>
+    <tr><td><code>lifespan</code></td><td><code>@Bean</code> + <code>@PreDestroy</code></td><td>Creates one shared client with a connection pool. Closes it on shutdown.</td></tr>
+    <tr><td><code>get_with_retry</code></td><td><code>@Retryable(maxRetries = 2, delay = 200, multiplier = 2, jitter = ...)</code></td><td>Retries only short-lived failures, with a random wait.</td></tr>
+    <tr><td><code>UpstreamError</code> + <code>@app.exception_handler</code></td><td><code>@ControllerAdvice</code></td><td>A timeout becomes 504. Any other failure becomes 502.</td></tr>
+    <tr><td><code>response_model=SummaryResponse</code></td><td>Response DTO</td><td>No extra field can leak out.</td></tr>
   </table></div>
 
   <div class="stepper"><b class="title">One request through get_with_retry (attempts=3, base_delay=0.2)</b><div class="frames">
     <figure class="frame">
       <ol class="walk"><li><span class="who">Client</span><span>POST /v1/summaries <code>{"contract_id":"CTR-000123"}</code></span></li></ol>
       <div class="ptrs"><span class="on">validated</span><span>attempt=0</span></div>
-      <figcaption>Pydantic accepts the body: the pattern <code>^CTR-\d{6}$</code> matches. Handler runs.</figcaption>
+      <figcaption>A client asks for a contract summary. The contract id looks right ("CTR" plus six digits), so Pydantic accepts it and our code runs.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">1: 503</span><span class="cell">2</span><span class="cell">3</span></div>
       <div class="ptrs"><span class="on">attempt=1</span><span>reason=HTTP 503</span><span>sleep ∈ [0, 0.2]s</span></div>
-      <figcaption>503 is in <code>RETRYABLE_STATUS</code>. Sleep a random time up to 0.2 s (full jitter).</figcaption>
+      <figcaption>The other service says "busy, try later" (HTTP 503). That is a failure worth retrying (<code>RETRYABLE_STATUS</code>). We first wait a random time up to 0.2 s. This is called full jitter.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">1: 503</span><span class="cell ok">2: 200</span><span class="cell dim">3</span></div>
       <div class="ptrs"><span class="on">attempt=2</span><span>return resp</span></div>
-      <figcaption>Second try returns 200, which is not retryable, so it is returned straight away.</figcaption>
+      <figcaption>The second try succeeds (HTTP 200). There is nothing to retry, so we use the answer right away.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">c1 termination</span><span class="cell dim">c2 liability</span></div>
       <div class="ptrs"><span class="on">filter clause_types=["termination"]</span><span>max_clauses=10</span></div>
-      <figcaption>Each clause is validated into <code>Clause</code>, filtered by type, then capped at <code>max_clauses</code>.</figcaption>
+      <figcaption>Each clause in the answer is checked and turned into a typed object (<code>Clause</code>). We keep only the types asked for, and at most 10 clauses (<code>max_clauses</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">1: 503</span><span class="cell bad">2: 503</span><span class="cell bad">3: 503</span></div>
       <div class="ptrs"><span class="on">raise UpstreamError(502)</span></div>
-      <figcaption>Other path: three 503s in a row. The last attempt raises <code>UpstreamError</code>; the handler returns 502 <code>upstream_unavailable</code>.</figcaption>
+      <figcaption>The unhappy path: the other service is busy all three times. We give up and raise an error (<code>UpstreamError</code>). The client gets a clear "the service we depend on is down" reply (HTTP 502, <code>upstream_unavailable</code>).</figcaption>
     </figure>
   </div></div>
 
@@ -390,15 +401,15 @@ async def create_summary(req: SummaryRequest, request: Request) -&gt; SummaryRes
         clauses = [c for c in clauses if c.clause_type in req.clause_types]
     clauses = clauses[: req.max_clauses]
     return SummaryResponse(contract_id=req.contract_id, clause_count=len(clauses), clauses=clauses)</code></pre></details>
-  <div class="callout warn"><b>Retries need a budget</b><p>Three attempts with a 3-second read timeout can hold a request for over 9 seconds. In production, wrap the whole call in an overall deadline (<code>asyncio.timeout(5)</code> in Python 3.11+) so retries never exceed what your own caller will wait, and only retry idempotent requests. A GET is safe; a POST that creates something needs an idempotency key first.</p></div>
+  <div class="callout warn"><b>Retries need a budget</b><p>Three attempts with a 3-second read timeout can hold one request for over 9 seconds. In production, put one overall deadline around the whole call. In Python 3.11+ that is <code>asyncio.timeout(5)</code>. The retries then never take longer than your own caller will wait. Also, only retry idempotent requests, ones that are safe to repeat. A GET is safe. A POST that creates something needs an idempotency key first, a unique ID that lets the server spot repeats.</p></div>
   <details class="deep"><summary>Go deeper: each piece explained in Spring terms</summary>
-  <p>The service accepts a summary request for a contract, validates it, fetches the contract's clauses from a downstream document service, filters them, and returns a typed response. The parts an interviewer grades are the validation model, the shared client with per-phase timeouts, a retry loop that retries only transient failures with exponential backoff and jitter, and an exception handler that turns downstream failure into a clean 502/504 instead of a stack trace.</p>
+  <p>The service takes a summary request for a contract and checks it. It fetches the contract's clauses from another service, the document service. It filters them and returns a typed response. The interviewer grades four parts. The first is the input model. The second is one shared client with a timeout for each phase. The third is a retry loop. It retries only short-lived failures, waits longer each time and adds a random wait. The fourth is an error handler. It turns a failure in the other service into a clean 502 or 504, not a stack trace.</p>
   <ul>
-    <li><code>SummaryRequest</code> is your request DTO with Bean Validation. A bad <code>contract_id</code> never reaches your code; FastAPI returns 422 with a field-level error list, like <code>MethodArgumentNotValidException</code> handled for you. The <code>field_validator</code> normalises input (trim, lower-case, de-duplicate), like a custom <code>@JsonDeserialize</code> or a compact-constructor in a record.</li>
-    <li><code>lifespan</code> is your <code>@Bean</code> plus <code>@PreDestroy</code>: one <code>AsyncClient</code> for the whole process, closed on shutdown.</li>
-    <li><code>get_with_retry</code> is what <code>@Retryable(maxRetries = 2, delay = 200, multiplier = 2, jitter = ...)</code> would do. It retries 429 and 5xx and connection or read timeouts, but never 400/401/404, which will fail identically on every attempt. Full jitter (<code>random.uniform(0, cap)</code>) spreads retries from many pods so they do not hit the recovering downstream in lockstep.</li>
-    <li><code>UpstreamError</code> plus <code>@app.exception_handler</code> is <code>@ControllerAdvice</code>: domain exception in, consistent JSON error out. Timeouts map to 504, other upstream failures to 502.</li>
-    <li><code>response_model=SummaryResponse</code> validates and filters your own output, so you cannot leak a field by accident.</li>
+    <li><code>SummaryRequest</code> is your request DTO with Bean Validation. A bad <code>contract_id</code> never reaches your code. FastAPI returns 422 with a list of errors per field. It is like having <code>MethodArgumentNotValidException</code> handled for you. The <code>field_validator</code> cleans the input by trimming, lower-casing and removing duplicates. It is like a custom <code>@JsonDeserialize</code> or a compact constructor in a record.</li>
+    <li><code>lifespan</code> is your <code>@Bean</code> plus <code>@PreDestroy</code>. It makes one <code>AsyncClient</code> for the whole process and closes it on shutdown.</li>
+    <li><code>get_with_retry</code> does what <code>@Retryable(maxRetries = 2, delay = 200, multiplier = 2, jitter = ...)</code> would do. It retries 429, 5xx, connection errors and read timeouts. It never retries 400, 401 or 404, because those fail the same way every time. Full jitter means a random wait, <code>random.uniform(0, cap)</code>. Many pods then retry at different moments, not all at once against a service that is just recovering.</li>
+    <li><code>UpstreamError</code> plus <code>@app.exception_handler</code> is your <code>@ControllerAdvice</code>. A domain exception goes in and a consistent JSON error comes out. Timeouts become 504. Other failures in the downstream service become 502.</li>
+    <li><code>response_model=SummaryResponse</code> checks and filters your own output. So you cannot leak a field by mistake.</li>
   </ul>
   </details>
 
@@ -410,12 +421,12 @@ curl -s -X POST localhost:8000/v1/summaries \
   -H 'content-type: application/json' \
   -d '{"contract_id":"bad","max_clauses":0}'</code></pre>
   <ul>
-    <li>422 body: one entry per error with <code>loc</code>, <code>msg</code>, <code>type</code>. OpenAPI UI at <code>/docs</code>.</li>
-    <li>No downstream running? A valid request gets <code>502</code> <code>upstream_unavailable</code> after fast retries.</li>
+    <li>The 422 body has one entry per error, each with <code>loc</code>, <code>msg</code> and <code>type</code>. The OpenAPI page is at <code>/docs</code>.</li>
+    <li>Is the downstream service not running? Then a valid request gets <code>502</code> <code>upstream_unavailable</code> after a few quick retries.</li>
   </ul>
 
   <h3>Step 5: test without a network</h3>
-  <p><code>httpx.MockTransport</code> swaps the network for a function, like <code>MockRestServiceServer</code> or WireMock. <code>TestClient</code> calls the app in-process; entering it runs the lifespan.</p>
+  <p><code>httpx.MockTransport</code> replaces the network with a plain function. It is like <code>MockRestServiceServer</code> or WireMock. <code>TestClient</code> calls the app inside the same process. Entering it runs the lifespan code.</p>
   <details class="code"><summary>Show test_app.py</summary><pre><code>import httpx
 from fastapi.testclient import TestClient
 
@@ -462,7 +473,7 @@ def test_all():
 if __name__ == "__main__":
     test_all()
     print("all checks passed")</code></pre></details>
-  <p>Run with <code>uv run python test_app.py</code> (or <code>uv run pytest</code>, which picks up <code>test_all</code>). Actual output:</p>
+  <p>Run it with <code>uv run python test_app.py</code>. You can also use <code>uv run pytest</code>, which finds <code>test_all</code>. Actual output:</p>
   <pre><code>attempt 1 failed (HTTP 503); retrying in 0.10s
 attempt 1 failed (HTTP 503); retrying in 0.08s
 attempt 2 failed (HTTP 503); retrying in 0.10s
@@ -470,66 +481,66 @@ attempt 2 failed (HTTP 503); retrying in 0.10s
 422 -&gt; String should match pattern '^CTR-\d{6}$'
 502 -&gt; {'error': 'upstream_unavailable', 'detail': 'upstream failed after 3 tries: HTTP 503'}
 all checks passed</code></pre>
-  <p>Line 1: the flaky call retried. Lines 2–3: the failing contract using all three attempts.</p>
-  <details class="deep"><summary>Go deeper: tenacity and SDK retries</summary><p>For the interview, hand-writing the loop shows you understand it. In a codebase, <code>tenacity</code> gives you the same thing declaratively (<code>@retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=0.2, max=2), retry=retry_if_exception_type(...))</code>), the way Resilience4j does in Spring. The Anthropic SDK also retries 429, 5xx and connection errors itself (twice by default, configurable with <code>max_retries</code>), so do not stack your own retry loop on top of it blindly.</p></details>
+  <p>Line 1 is the flaky call being retried. Lines 2–3 are the failing contract using all three attempts.</p>
+  <details class="deep"><summary>Go deeper: tenacity and SDK retries</summary><p>In the interview, write the retry loop by hand. It shows you understand it. In a real codebase, the <code>tenacity</code> library does the same thing with a decorator. An example is <code>@retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=0.2, max=2), retry=retry_if_exception_type(...))</code>. That is how Resilience4j works in Spring. The Anthropic SDK also retries 429, 5xx and connection errors on its own. It retries twice by default, and you can change that with <code>max_retries</code>. So do not add your own retry loop on top without thinking.</p></details>
 
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li><code>requests.get</code> or <code>time.sleep</code> inside <code>async def</code>.</li>
-    <li>A new <code>httpx</code> client per request: no pooling, a TLS handshake every call.</li>
-    <li>Retrying 400/404, or retrying a non-idempotent POST without a key.</li>
-    <li>No <code>pool</code> timeout, so requests queue forever under load.</li>
-    <li>Bare <code>except:</code> that swallows the cause.</li>
+    <li>Calling <code>requests.get</code> or <code>time.sleep</code> inside <code>async def</code>.</li>
+    <li>A new <code>httpx</code> client for every request. There is no connection reuse, so every call pays for a new secure (TLS) handshake.</li>
+    <li>Retrying 400 or 404. Or retrying a POST that is not safe to repeat, without an idempotency key.</li>
+    <li>No <code>pool</code> timeout, so requests wait in line forever under load.</li>
+    <li>A bare <code>except:</code> that hides the real cause.</li>
   </ul></div>
 
   <h2 id="interviews"><span class="n">05</span>How this shows up in interviews</h2>
-  <p>EPAM's Senior AI Engineer loop (April 2026) had a hands-on round to build "a FastAPI service with proper request validation using Pydantic, along with implementing retry logic, timeout handling, and robust error handling", and the first round included an async programming problem. Expect follow-ups like these.</p>
-  <details class="qa"><summary>Why Pydantic for the request body and not a dataclass?</summary><p>A dataclass does not validate or coerce, so bad input would flow into business logic. Pydantic validates types and constraints at the boundary, returns structured errors that FastAPI turns into a 422, and generates the JSON Schema that appears in OpenAPI. Internal value objects that are already trusted can stay dataclasses.</p></details>
-  <details class="qa"><summary>Which failures do you retry, and which not?</summary><p>Retry transient ones: connection errors, timeouts, 429 and 502/503/504 (and 500 if the downstream is known to be flaky). Do not retry 400, 401, 403, 404 or 422; they fail the same way every time. Honour <code>Retry-After</code> on 429/503 if present. Only retry idempotent operations, or make them idempotent with a key the downstream de-duplicates on.</p></details>
-  <details class="qa"><summary>Why jitter?</summary><p>Without it, every client that failed at the same moment retries at the same moment, producing synchronised waves that keep an overloaded downstream down (the thundering herd). Full jitter, a random delay between zero and the exponential cap, spreads the load.</p></details>
-  <details class="qa"><summary>What timeouts do you set, and where?</summary><p>Per phase on the client: a short connect timeout (about 1 s), a read timeout sized to the downstream's p99 plus margin, and a pool timeout so requests fail fast when the pool is exhausted instead of queueing forever. Then an overall deadline around the whole retry loop that is shorter than my own caller's timeout. For LLM calls the read timeout is much longer, or I stream, because generation can take tens of seconds.</p></details>
-  <details class="qa"><summary>What happens if you call requests.get inside an async def endpoint?</summary><p>It blocks the event loop thread, so every other request on that worker stalls until it returns. Throughput collapses under load. Fix it with an async client (<code>httpx.AsyncClient</code>), by declaring the endpoint as plain <code>def</code> (FastAPI then runs it in a thread pool), or with <code>await asyncio.to_thread(blocking_fn)</code>.</p></details>
-  <details class="qa"><summary>asyncio.gather vs CompletableFuture.allOf: what's different?</summary><p>Both wait for several concurrent operations. <code>gather</code> runs coroutines on one thread and switches at <code>await</code> points, so there is no parallel CPU work and no need for locks around plain in-memory state between awaits. By default, the first exception propagates to the caller, but the other coroutines keep running; pass <code>return_exceptions=True</code> to collect failures as values, or use <code>asyncio.TaskGroup</code> (3.11+), which cancels the siblings when one fails, the structured-concurrency behaviour you usually want.</p></details>
-  <details class="qa"><summary>How do you share an HTTP client across requests, and why?</summary><p>Create it in the lifespan handler, store it on <code>app.state</code> (or provide it through a dependency), and close it on shutdown. A client per request throws away the connection pool, so every call pays a TCP and TLS handshake and you can run out of sockets.</p></details>
-  <details class="qa"><summary>How would you add observability?</summary><p>Structured JSON logs with a request ID propagated to the downstream as a header, Prometheus metrics for request latency, retries and upstream status codes (or OpenTelemetry auto-instrumentation for FastAPI and httpx), and a <code>/healthz</code> endpoint. For LLM calls, also log model, input/output tokens and latency per request.</p></details>
-  <details class="qa"><summary>What is the GIL and does it matter here?</summary><p>The global interpreter lock lets only one thread execute Python bytecode at a time in the standard CPython build. It does not matter for I/O-bound services, because the lock is released while waiting on sockets. It matters for CPU-bound work, which you move to processes, native libraries (NumPy releases the GIL) or a separate worker.</p></details>
+  <p>EPAM hired a Senior AI Engineer in April 2026. One round was hands-on. The task was to build "a FastAPI service with proper request validation using Pydantic, along with implementing retry logic, timeout handling, and robust error handling". The first round also had an async programming problem. Expect follow-up questions like these.</p>
+  <details class="qa"><summary>Why Pydantic for the request body and not a dataclass?</summary><p>A dataclass does not check or convert anything. Bad input would flow straight into business logic. Pydantic checks types and rules where data enters. It returns structured errors, and FastAPI turns them into a 422. It also generates the JSON Schema shown in OpenAPI. Internal values that are already trusted can stay dataclasses.</p></details>
+  <details class="qa"><summary>Which failures do you retry, and which not?</summary><p>Retry short-lived failures. These are connection errors, timeouts, 429 and 502/503/504. Add 500 if the other service is known to be flaky. Do not retry 400, 401, 403, 404 or 422, because they fail the same way every time. If a 429 or 503 has a <code>Retry-After</code> header, wait that long. Only retry idempotent operations. Or make them idempotent with a key that the other service uses to drop duplicates.</p></details>
+  <details class="qa"><summary>Why jitter?</summary><p>Say many clients fail at the same moment. Without jitter, they all retry at the same moment too. These waves keep an overloaded service down. This is called the thundering herd. Full jitter picks a random wait between zero and the growing limit. That spreads the load out.</p></details>
+  <details class="qa"><summary>What timeouts do you set, and where?</summary><p>I set one per phase on the client. The connect timeout is short, about 1 s. The read timeout matches the other service's p99 plus a margin. p99 means 99 out of 100 calls are faster than this. A pool timeout makes requests fail fast when no connection is free, instead of waiting forever. Around the whole retry loop I put one overall deadline. It is shorter than my own caller's timeout. For LLM calls, the read timeout is much longer, or I stream. A model can take tens of seconds to write an answer.</p></details>
+  <details class="qa"><summary>What happens if you call requests.get inside an async def endpoint?</summary><p>It blocks the event loop thread. Every other request on that worker stalls until it returns. Under load, the number of requests you can serve collapses. There are three fixes. Use an async client like <code>httpx.AsyncClient</code>. Or declare the endpoint as plain <code>def</code>, so FastAPI runs it in a thread pool. Or call <code>await asyncio.to_thread(blocking_fn)</code>.</p></details>
+  <details class="qa"><summary>asyncio.gather vs CompletableFuture.allOf: what's different?</summary><p>Both wait for several operations that run at the same time. <code>gather</code> runs coroutines on one thread and switches at each <code>await</code>. So there is no parallel CPU work. You also need no locks around plain in-memory data between awaits. By default, the first exception goes to the caller, but the other coroutines keep running. Pass <code>return_exceptions=True</code> to collect failures as values. Or use <code>asyncio.TaskGroup</code> (3.11+), which cancels the others when one fails. That is called structured concurrency, and it is usually what you want.</p></details>
+  <details class="qa"><summary>How do you share an HTTP client across requests, and why?</summary><p>Create it in the lifespan handler. Store it on <code>app.state</code>, or provide it through a dependency. Close it on shutdown. A new client per request throws away the connection pool. Every call then pays for a new TCP and TLS handshake, and you can run out of sockets.</p></details>
+  <details class="qa"><summary>How would you add observability?</summary><p>Observability means being able to see what the service is doing. I would add structured JSON logs. Each request gets a request ID, which is also sent to the downstream service as a header. I would add Prometheus metrics for request time, retries and downstream status codes. OpenTelemetry auto-instrumentation for FastAPI and httpx can do this too. I would add a <code>/healthz</code> endpoint. For LLM calls, I would also log the model, input and output tokens, and time taken per request.</p></details>
+  <details class="qa"><summary>What is the GIL and does it matter here?</summary><p>GIL stands for global interpreter lock. In standard CPython, it lets only one thread run Python bytecode at a time. It does not matter for services that mostly wait on the network. The lock is released while a thread waits on a socket. It does matter for heavy computing work. Move that work to processes, to native libraries, or to a separate worker. NumPy, for example, releases the GIL.</p></details>
 
   <h2 id="quiz"><span class="n">06</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">An <code>async def</code> FastAPI endpoint calls <code>requests.get</code> on a 2-second downstream. What happens under load?</p>
+  <div class="quiz" data-answer="2"><p class="q">An <code>async def</code> FastAPI endpoint calls <code>requests.get</code>. The other service takes 2 seconds. What happens under load?</p>
     <div class="opts"><button class="opt" type="button">Nothing; FastAPI moves it to a thread automatically</button><button class="opt" type="button">Only that request is slow</button><button class="opt" type="button">Every request on that worker stalls while it waits</button></div>
-    <p class="why">The call blocks the single event-loop thread. Use <code>httpx.AsyncClient</code>, a plain <code>def</code> endpoint, or <code>asyncio.to_thread</code>.</p></div>
+    <p class="why">The call blocks the one event-loop thread, so nothing else can run. Use <code>httpx.AsyncClient</code>, a plain <code>def</code> endpoint, or <code>asyncio.to_thread</code>.</p></div>
   <div class="quiz" data-answer="1"><p class="q">Which responses should <code>get_with_retry</code> retry?</p>
     <div class="opts"><button class="opt" type="button">400, 404 and 503</button><button class="opt" type="button">429, 503 and read timeouts</button><button class="opt" type="button">Any non-200</button></div>
-    <p class="why">Transient failures only. A 400 or 404 fails identically every time.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">You receive LLM JSON that should contain <code>risk</code> and <code>page &gt;= 1</code>. What do you parse it into?</p>
+    <p class="why">Retry only short-lived failures. A 400 or 404 will fail the same way every time.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">An LLM sends you JSON. It should contain <code>risk</code> and <code>page &gt;= 1</code>. What do you parse it into?</p>
     <div class="opts"><button class="opt" type="button">A Pydantic BaseModel</button><button class="opt" type="button">A frozen dataclass</button><button class="opt" type="button">A plain dict</button></div>
-    <p class="why">It is a trust boundary. Pydantic validates, coerces and gives structured errors; a dataclass checks nothing.</p></div>
+    <p class="why">The data comes from outside your code. Pydantic checks it, converts it and gives clear errors. A dataclass checks nothing.</p></div>
   <div class="quiz" data-answer="2"><p class="q">Why add jitter to exponential backoff?</p>
     <div class="opts"><button class="opt" type="button">To make retries faster on average</button><button class="opt" type="button">Python's sleep is imprecise anyway</button><button class="opt" type="button">So many clients don't retry in lockstep and re-flood the downstream</button></div>
-    <p class="why">Without it, every pod that failed together retries together: the thundering herd.</p></div>
+    <p class="why">Without it, every pod that failed together also retries together. That flood is called the thundering herd.</p></div>
 
   <h2 id="exercise"><span class="n">07</span>Exercise / checkpoint for the capstone</h2>
-  <div class="keys"><div class="key"><h4>Deadline</h4><p>Overall 5 s budget → 504.</p></div><div class="key"><h4>Retry-After</h4><p>Honour it, capped at 2 s.</p></div><div class="key"><h4>/v1/flags stub</h4><p>Typed <code>FlagResult</code>, later a Claude call.</p></div><div class="key"><h4>X-Request-ID</h4><p>Propagate and log it.</p></div></div>
+  <div class="keys"><div class="key"><h4>Deadline</h4><p>Give the whole call 5 seconds. Past that, return 504.</p></div><div class="key"><h4>Retry-After</h4><p>Wait as long as the header says, up to 2 s.</p></div><div class="key"><h4>/v1/flags stub</h4><p>Return a typed <code>FlagResult</code>. Later it becomes a Claude call.</p></div><div class="key"><h4>X-Request-ID</h4><p>Pass it to the next service and log it.</p></div></div>
   <details class="deep"><summary>Exercise steps in full</summary>
-  <p>The capstone is a contract Q&amp;A service plus a risky-clause flagger. This lesson's service becomes its skeleton. In 45–60 minutes:</p>
+  <p>The capstone is a service that answers questions about contracts and flags risky clauses. This lesson's service becomes its skeleton. Do these steps in 45–60 minutes:</p>
   <ol>
-    <li>Add an overall deadline: wrap the retry loop in <code>async with asyncio.timeout(5):</code> and map <code>TimeoutError</code> to a 504.</li>
-    <li>Honour <code>Retry-After</code>: if a 429 or 503 response carries the header, sleep for that many seconds (capped at 2) instead of the computed backoff. Add a MockTransport case that proves it.</li>
-    <li>Add <code>POST /v1/flags</code> taking <code>{"contract_id": ..., "clause_text": ...}</code> with <code>clause_text</code> limited to 1–8,000 characters. For now return a hard-coded <code>{"risk": "low", "reasons": []}</code> from a Pydantic <code>FlagResult</code> model whose <code>risk</code> is a <code>Literal["low","medium","high"]</code>. In the prompt-engineering and first-LLM-calls lessons you will replace the stub with a Claude call that returns this same model.</li>
-    <li>Propagate an <code>X-Request-ID</code> header (generate one if absent) to the downstream and include it in every log line.</li>
+    <li>Add an overall deadline. Wrap the retry loop in <code>async with asyncio.timeout(5):</code> and turn <code>TimeoutError</code> into a 504.</li>
+    <li>Honour <code>Retry-After</code>. If a 429 or 503 response has this header, sleep that many seconds (at most 2). Use that instead of the computed wait. Add a MockTransport case that proves it works.</li>
+    <li>Add <code>POST /v1/flags</code>, taking <code>{"contract_id": ..., "clause_text": ...}</code>. Limit <code>clause_text</code> to 1–8,000 characters. For now, return a fixed <code>{"risk": "low", "reasons": []}</code>. Use a Pydantic <code>FlagResult</code> model whose <code>risk</code> is a <code>Literal["low","medium","high"]</code>. In the prompt-engineering and first-LLM-calls lessons, you will replace this stub with a Claude call. It will return this same model.</li>
+    <li>Pass an <code>X-Request-ID</code> header to the downstream service, and create one if it is missing. Include it in every log line.</li>
   </ol>
   </details>
-  <p>Checkpoint: all tests pass offline, <code>/docs</code> shows both endpoints with their schemas, and you can explain every retry and timeout decision out loud in two minutes.</p>
+  <p>Checkpoint: all tests pass without a network. <code>/docs</code> shows both endpoints with their schemas. You can explain every retry and timeout choice out loud in two minutes.</p>
 
   <h2 id="cheat"><span class="n">08</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li><code>list[str]</code>, <code>dict[str,int]</code>, <code>str | None</code>; hints checked by mypy/pyright, read by Pydantic/FastAPI.</li>
-    <li>Dataclass = record (no validation). Pydantic = DTO + validation + JSON. Pydantic at boundaries.</li>
-    <li>Comprehension = stream; <code>with</code> = try-with-resources; <code>yield</code> = lazy iterator.</li>
-    <li><code>asyncio.gather</code> ≈ <code>allOf</code>, one thread; never block the loop.</li>
-    <li><code>uv init / add / run</code>; commit <code>uv.lock</code>.</li>
-    <li>One <code>httpx.AsyncClient</code> in <code>lifespan</code>; timeouts connect 1, read 3, write 3, pool 1.</li>
-    <li>Retry 429/5xx/timeouts with exponential backoff + full jitter; never 4xx; add an overall deadline.</li>
-    <li>Exception handler: timeout → 504, other upstream → 502. Test with <code>MockTransport</code>.</li>
+    <li><code>list[str]</code>, <code>dict[str,int]</code>, <code>str | None</code>. mypy or pyright check the hints. Pydantic and FastAPI read them.</li>
+    <li>Dataclass is like a record, with no checks. Pydantic is a DTO with checks and JSON. Use Pydantic where outside data comes in.</li>
+    <li>A comprehension is a stream. <code>with</code> is try-with-resources. <code>yield</code> makes a lazy iterator.</li>
+    <li><code>asyncio.gather</code> is close to <code>allOf</code>, but on one thread. Never block the loop.</li>
+    <li>Use <code>uv init / add / run</code>. Commit <code>uv.lock</code>.</li>
+    <li>Make one <code>httpx.AsyncClient</code> in <code>lifespan</code>. Timeouts: connect 1, read 3, write 3, pool 1.</li>
+    <li>Retry 429, 5xx and timeouts. Wait longer each time, with full jitter. Never retry other 4xx. Add an overall deadline.</li>
+    <li>Error handler: a timeout gives 504, other downstream failures give 502. Test with <code>MockTransport</code>.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">09</span>Sources / go deeper</h2>

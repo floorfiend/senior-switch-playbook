@@ -14,41 +14,41 @@ const HUBS = {
   },
   lld: {
     title: "LLD / machine coding", kind: "Round guide", rounds: ["lld"],
-    lede: "Machine coding decides most offers at Indian product companies. You build a working in-memory system in 90–120 minutes, then defend it in a code review.",
+    lede: "In a machine coding round you write a small working program in about 90 minutes, such as a ticket booking system. Then the interviewer reads your code with you and asks why you wrote it that way. At Indian product companies this round decides most offers.",
     format: [
-      "90–120 minutes to build a working in-memory system such as a booking service, rate limiter, scheduler or Splitwise, often after a 30-minute briefing (Flipkart, PhonePe, Swiggy, Groww, Navi, Meesho).",
-      "A code-review viva on your own code follows: OOP, design patterns, concurrency and how a new requirement would fit.",
-      "PhonePe sometimes sends it as a take-home, then adds features live on a call.",
-      "2026 variant: agentic machine coding with an AI assistant (Razorpay, Flipkart, Slice, Nykaa), graded on your plan, prompts, diffs and tests.",
-      "Big Tech runs a shorter LLD or code-design round of 45–60 minutes: classes plus a few working methods (Amazon, Microsoft, Atlassian with JUnit)."
+      "You get a problem like a seat booking system, a rate limiter or Splitwise. You have 90 to 120 minutes to build it in plain Java, with no database. Flipkart, PhonePe, Swiggy, Groww, Navi and Meesho all do this.",
+      "After that, an engineer reviews your code with you. They ask how your classes are split, which design patterns you used, and what happens when two users act at the same moment.",
+      "PhonePe sometimes sends the problem as homework. On a later call they ask you to add a new feature live.",
+      "New in 2026: some companies let you use an AI coding assistant in this round (Razorpay, Flipkart, Slice, Nykaa). They watch how you plan, what you ask the AI, and whether you check its code.",
+      "Big tech companies have a shorter version of 45 to 60 minutes. You design the classes and write a few working methods (Amazon, Microsoft, and Atlassian with unit tests)."
     ],
-    graded: ["Code that runs the demo flow end to end", "Clear separation of models, services and strategies", "Thread safety wherever state is shared", "Extensibility: a new requirement fits without a rewrite", "Tests or a driver that proves it works"],
-    ready: ["Finish a booking system with concurrency in 90 minutes", "Explain why you chose each pattern", "Make shared state thread-safe and name the race you prevented", "Add a new requirement in 15 minutes without breaking tests", "Defend your design in a code-review viva"]
+    graded: ["Your program runs and shows the main flow working", "Classes have clear jobs: data, logic and swappable rules are kept apart", "Shared data stays correct when two users act at the same time", "A new requirement can be added without rewriting everything", "You have tests or a small demo that proves it works"],
+    ready: ["Build a booking system that handles two users at once, in 90 minutes", "Explain in one sentence why you used each design pattern", "Show the bug that happens when two threads collide, and how your code prevents it", "Add a new feature in 15 minutes without breaking your tests", "Answer the reviewer's questions about your own code calmly"]
   },
   hld: {
     title: "System design", kind: "Round guide", rounds: ["hld"],
-    lede: "System design separates SDE-2 from Senior. A weak round here is the most common reason people get downleveled.",
+    lede: "In a system design round you plan a big system on a whiteboard, like a notification service or a payment system. There is no code. This round decides whether you are hired as a senior engineer or one level lower.",
     format: [
-      "45–90 minutes on one open-ended problem; Dream11 ran 2 hours 15 minutes. Usually one round, sometimes two for Senior.",
-      "Some companies outsource it (Zepto; BarRaiser at Swiggy and Kotak).",
-      "The hiring manager round often turns into a design deep-dive on your own project.",
-      "Weak HLD is the main cause of downleveling: Amazon SDE2→SDE1, Atlassian P50→P40, JPMC VP→SE3."
+      "You get one open question, such as \"Design a booking platform\". You have 45 to 90 minutes. Dream11 once ran it for 2 hours 15 minutes.",
+      "Some companies use outside interviewers for this round (Zepto, and BarRaiser for Swiggy and Kotak).",
+      "The hiring manager often asks you to design your own project at work in more depth.",
+      "If this round goes badly, companies often offer a lower level. Examples: Amazon SDE-2 to SDE-1, and Atlassian P50 to P40."
     ],
-    graded: ["Clarifying scope and numbers before drawing", "A clear API and data model", "A working end-to-end architecture", "Depth on the hardest 2–3 parts", "Raising trade-offs, failure handling and scaling without being asked"],
-    ready: ["Run the full framework in 45 minutes", "Do capacity estimates without a calculator", "Justify idempotency, sharding and caching choices for any prompt", "Answer 'what breaks at 10×' for your own design", "Draw your own production system and scale it 100×"]
+    graded: ["You ask questions and agree on the size of the problem before drawing", "You define simple APIs and how the data is stored", "Your boxes and arrows work from start to end", "You go deep on the 2 or 3 hardest parts", "You talk about trade-offs and failures before they ask"],
+    ready: ["Go through the whole design steps in 45 minutes", "Estimate rough numbers, like requests per second, in your head", "Explain when you would add a cache, split a database, or make a request safe to retry", "Say what breaks first when traffic grows 10 times", "Draw your own system at work and explain how it would handle 100 times more users"]
   },
   ai: {
     title: "AI engineering", kind: "Track guide", rounds: ["ai", "aicode"],
-    lede: "AI engineering roles test backend depth plus RAG, agents, evals and production LLM concerns. AI-assisted coding rounds are now common even in regular SDE loops.",
+    lede: "AI engineering jobs need normal backend skills plus knowing how to build with large language models (LLMs), the technology behind ChatGPT and Claude. Even regular backend interviews now include some AI questions.",
     format: [
-      "AI system design: RAG over internal documents, a multi-tenant chat platform or an agent runtime (Teradata, Adobe, Tekion, Microsoft).",
-      "GenAI deep dive: 30 minutes or more on RAG, chunking, evals, MCP and agents (Mastercard, EPAM, Avaamo).",
-      "AI-assisted coding: build or extend a feature with an AI agent in 60–90 minutes (Flipkart, Razorpay, LinkedIn, Postman).",
-      "'How do you use and validate AI tools?' is now asked at Amazon, Microsoft, Salesforce, Oracle, Uber and CRED.",
-      "DSA still appears in almost every loop, except research labs such as Sarvam."
+      "AI system design: plan a system such as \"answer questions from company documents\" or \"a chat app used by many companies\" (Teradata, Adobe, Tekion, Microsoft).",
+      "AI deep dive: 30 minutes or more of questions on how the AI system finds the right documents, how you test answer quality, and how agents use tools (Mastercard, EPAM, Avaamo).",
+      "AI-assisted coding: you build or change a feature using an AI coding assistant in 60 to 90 minutes (Flipkart, Razorpay, LinkedIn, Postman).",
+      "Many companies now ask \"How do you use AI tools, and how do you check their output?\" (Amazon, Microsoft, Salesforce, Oracle, Uber, CRED).",
+      "Normal coding (DSA) rounds still happen almost everywhere. Research labs like Sarvam are the main exception."
     ],
-    graded: ["A design covering ingestion, retrieval, generation, evals and cost", "Knowing how RAG fails and how you'd measure it", "Production thinking: latency, cost per request, caching, failover, guardrails", "Precise prompting and careful diff review in AI-assisted rounds"],
-    ready: ["Design enterprise document Q&A in 45 minutes, evals included", "Explain attention, embeddings and temperature simply", "Debug 'right document, wrong answer' step by step", "Show a shipped capstone with eval results and cost per query", "Build a small feature with an AI agent while keeping tests green"]
+    graded: ["Your design covers the full path: loading documents, finding the right ones, writing the answer, checking quality and cost", "You know the common ways these systems give wrong answers, and how to measure them", "You think about speed, cost per question, saving repeat answers, backup providers and safety", "In AI coding rounds, you give clear instructions and check the AI's code carefully"],
+    ready: ["Design a 'questions over company documents' system in 45 minutes, including how you test it", "Explain tokens, embeddings and temperature in simple words", "Find out step by step why the system gave a wrong answer when it had the right document", "Show your own project with test results and cost per question", "Build a small feature with an AI assistant while keeping your tests passing"]
   },
   backend: {
     title: "Java & backend", kind: "Round guide", rounds: ["java"],

@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>In-memory Message Queue / Pub-Sub</h1>
-  <p class="lede">Build and defend a thread-safe mini Kafka in 90 minutes: topics, partitions, consumer groups and offsets.</p>
+  <p class="lede">Build a small, thread-safe Kafka in 90 minutes, then defend it. You need topics, partitions, consumer groups and offsets. Each idea is explained below.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 90 min code + 30 min review</span>
     <span class="fact"><b>Seen:</b> Flipkart SDE-3 machine coding; queue/thread-pool variants at Rubrik, Goldman Sachs, LinkedIn, CleverTap</span>
@@ -20,13 +20,24 @@
   <div class="chips"><span class="chip hot">Flipkart</span><span class="chip hot">Rubrik</span><span class="chip">Goldman Sachs</span><span class="chip">LinkedIn</span><span class="chip">CleverTap</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>A topic is split into partitions; each partition is an append-only list.</li>
-    <li>Same key → same partition, so order holds per key, not per topic.</li>
-    <li>Each consumer group keeps its own offset per partition.</li>
-    <li>Lock per partition, <code>Condition</code> for waiting, generation number to fence rebalances.</li>
+    <li>A topic is split into partitions. Each partition is a list you only add to the end of.</li>
+    <li>The same key always goes to the same partition. So order is kept per key, not for the whole topic.</li>
+    <li>Each consumer group remembers its own reading position (offset) in each partition.</li>
+    <li>Use one lock per partition and a <code>Condition</code> to wait. A generation number blocks stale workers after a rebalance.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A railway reservation office with several counters (partitions). Each counter keeps a numbered register. Billing clerks and audit clerks (two consumer groups) each read every register, and each group bookmarks the last line it read (the offset).</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a railway booking office with several counters. Each counter is a partition. Each counter keeps a numbered register. Billing clerks and audit clerks are two consumer groups. Each group reads every register. Each group keeps its own bookmark at the last line it read. That bookmark is the offset.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Topic</dt><dd>A named stream of messages, like "orders". Producers write to it, consumers read from it.</dd>
+    <dt>Partition</dt><dd>One slice of a topic. It is a list that only grows at the end, so its order never changes.</dd>
+    <dt>Offset</dt><dd>A message's position number inside one partition: 0, 1, 2 and so on. A group's offset is its bookmark.</dd>
+    <dt>Consumer group</dt><dd>A team of consumers that share the work. Each message goes to one member of the team.</dd>
+    <dt>Commit</dt><dd>Saving the bookmark: "we are done up to here". After a crash, reading restarts from the last commit.</dd>
+    <dt>Rebalance</dt><dd>Handing out the partitions again when a consumer joins or leaves the group.</dd>
+    <dt>At-least-once</dt><dd>A message is never lost, but it may be delivered twice after a crash.</dd>
+    <dt>Idempotent</dt><dd>Doing it twice has the same effect as doing it once. Processing an order twice ships it once.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -47,61 +58,61 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="grid">
-    <div class="card"><h4>Runnable MVP</h4><p>A <code>main</code> or a JUnit test that creates a topic, runs several producers and consumers on threads, and prints ordered output. Not running at minute 90 is usually fatal at Flipkart.</p></div>
-    <div class="card"><h4>Correct ordering semantics</h4><p>Ordered per partition, not per topic. Same key → same partition. One consumer per partition inside a group.</p></div>
-    <div class="card"><h4>Concurrency you can explain</h4><p>Where the locks are, why a <code>Condition</code> instead of busy-polling, what happens during rebalance, what "at-least-once" means in your commit order.</p></div>
-    <div class="card"><h4>Extensibility</h4><p>Partitioner as a strategy, handlers as an interface, retry/DLQ as a decorator. New requirements should add classes, not edit the broker.</p></div>
+    <div class="card"><h4>A working first version (MVP)</h4><p>A <code>main</code> or JUnit test creates a topic and runs producers and consumers on threads. It prints output in order. At Flipkart, code that does not run by minute 90 usually fails you.</p></div>
+    <div class="card"><h4>Correct order rules</h4><p>Order is kept per partition, not per topic. The same key goes to the same partition. Inside a group, one consumer reads one partition.</p></div>
+    <div class="card"><h4>Thread safety you can explain</h4><p>Where the locks are. Why you wait on a <code>Condition</code> instead of checking in a loop. What happens in a rebalance. What "at-least-once" means for your commit order.</p></div>
+    <div class="card"><h4>Easy to extend</h4><p>The partition choice is a strategy. Handlers are an interface. Retry and the dead-letter queue are decorators. New needs should add classes, not change the broker.</p></div>
   </div>
-  <p>You are graded twice on the same code: 90 minutes of coding, then a 30-minute review of OOP, patterns and concurrency.</p>
+  <p>You are graded twice on the same code. First come 90 minutes of coding. Then a 30-minute review covers OOP, design patterns and thread safety.</p>
   <details class="deep"><summary>Go deeper: the interview reports behind this page</summary>
-    <p>The Flipkart SDE-3 report (Oct 2025, selected) is the template: a 90-minute machine-coding round to build "a working MVP for an in-memory message streaming service supporting multiple topics, producers, and consumers" with ordering within partitions, thread safety and real-time streaming. Then a separate 30-minute evaluation round: "in-depth discussion about my solution ... modularity, OOP principles, design patterns and concurrency." So you are graded twice on the same code.</p>
-    <p>The queue family shows up elsewhere in a lower-level form. Rubrik's screening round asks for a bounded blocking queue and then a thread pool built on it (<code>submit</code>, <code>execute</code>, <code>shutdown</code>, <code>shutdownNow</code>); the candidate was marked "lean hire" because <code>shutdown()</code> and the exceptions caught were not convincing. CleverTap's associate-director round probed Kafka brokers, topics and partitions, asked for a "generic queue system for teams to use", then a "at most two threads in parallel" exercise (a <code>Semaphore(2)</code>). Prepare the primitives, not only the façade.</p>
+    <p>The Flipkart SDE-3 report (Oct 2025, selected) is the model. It was a 90-minute machine-coding round. The task: build "a working MVP for an in-memory message streaming service supporting multiple topics, producers, and consumers". It needed order within partitions, thread safety and real-time streaming. Then came a separate 30-minute review round. It was an "in-depth discussion about my solution ... modularity, OOP principles, design patterns and concurrency." So you are graded twice on the same code.</p>
+    <p>Other companies ask a lower-level version of the queue. Rubrik's screening round asks for a bounded blocking queue. That is a queue with a size limit, where threads wait when it is full or empty. Next, you build a thread pool on top of it (<code>submit</code>, <code>execute</code>, <code>shutdown</code>, <code>shutdownNow</code>). The candidate got "lean hire", a weak yes. Their <code>shutdown()</code> and the exceptions they caught were not convincing. CleverTap's associate-director round asked about Kafka brokers, topics and partitions. It asked for a "generic queue system for teams to use". Then it asked for an "at most two threads in parallel" exercise (a <code>Semaphore(2)</code>). Prepare the basic building blocks, not only the front class.</p>
   </details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="keys">
-    <div class="key"><h4>Pub-sub or queue?</h4><p>Consumer groups give both: different groups broadcast, one group shares load.</p></div>
-    <div class="key"><h4>Global or per-key order?</h4><p>Per key. Global order means one partition and no parallelism.</p></div>
-    <div class="key"><h4>Pull or push?</h4><p>Pull with a long-poll wait: free backpressure.</p></div>
-    <div class="key"><h4>Delivery guarantee?</h4><p>At-least-once: commit after processing; handlers idempotent.</p></div>
+    <div class="key"><h4>Pub-sub or queue?</h4><p>Consumer groups give both. Different groups each get every message. Members of one group share the load.</p></div>
+    <div class="key"><h4>Order for everything, or per key?</h4><p>Per key. Order for everything means one partition, so nothing runs in parallel.</p></div>
+    <div class="key"><h4>Pull or push?</h4><p>Pull, with a wait when nothing is there. Slow consumers then simply fetch less (free backpressure).</p></div>
+    <div class="key"><h4>Delivery guarantee?</h4><p>At-least-once. Commit after processing. Handlers must be idempotent.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: all eight questions and why each matters</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Pub-sub (every subscriber gets every message) or queue (each message to one worker)?</td><td>Consumer groups give you both: different groups = broadcast, same group = load sharing. Say this and you have answered both.</td></tr>
-    <tr><td>Ordering: global per topic or per key?</td><td>Global ordering forces one partition and kills parallelism. Per-key ordering via partitions is the standard answer.</td></tr>
-    <tr><td>Push (broker calls handler) or pull (consumer polls)?</td><td>Pull gives natural backpressure and simple offset tracking. Push is easier to demo. I default to pull with a long-poll wait.</td></tr>
-    <tr><td>Delivery guarantee: at-most-once or at-least-once?</td><td>Decides commit-before or commit-after processing. At-least-once is the usual answer; handlers must be idempotent.</td></tr>
-    <tr><td>Retention: keep messages forever, by count, or by time?</td><td>Affects memory and whether a new group can replay from offset 0.</td></tr>
-    <tr><td>Can consumers join or leave at runtime?</td><td>If yes you need rebalancing, which is where most concurrency bugs live.</td></tr>
-    <tr><td>Bounded memory? What happens when full?</td><td>Block the producer, reject, or drop oldest. Backpressure is a senior talking point.</td></tr>
-    <tr><td>Failed message handling: retry how many times? Dead letter?</td><td>Shapes the handler wrapper and whether a poison message blocks a partition.</td></tr>
+    <tr><td>Pub-sub (every subscriber gets every message) or queue (each message goes to one worker)?</td><td>Consumer groups give both. Different groups get every message. One group shares the work. Say this, and you have answered both.</td></tr>
+    <tr><td>Order: for the whole topic or per key?</td><td>Whole-topic order forces one partition, so nothing runs in parallel. Per-key order using partitions is the standard answer.</td></tr>
+    <tr><td>Push (the broker calls the handler) or pull (the consumer asks for messages)?</td><td>Pull slows down naturally when consumers are busy (backpressure). It also makes offsets easy to track. Push is easier to demo. I default to pull with a waiting read.</td></tr>
+    <tr><td>Delivery guarantee: at-most-once or at-least-once?</td><td>This decides whether you commit before or after processing. At-least-once is the usual answer. Handlers must then be idempotent.</td></tr>
+    <tr><td>Keep messages forever, or only the last N, or only for some time?</td><td>This affects memory. It also decides whether a new group can replay from offset 0.</td></tr>
+    <tr><td>Can consumers join or leave while running?</td><td>If yes, you need rebalancing. Most thread-safety bugs live there.</td></tr>
+    <tr><td>Is memory limited? What happens when it is full?</td><td>Block the producer, reject the message, or drop the oldest. Backpressure is a senior talking point.</td></tr>
+    <tr><td>Failed messages: how many retries? A dead-letter queue?</td><td>This shapes the handler wrapper. It also decides whether one bad message blocks a whole partition.</td></tr>
   </table></div>
   </details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
-    <div class="card"><h4>Functional</h4><ul>
-      <li>Create topic with N partitions.</li>
-      <li>Publish (key, payload); same key goes to same partition; returns (partition, offset).</li>
-      <li>Subscribe a consumer to a topic under a group id with a handler.</li>
-      <li>Each message delivered to exactly one consumer per group; every group sees every message.</li>
-      <li>Order preserved within a partition.</li>
-      <li>Consumers can leave; partitions get reassigned.</li>
-      <li>Committed offsets per (group, partition); a new group can start from earliest or latest.</li>
+    <div class="card"><h4>Functional (what it does)</h4><ul>
+      <li>Create a topic with N partitions.</li>
+      <li>Publish (key, payload). The same key goes to the same partition. Return (partition, offset).</li>
+      <li>Subscribe a consumer to a topic, under a group id, with a handler.</li>
+      <li>Each message goes to exactly one consumer per group. Every group sees every message.</li>
+      <li>Order is kept within a partition.</li>
+      <li>Consumers can leave. Their partitions are handed to others.</li>
+      <li>Save committed offsets per (group, partition). A new group can start from the oldest or newest message.</li>
     </ul></div>
-    <div class="card"><h4>Non-functional</h4><ul>
-      <li>Thread-safe for concurrent producers and consumers.</li>
-      <li>No busy-waiting; consumers block until data or timeout.</li>
-      <li>Publish is O(1); read is O(batch).</li>
+    <div class="card"><h4>Non-functional (how well it does it)</h4><ul>
+      <li>Safe with many producers and consumers running at once.</li>
+      <li>No busy-waiting. Consumers sleep until data arrives or time runs out.</li>
+      <li>Publish takes O(1) time. A read takes time in proportion to the batch size.</li>
       <li>At-least-once delivery.</li>
-      <li>Clean shutdown: no lost commits, threads terminate.</li>
+      <li>Clean shutdown: no lost commits, and all threads stop.</li>
     </ul></div>
     <div class="card"><h4>Out of scope (say so)</h4><ul>
-      <li>Persistence and replication (mention log segments and ISR only as follow-ups).</li>
-      <li>Network protocol and brokers across machines.</li>
+      <li>Saving to disk and copying data to other machines. Mention log segments and ISR (in-sync replicas) only as follow-ups.</li>
+      <li>Network protocol and brokers on many machines.</li>
       <li>Exactly-once transactions.</li>
-      <li>Authentication and quotas.</li>
+      <li>Login checks and usage limits.</li>
     </ul></div>
   </div>
 
@@ -124,79 +135,79 @@
     <span class="node">ConsumerWorker<small>one thread each</small></span><span class="arrow">↔</span>
     <span class="node hl">ConsumerGroup<small>assignment + offsets</small></span>
   </div>
-  <p class="flow-caption">Figure: producers append through the broker; workers pull from the partitions their group assigned them and commit offsets back to the group.</p>
+  <p class="flow-caption">Figure: producers add messages through the broker. Each worker reads from the partitions its group gave it. It then saves its offsets back to the group.</p>
   <h3>Patterns and why</h3>
   <div class="keys">
-    <div class="key"><h4>Strategy</h4><p>For <code>Partitioner</code> and the group's assignment strategy (range vs round-robin): the interviewer will ask "what if I want sticky assignment" and you add a class.</p></div>
-    <div class="key"><h4>Observer / pub-sub</h4><p>The domain itself; groups are the subscribers.</p></div>
-    <div class="key"><h4>Decorator</h4><p><code>RetryingHandler</code> and <code>DeadLetterHandler</code> wrap the user's <code>MessageHandler</code>.</p></div>
-    <div class="key"><h4>Façade</h4><p><code>Broker</code>, so the demo and tests touch one class.</p></div>
-    <div class="key"><h4>Not Singleton</h4><p>Inject the broker; singletons make tests share state and reviewers notice.</p></div>
+    <div class="key"><h4>Strategy</h4><p>Use it for <code>Partitioner</code> and for how the group hands out partitions (range or round-robin). If asked for "sticky assignment", you just add a class.</p></div>
+    <div class="key"><h4>Observer / pub-sub</h4><p>This is the problem itself. Groups are the subscribers.</p></div>
+    <div class="key"><h4>Decorator</h4><p><code>RetryingHandler</code> and <code>DeadLetterHandler</code> wrap the user's <code>MessageHandler</code> to add behaviour.</p></div>
+    <div class="key"><h4>Façade</h4><p><code>Broker</code> is the one front door, so the demo and tests touch one class.</p></div>
+    <div class="key"><h4>Not Singleton</h4><p>Pass the broker in. Singletons make tests share state, and reviewers notice.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: responsibility table for every class</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
-    <tr><td><code>Message</code> (record)</td><td>Immutable payload</td><td>key, payload, headers, publishedAt</td></tr>
-    <tr><td><code>Record</code> (record)</td><td>Message plus its position</td><td>topic, partition, offset, message</td></tr>
-    <tr><td><code>Partition</code></td><td>Append-only ordered log</td><td><code>append(msg)</code>, <code>read(from, max, wait)</code>, lock + <code>Condition</code></td></tr>
-    <tr><td><code>Topic</code></td><td>Owns partitions and the partitioner</td><td>name, <code>List&lt;Partition&gt;</code>, <code>Partitioner</code></td></tr>
-    <tr><td><code>Partitioner</code> (interface)</td><td>Choose partition for a key</td><td><code>KeyHashPartitioner</code>, <code>RoundRobinPartitioner</code></td></tr>
-    <tr><td><code>ConsumerGroup</code></td><td>Membership, assignment, committed offsets</td><td><code>join</code>, <code>leave</code>, <code>rebalance</code>, <code>commit(p, offset, generation)</code></td></tr>
-    <tr><td><code>ConsumerWorker</code></td><td>Poll loop for one consumer</td><td>runs on its own thread; reads assigned partitions; calls handler; commits</td></tr>
-    <tr><td><code>MessageHandler</code> (interface)</td><td>User code</td><td><code>handle(Record)</code>; wrapped by <code>RetryingHandler</code></td></tr>
-    <tr><td><code>Broker</code></td><td>Façade, registry of topics and groups</td><td><code>createTopic</code>, <code>publish</code>, <code>subscribe</code>, <code>shutdown</code></td></tr>
+    <tr><td><code>Message</code> (record)</td><td>The data, which never changes</td><td>key, payload, headers, publishedAt</td></tr>
+    <tr><td><code>Record</code> (record)</td><td>A message plus where it sits</td><td>topic, partition, offset, message</td></tr>
+    <tr><td><code>Partition</code></td><td>Ordered list that only grows at the end</td><td><code>append(msg)</code>, <code>read(from, max, wait)</code>, lock + <code>Condition</code></td></tr>
+    <tr><td><code>Topic</code></td><td>Owns the partitions and the partitioner</td><td>name, <code>List&lt;Partition&gt;</code>, <code>Partitioner</code></td></tr>
+    <tr><td><code>Partitioner</code> (interface)</td><td>Picks the partition for a key</td><td><code>KeyHashPartitioner</code>, <code>RoundRobinPartitioner</code></td></tr>
+    <tr><td><code>ConsumerGroup</code></td><td>Members, who reads what, and saved offsets</td><td><code>join</code>, <code>leave</code>, <code>rebalance</code>, <code>commit(p, offset, generation)</code></td></tr>
+    <tr><td><code>ConsumerWorker</code></td><td>The read loop for one consumer</td><td>Runs on its own thread. Reads its partitions, calls the handler, commits.</td></tr>
+    <tr><td><code>MessageHandler</code> (interface)</td><td>The user's code</td><td><code>handle(Record)</code>, wrapped by <code>RetryingHandler</code></td></tr>
+    <tr><td><code>Broker</code></td><td>Front door. Keeps the list of topics and groups.</td><td><code>createTopic</code>, <code>publish</code>, <code>subscribe</code>, <code>shutdown</code></td></tr>
   </table></div>
   </details>
 
   <h2 id="watch"><span class="n">05</span>Watch it work</h2>
-  <p>Topic <code>orders</code> with 2 partitions. Group <code>billing</code> has consumers C1 and C2. Each row is a partition; the small number under a cell is its <dfn title="The position of a message inside one partition, starting at 0">offset</dfn>.</p>
+  <p>Topic <code>orders</code> has 2 partitions. Group <code>billing</code> has consumers C1 and C2. Each row is a partition. The small number under a cell is its <dfn title="The position of a message inside one partition, starting at 0">offset</dfn>.</p>
   <div class="stepper"><b class="title">Publish, consume, commit, rebalance</b><div class="frames">
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span></div>
       <div class="cells idx"><span class="cell">P1</span></div>
       <div class="ptrs"><span>gen=1</span><span>C1 → P0</span><span>C2 → P1</span><span>committed P0=0, P1=0</span></div>
-      <figcaption>Both partitions are empty. The group assigned one partition to each consumer: generation 1.</figcaption>
+      <figcaption>Both partitions are empty. The group gave one partition to each consumer. This is generation 1.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell hl" data-i="0">o-1 #1</span></div>
       <div class="cells idx"><span class="cell">P1</span></div>
       <div class="ptrs"><span class="on">publish key=order-1</span><span>hash % 2 = 0</span><span>returns (P0, 0)</span></div>
-      <figcaption><code>KeyHashPartitioner</code> maps <code>order-1</code> to P0. Append under P0's lock gives offset 0 and wakes C1.</figcaption>
+      <figcaption>The key's hash picks P0 for <code>order-1</code> (<code>KeyHashPartitioner</code>). The message is added to P0 at position 0, and C1, who was waiting, wakes up.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell" data-i="0">o-1 #1</span><span class="cell" data-i="1">o-3 #1</span><span class="cell hl" data-i="2">o-1 #2</span></div>
       <div class="cells idx"><span class="cell">P1</span><span class="cell" data-i="0">o-2 #1</span><span class="cell" data-i="1">o-2 #2</span></div>
       <div class="ptrs"><span>committed P0=0, P1=0</span></div>
-      <figcaption>Four producers keep publishing. Every <code>order-1</code> message lands on P0, so #1 always sits before #2.</figcaption>
+      <figcaption>Four producers keep publishing. Every <code>order-1</code> message lands on P0. So #1 always sits before #2.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
       <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell" data-i="1">o-2 #2</span></div>
       <div class="ptrs"><span class="on">committed P0=2</span><span class="on">committed P1=1</span></div>
-      <figcaption>C1 handles offsets 0–1, then commits 2 (the next offset to read). Commit after handling = <dfn title="A crash between handling and commit means the message is delivered again, never lost">at-least-once</dfn>.</figcaption>
+      <figcaption>C1 handles offsets 0 and 1, then commits 2, the next offset to read. Committing after handling gives <dfn title="A crash between handling and commit means the message is delivered again, never lost">at-least-once</dfn> delivery.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
       <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell bad" data-i="1">o-2 #2</span></div>
       <div class="ptrs"><span class="on">C2 leaves</span><span class="on">gen=2</span><span>C1 → P0, P1</span></div>
-      <figcaption>C2 leaves mid-batch. <code>rebalance()</code> publishes a new assignment with generation 2; C1 now owns both partitions.</figcaption>
+      <figcaption>C2 leaves in the middle of a batch. The group hands out partitions again and calls this generation 2. C1 now owns both partitions.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell" data-i="2">o-1 #2</span></div>
       <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell bad" data-i="1">o-2 #2</span></div>
       <div class="ptrs"><span class="on">C2 commit(P1, 2, gen=1) → false</span><span>committed P1=1</span></div>
-      <figcaption>C2's late commit carries generation 1, so it is rejected. The committed offset stays at 1.</figcaption>
+      <figcaption>C2 tries to save its bookmark late. It still says generation 1, which is old. So the group refuses it, and the saved offset stays at 1.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells idx"><span class="cell">P0</span><span class="cell ok" data-i="0">o-1 #1</span><span class="cell ok" data-i="1">o-3 #1</span><span class="cell ok" data-i="2">o-1 #2</span></div>
       <div class="cells idx"><span class="cell">P1</span><span class="cell ok" data-i="0">o-2 #1</span><span class="cell ok" data-i="1">o-2 #2</span></div>
       <div class="ptrs"><span>gen=2</span><span class="on">committed P0=3, P1=2</span></div>
-      <figcaption>C1 resumes P1 from committed offset 1. If C2 had already handled it, <code>o-2 #2</code> is seen twice: the at-least-once contract.</figcaption>
+      <figcaption>C1 continues P1 from saved offset 1. If C2 had already handled it, <code>o-2 #2</code> is seen twice. That is the at-least-once promise.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="code"><span class="n">06</span>Core code</h2>
-  <p>Java 21. Records for value types, virtual threads for workers. The partition log is the heart; get it right first.</p>
+  <p>The code uses Java 21. Records hold plain values. Virtual threads, which are very cheap threads, run the workers. The partition log is the heart, so get it right first.</p>
   <pre><code>    long append(Message m) {
         lock.lock();
         try {
@@ -290,7 +301,7 @@ public final class KeyHashPartitioner implements Partitioner {
     String name() { return name; }
 }</code></pre></details>
   <details class="code"><summary>Show Java: ConsumerGroup</summary>
-  <p>The consumer group owns membership and offsets. Every structural change bumps a generation number; a worker holding a stale generation cannot commit, which is the same fencing idea Kafka uses.</p>
+  <p>The consumer group owns its members and offsets. Every change to members raises a generation number. A worker with an old generation cannot commit. Kafka uses the same idea, called fencing.</p>
   <pre><code>final class ConsumerGroup {
     private final String id;
     private final Topic topic;
@@ -428,10 +439,10 @@ final class ConsumerWorker implements Runnable {
 public interface Subscription extends AutoCloseable {
     @Override void close();
 }</code></pre></details>
-  <div class="callout tip"><b>The demo that sells it</b><p>In <code>main</code>: topic "orders" with 3 partitions, two groups ("billing" with 2 consumers, "audit" with 1), 4 producer threads publishing keys <code>order-1..order-10</code> with sequence numbers. Each handler asserts the sequence for its key never goes backwards. Print "OK: per-key order held across 4,000 messages". That one line answers the ordering question before it is asked.</p></div>
+  <div class="callout tip"><b>The demo that sells it</b><p>In <code>main</code>, create topic "orders" with 3 partitions. Add two groups: "billing" with 2 consumers and "audit" with 1. Start 4 producer threads. They publish keys <code>order-1..order-10</code> with sequence numbers. Each handler checks that the sequence for its key never goes backwards. Print "OK: per-key order held across 4,000 messages". That one line answers the order question before anyone asks it.</p></div>
 
   <h2 id="concurrency"><span class="n">07</span>Concurrency and edge cases</h2>
-  <p>The bug reviewers hunt: a rebalance lands while a worker is mid-batch.</p>
+  <p>Reviewers hunt for one bug. A rebalance happens while a worker is in the middle of a batch.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker C2 (old owner)</th><th>Worker C1 (new owner)</th><th>committed P1</th></tr></thead><tbody>
     <tr><td>t1</td><td>reads P1 from offset 1</td><td></td><td>1</td></tr>
     <tr><td>t2</td><td>handling offset 1…</td><td>rebalance: gets P1, reads from 1</td><td>1</td></tr>
@@ -440,38 +451,38 @@ public interface Subscription extends AutoCloseable {
     <tr><td>t4 (fixed)</td><td><code>commit(P1, 2, gen=1)</code> → false</td><td></td><td class="ok">5</td></tr>
   </tbody></table></div>
   <ul>
-    <li><b>Fence:</b> check the generation before each record and again on commit.</li>
-    <li><b>Never go backwards:</b> <code>committed.merge(p, next, Math::max)</code>.</li>
-    <li>A record already inside a handler can still be redelivered once. That is at-least-once, so handlers must be <dfn title="Running it twice has the same effect as running it once">idempotent</dfn>.</li>
+    <li><b>Fence:</b> check the generation before each record, and again at commit.</li>
+    <li><b>Never go backwards:</b> <code>committed.merge(p, next, Math::max)</code> keeps the larger offset.</li>
+    <li>A record already inside a handler can still come again once. That is at-least-once. So handlers must be <dfn title="Running it twice has the same effect as running it once">idempotent</dfn>.</li>
   </ul>
   <details class="deep"><summary>Go deeper: every risk and how the design prevents it</summary>
   <div class="tbl"><table>
     <tr><th>Risk</th><th>What goes wrong</th><th>How the design prevents it</th></tr>
-    <tr><td>Two producers append to one partition</td><td>Lost write or two messages with one offset (<code>ArrayList</code> is not thread-safe)</td><td>Append and offset assignment happen under the partition lock, so offset = index is unique.</td></tr>
-    <tr><td>Reader sees a half-built list</td><td>Visibility bugs on a plain list</td><td>Reads take the same lock and return a copy. A <code>ReadWriteLock</code> is an option, but a <code>Condition</code> needs the exclusive lock, and the critical sections are tiny.</td></tr>
-    <tr><td>Consumer spins on empty partition</td><td>100% CPU</td><td><code>awaitNanos</code> on a <code>Condition</code>, signalled on append; loop handles spurious wake-ups.</td></tr>
-    <tr><td>Rebalance while a worker is mid-batch</td><td>Two workers process the same partition; offsets regress</td><td>Generation checked before each record and fenced again on commit, plus <code>merge(..., Math::max)</code>. A record already in a handler when the rebalance lands can still be redelivered once; that is the at-least-once contract.</td></tr>
-    <tr><td>Commit before processing</td><td>Crash loses the message (at-most-once)</td><td>Commit after handler returns. State the trade-off explicitly.</td></tr>
-    <tr><td>Poison message</td><td>Handler throws forever, partition stalls</td><td><code>RetryingHandler</code> with bounded attempts and backoff, then a DLQ topic. The offset advances.</td></tr>
-    <tr><td>Interrupt swallowed</td><td>Shutdown hangs</td><td>Catch <code>InterruptedException</code>, restore the flag, exit. This is exactly what Rubrik's interviewer probed.</td></tr>
-    <tr><td>Two subscribers create the same group</td><td>Two <code>ConsumerGroup</code> objects, double delivery</td><td><code>computeIfAbsent</code> on <code>ConcurrentHashMap</code> is atomic per key.</td></tr>
-    <tr><td>Time</td><td>Tests depend on wall clock for retention/delays</td><td>Inject <code>java.time.Clock</code>; tests use a mutable fixed clock.</td></tr>
+    <tr><td>Two producers add to one partition</td><td>A write is lost, or two messages get one offset. <code>ArrayList</code> is not thread-safe.</td><td>Adding and giving the offset both happen under the partition lock. So offset = list index, and it is unique.</td></tr>
+    <tr><td>A reader sees a half-built list</td><td>Visibility bugs: one thread does not see another thread's writes on a plain list.</td><td>Reads take the same lock and return a copy. A <code>ReadWriteLock</code> is an option. But a <code>Condition</code> needs the exclusive lock, and the locked parts are tiny.</td></tr>
+    <tr><td>A consumer loops on an empty partition</td><td>CPU at 100%</td><td><code>awaitNanos</code> on a <code>Condition</code>, which is signalled on append. The loop also handles spurious wake-ups (waking with no reason).</td></tr>
+    <tr><td>Rebalance while a worker is mid-batch</td><td>Two workers process one partition. Offsets go backwards.</td><td>Check the generation before each record and again at commit. Also use <code>merge(..., Math::max)</code>. A record already in a handler can still come again once. That is the at-least-once promise.</td></tr>
+    <tr><td>Commit before processing</td><td>A crash loses the message (at-most-once)</td><td>Commit after the handler returns. Say this trade-off out loud.</td></tr>
+    <tr><td>Poison message (one that always fails)</td><td>The handler throws forever, and the partition is stuck</td><td><code>RetryingHandler</code> tries a limited number of times, with growing waits (backoff). Then it sends the message to a DLQ topic. The offset moves on.</td></tr>
+    <tr><td>Interrupt swallowed</td><td>Shutdown hangs</td><td>Catch <code>InterruptedException</code>, set the interrupt flag again, and exit. Rubrik's interviewer probed exactly this.</td></tr>
+    <tr><td>Two subscribers create the same group</td><td>Two <code>ConsumerGroup</code> objects, so messages are delivered twice</td><td><code>computeIfAbsent</code> on <code>ConcurrentHashMap</code> runs as one step per key.</td></tr>
+    <tr><td>Time</td><td>Tests depend on the real clock for retention and delays</td><td>Pass in a <code>java.time.Clock</code>. Tests use a fixed clock they can move.</td></tr>
   </table></div>
-  <p><b>Idempotency.</b> At-least-once means the handler must tolerate duplicates. Offer a producer-side idempotency key in headers and an <code>IdempotentHandler</code> decorator that keeps a bounded set of processed message ids per partition. Kafka's idempotent producer does the broker-side equivalent with producer id and sequence numbers.</p>
+  <p><b>Idempotency.</b> At-least-once means the handler must cope with duplicates. Let producers add an idempotency key in the headers. Add an <code>IdempotentHandler</code> decorator. It keeps a limited set of message ids it has already processed, per partition. Kafka's idempotent producer does the same thing inside the broker. It uses a producer id and sequence numbers.</p>
   </details>
 
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <div class="grid">
-    <div class="card"><h4>Bounded, producers block</h4><p>Second <code>Condition notFull</code>, or a separate bounded blocking queue (code below).</p></div>
-    <div class="card"><h4>DLQ + retry with backoff</h4><p>Decorator; after the last failure publish to <code>&lt;topic&gt;.dlq</code> and let the offset advance.</p></div>
-    <div class="card"><h4>Replay from offset or time</h4><p><code>seek()</code> sets the committed offset; binary-search by <code>publishedAt</code>.</p></div>
-    <div class="card"><h4>Retention</h4><p><code>baseOffset</code> per partition; index = offset − baseOffset.</p></div>
-    <div class="card"><h4>Push delivery</h4><p>Keep the internal pull loop; the worker is the pusher.</p></div>
-    <div class="card"><h4>Filtering / wildcards</h4><p>A <code>Predicate&lt;Record&gt;</code> per subscription; offsets still advance.</p></div>
-    <div class="card"><h4>Make it real Kafka</h4><p>Segmented files, replication, a group coordinator, offsets in a compacted topic.</p></div>
+    <div class="card"><h4>Limited size, producers wait</h4><p>Add a second <code>Condition notFull</code>. Or use a separate bounded blocking queue (code below).</p></div>
+    <div class="card"><h4>DLQ and retry with backoff</h4><p>A decorator. After the last failure, publish to <code>&lt;topic&gt;.dlq</code> (dead-letter queue) and let the offset move on.</p></div>
+    <div class="card"><h4>Replay from an offset or a time</h4><p><code>seek()</code> sets the saved offset. To find a time, binary-search by <code>publishedAt</code>.</p></div>
+    <div class="card"><h4>Retention (deleting old messages)</h4><p>Keep a <code>baseOffset</code> per partition. Then list index = offset − baseOffset.</p></div>
+    <div class="card"><h4>Push delivery</h4><p>Keep the pull loop inside. The worker does the pushing.</p></div>
+    <div class="card"><h4>Filters and wildcards</h4><p>Add a <code>Predicate&lt;Record&gt;</code> per subscription. Offsets still move on for skipped messages.</p></div>
+    <div class="card"><h4>Make it real Kafka</h4><p>Split files into segments, copy data to other machines, add a group coordinator, store offsets in a compacted topic.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>"Make the queue bounded; producers should block when full."</summary><p>Per-partition capacity plus a second <code>Condition notFull</code>. Producers <code>await</code> while full; consumers cannot free space in a log, so define "full" as retained-minus-slowest-committed-offset and trim. Simpler alternative the interviewer often wants: a separate bounded blocking queue, below.</p></details>
+  <details class="qa"><summary>"Make the queue bounded; producers should block when full."</summary><p>Give each partition a capacity, plus a second <code>Condition notFull</code>. Producers <code>await</code> while it is full. Consumers do not remove from a log, so reading frees no space. So define "full" as messages kept minus the slowest group's committed offset. Then trim old messages. The interviewer often wants something simpler: a separate bounded blocking queue, shown below.</p></details>
   <details class="code"><summary>Show Java: BoundedBlockingQueue</summary><pre><code>public final class BoundedBlockingQueue&lt;T&gt; {
     private final Object[] items;
     private int head, tail, count;
@@ -502,94 +513,94 @@ public interface Subscription extends AutoCloseable {
         } finally { lock.unlock(); }
     }
 }</code></pre></details>
-  <p>This is the same two-condition design as <code>java.util.concurrent.ArrayBlockingQueue</code>. For the thread-pool follow-up: workers loop on <code>take()</code>; <code>shutdown()</code> sets a flag, rejects new submits and lets workers drain then exit (enqueue one poison pill per worker or check the flag with <code>poll(timeout)</code>); <code>shutdownNow()</code> interrupts workers and returns the undrained tasks. <code>submit</code> wraps the task in a <code>FutureTask</code> so exceptions surface through <code>Future.get()</code> instead of killing the worker.</p>
-  <details class="qa"><summary>"Add a dead-letter queue and retries with backoff."</summary><p>Decorator: <code>new RetryingHandler(userHandler, maxAttempts, backoff, dlqPublisher)</code>. After the last failure it publishes the record plus error headers to <code>&lt;topic&gt;.dlq</code> and returns normally so the offset advances. Mention that blocking retries stall the partition; for long backoff, publish to a delay/retry topic instead.</p></details>
-  <details class="qa"><summary>"Consumers should be able to replay from an offset or a timestamp."</summary><p><code>seek(partition, offset)</code> on the group sets the committed offset. For timestamps, binary-search the partition log by <code>publishedAt</code> since appends are time-ordered (with an injected clock, tests stay deterministic).</p></details>
-  <details class="qa"><summary>"Add retention: drop messages older than X or beyond N per partition."</summary><p>Keep a <code>baseOffset</code> per partition so logical offsets survive trimming: index = offset − baseOffset. A scheduled task trims under the partition lock. A consumer behind the base offset gets an <code>OffsetOutOfRange</code> and resets to earliest or latest per its policy.</p></details>
-  <details class="qa"><summary>"Push-based delivery instead of polling."</summary><p>Keep the internal pull loop; the worker is the pusher. That gives backpressure for free (it only fetches when the handler finished). True broker-push needs per-consumer in-flight limits and acks, which is more code for no gain in one process.</p></details>
-  <details class="qa"><summary>"Message filtering / wildcard subscriptions."</summary><p>A <code>Predicate&lt;Record&gt;</code> on the subscription, applied before the handler; offsets still advance for filtered records. Wildcards: resolve topic patterns at subscribe time and on <code>createTopic</code>.</p></details>
-  <details class="qa"><summary>"How would this become real Kafka?" (CleverTap-style)</summary><p>Partition becomes a segmented append-only file with an offset index, replicated to followers; the leader acks once in-sync replicas have it (<code>acks=all</code>, <code>min.insync.replicas</code>). Group coordination moves to a coordinator broker with heartbeats and session timeouts. Offsets live in an internal compacted topic. Ordering is still only per partition.</p></details>
+  <p>This uses two conditions, like <code>java.util.concurrent.ArrayBlockingQueue</code>. The thread-pool follow-up works like this. Workers loop on <code>take()</code>. <code>shutdown()</code> sets a flag and rejects new tasks. Workers finish the queued tasks, then exit. To stop them, add one "poison pill" task per worker, or check the flag with <code>poll(timeout)</code>. <code>shutdownNow()</code> interrupts the workers and returns the tasks not yet run. <code>submit</code> wraps the task in a <code>FutureTask</code>. Then an exception shows up through <code>Future.get()</code> and does not kill the worker.</p>
+  <details class="qa"><summary>"Add a dead-letter queue and retries with backoff."</summary><p>Use a decorator: <code>new RetryingHandler(userHandler, maxAttempts, backoff, dlqPublisher)</code>. After the last failure, it publishes the record and the error headers to <code>&lt;topic&gt;.dlq</code>. Then it returns normally, so the offset moves on. Note that waiting between retries stalls the partition. For long waits, publish to a separate delay or retry topic instead.</p></details>
+  <details class="qa"><summary>"Consumers should be able to replay from an offset or a timestamp."</summary><p><code>seek(partition, offset)</code> on the group sets the saved offset. For a timestamp, binary-search the partition log by <code>publishedAt</code>. This works because messages are added in time order. With a clock passed in, tests give the same result every run.</p></details>
+  <details class="qa"><summary>"Add retention: drop messages older than X or beyond N per partition."</summary><p>Keep a <code>baseOffset</code> per partition, so offsets keep their meaning after trimming. List index = offset − baseOffset. A scheduled task trims old messages under the partition lock. A consumer behind the base offset gets <code>OffsetOutOfRange</code>. It then jumps to the oldest or newest message, based on its setting.</p></details>
+  <details class="qa"><summary>"Push-based delivery instead of polling."</summary><p>Keep the pull loop inside. The worker does the pushing. You get backpressure for free, because it fetches only after the handler finishes. Real broker push needs a limit on messages in flight per consumer, plus acks. That is more code with no gain inside one process.</p></details>
+  <details class="qa"><summary>"Message filtering / wildcard subscriptions."</summary><p>Put a <code>Predicate&lt;Record&gt;</code> on the subscription. Run it before the handler. Offsets still move on for skipped records. For wildcards, match topic patterns at subscribe time, and again on <code>createTopic</code>.</p></details>
+  <details class="qa"><summary>"How would this become real Kafka?" (CleverTap-style)</summary><p>A partition becomes a file split into segments, with an index by offset. It is copied to follower machines. The leader confirms a write once the in-sync replicas (followers that are up to date) have it. The settings are <code>acks=all</code> and <code>min.insync.replicas</code>. A coordinator broker runs the groups, using heartbeats and session timeouts. Offsets live in an internal compacted topic, which keeps only the latest value per key. Order is still only per partition.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Offsets contiguous</h4><p>8 threads × 1,000 publishes to one partition → offsets 0..7999, no gaps.</p></div>
-    <div class="key"><h4>Per-key order</h4><p>Sequence numbers per key strictly increase in the handler.</p></div>
-    <div class="key"><h4>Stale commit rejected</h4><p>Old generation → <code>commit</code> returns false, offset unchanged.</p></div>
+    <div class="key"><h4>No gaps in offsets</h4><p>8 threads each publish 1,000 messages to one partition. Expect offsets 0..7999 with no gaps.</p></div>
+    <div class="key"><h4>Order per key</h4><p>The handler sees sequence numbers for each key always going up.</p></div>
+    <div class="key"><h4>Old commit rejected</h4><p>With an old generation, <code>commit</code> returns false. The offset does not change.</p></div>
   </div>
-  <p>Use latches with timeouts, never <code>Thread.sleep</code>.</p>
+  <p>Wait with latches and timeouts. Never use <code>Thread.sleep</code>.</p>
   <details class="deep"><summary>Go deeper: all ten tests</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>sameKeyAlwaysLandsOnSamePartition</code></td><td>1,000 publishes of key "k" return one partition id.</td></tr>
-    <tr><td><code>offsetsAreContiguousUnderConcurrentProducers</code></td><td>8 threads × 1,000 publishes to one partition yield offsets 0..7999 with no gaps or duplicates.</td></tr>
-    <tr><td><code>perKeyOrderPreservedForConsumer</code></td><td>Sequence numbers per key are strictly increasing in what the handler sees.</td></tr>
+    <tr><td><code>sameKeyAlwaysLandsOnSamePartition</code></td><td>1,000 publishes of key "k" all return one partition id.</td></tr>
+    <tr><td><code>offsetsAreContiguousUnderConcurrentProducers</code></td><td>8 threads × 1,000 publishes to one partition give offsets 0..7999. No gaps, no duplicates.</td></tr>
+    <tr><td><code>perKeyOrderPreservedForConsumer</code></td><td>The handler sees each key's sequence numbers always going up.</td></tr>
     <tr><td><code>eachGroupReceivesEveryMessage</code></td><td>Two groups each count N messages.</td></tr>
-    <tr><td><code>withinGroupEachMessageHandledOnce</code></td><td>Two consumers in one group, no rebalance: union = N, intersection = 0.</td></tr>
-    <tr><td><code>consumerLeavingTriggersReassignment</code></td><td>After close, the remaining member owns all partitions and processing continues from the committed offset.</td></tr>
-    <tr><td><code>staleGenerationCommitIsRejected</code></td><td><code>commit</code> with old generation returns false; committed offset unchanged.</td></tr>
-    <tr><td><code>readBlocksUntilAppendThenReturns</code></td><td>A reader with 1 s wait returns within a few ms of an append (latch-based, no sleeps).</td></tr>
-    <tr><td><code>failingHandlerGoesToDlqAfterMaxAttempts</code></td><td>Handler called maxAttempts times; DLQ topic has the record; offset advanced.</td></tr>
-    <tr><td><code>closeStopsWorkersPromptly</code></td><td><code>broker.close()</code> returns and executor is terminated within timeout.</td></tr>
+    <tr><td><code>withinGroupEachMessageHandledOnce</code></td><td>Two consumers in one group, no rebalance. Together they see N, with no overlap.</td></tr>
+    <tr><td><code>consumerLeavingTriggersReassignment</code></td><td>After one closes, the other owns all partitions. It continues from the saved offset.</td></tr>
+    <tr><td><code>staleGenerationCommitIsRejected</code></td><td><code>commit</code> with an old generation returns false. The saved offset does not change.</td></tr>
+    <tr><td><code>readBlocksUntilAppendThenReturns</code></td><td>A reader waiting up to 1 s returns within a few ms of an append. Use latches, no sleeps.</td></tr>
+    <tr><td><code>failingHandlerGoesToDlqAfterMaxAttempts</code></td><td>The handler is called maxAttempts times. The DLQ topic has the record. The offset moved on.</td></tr>
+    <tr><td><code>closeStopsWorkersPromptly</code></td><td><code>broker.close()</code> returns, and the executor stops within the timeout.</td></tr>
   </table></div>
-  <p>Use <code>CountDownLatch</code> and <code>awaitility</code>-style polling with timeouts rather than <code>Thread.sleep</code>. A flaky concurrent test in a live round costs more than a missing one.</p>
+  <p>Use <code>CountDownLatch</code>, and <code>awaitility</code>-style checks with timeouts, rather than <code>Thread.sleep</code>. A test that sometimes fails in a live round costs more than a missing test.</p>
   </details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected, and review questions</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
-      <li><b>Weak shutdown and exception handling</b> in the thread pool follow-up (Rubrik "lean hire": <code>shutdown()</code> not convincing, catching only <code>InterruptedException</code> and <code>Exception</code> was "not enough" — think about what a task's exception does to the worker thread and how callers observe it).</li>
-      <li><b>Not understanding the ask and fumbling the API</b> for a generic queue system, then being unable to answer counter-questions about partitions and brokers (CleverTap rejection).</li>
-      <li>One <code>synchronized</code> on the whole broker: correct, but every topic serialises behind one lock, and the reviewer will ask why.</li>
-      <li>Busy-wait polling loops with <code>Thread.sleep(1)</code>.</li>
-      <li>Claiming "global ordering" while using several partitions and several consumers.</li>
-      <li>No running demo at the end; code that "would work".</li>
+      <li><b>Weak shutdown and error handling</b> in the thread-pool follow-up. Rubrik gave "lean hire": <code>shutdown()</code> was not convincing. Catching only <code>InterruptedException</code> and <code>Exception</code> was "not enough". Think about what a task's exception does to the worker thread. Think about how callers see it.</li>
+      <li><b>Not understanding the ask, and a messy API</b> for a generic queue system. The candidate then could not answer follow-ups about partitions and brokers (CleverTap rejection).</li>
+      <li>One <code>synchronized</code> on the whole broker. It is correct, but every topic waits behind one lock. The reviewer will ask why.</li>
+      <li>Waiting loops that call <code>Thread.sleep(1)</code> over and over (busy-waiting).</li>
+      <li>Claiming "order for the whole topic" while using several partitions and several consumers.</li>
+      <li>No running demo at the end, only code that "would work".</li>
     </ul>
   </div>
   <h3>Interview questions</h3>
-  <details class="qa"><summary>Why a lock per partition and not one lock for the broker?</summary><p>Partitions are independent units of ordering, so they are the natural unit of mutual exclusion. Producers to different partitions never contend. The topic and group maps are <code>ConcurrentHashMap</code>, so lookup is lock-free.</p></details>
-  <details class="qa"><summary>Why not <code>CopyOnWriteArrayList</code> for the log?</summary><p>Every append copies the array: O(n) per write, quadratic overall. It is for read-mostly lists with rare writes, the opposite of a log.</p></details>
-  <details class="qa"><summary>Why not just use <code>LinkedBlockingQueue</code> per partition?</summary><p>A queue removes on take, so a second group cannot read the same message and nobody can replay. A log plus per-group offsets gives fan-out and replay for free. For a single-group work queue a <code>BlockingQueue</code> is fine, and I would say so.</p></details>
-  <details class="qa"><summary>What delivery guarantee do you give and where is it decided?</summary><p>At-least-once: the worker commits <code>offset + 1</code> after the handler returns. Moving the commit before the handler makes it at-most-once. Exactly-once needs idempotent handlers or transactional commit of output and offset together.</p></details>
-  <details class="qa"><summary>What if one partition is hot?</summary><p>Ordering per key forces that key to one partition, so one consumer handles it. Options: better keys (add a sub-key if strict ordering only matters per sub-entity), more partitions, or within a consumer process different keys of the same partition in parallel while keeping per-key order (key-ordered executor).</p></details>
-  <details class="qa"><summary>Why virtual threads here?</summary><p>Workers mostly block in <code>awaitNanos</code>; virtual threads make one-thread-per-consumer cheap. <code>ReentrantLock</code> does not pin a carrier thread the way <code>synchronized</code> did before JDK 24, which is another reason for explicit locks in the partition.</p></details>
-  <details class="qa"><summary>How do you add a new partitioning rule without touching <code>Topic</code>?</summary><p>Implement <code>Partitioner</code> and pass it to <code>createTopic</code>. Open/closed: the topic only depends on the interface.</p></details>
+  <details class="qa"><summary>Why a lock per partition and not one lock for the broker?</summary><p>Each partition keeps its own order, apart from the others. So each partition is the natural thing to lock. Producers writing to different partitions never wait for each other. The topic and group maps are <code>ConcurrentHashMap</code>, so lookups need no lock.</p></details>
+  <details class="qa"><summary>Why not <code>CopyOnWriteArrayList</code> for the log?</summary><p>Every append copies the whole array. That is O(n) per write, and O(n²) in total. It is built for lists that are read a lot and written rarely. A log is the opposite.</p></details>
+  <details class="qa"><summary>Why not just use <code>LinkedBlockingQueue</code> per partition?</summary><p>A queue removes a message when it is taken. So a second group cannot read it, and nobody can replay it. A log plus one offset per group gives fan-out (every group gets every message) and replay for free. For a work queue with only one group, a <code>BlockingQueue</code> is fine, and I would say so.</p></details>
+  <details class="qa"><summary>What delivery guarantee do you give and where is it decided?</summary><p>At-least-once. The worker commits <code>offset + 1</code> after the handler returns. Moving the commit before the handler makes it at-most-once. Exactly-once needs idempotent handlers. Or it needs the output and the offset saved together in one transaction.</p></details>
+  <details class="qa"><summary>What if one partition is hot?</summary><p>Order per key forces that key onto one partition, so one consumer handles it. There are three options. Pick better keys: add a sub-key if strict order only matters per sub-item. Add more partitions. Or, inside one consumer, process different keys of the same partition in parallel. Keep order per key with a key-ordered executor.</p></details>
+  <details class="qa"><summary>Why virtual threads here?</summary><p>Workers spend most of their time waiting in <code>awaitNanos</code>. Virtual threads make one thread per consumer cheap. Before JDK 24, <code>synchronized</code> pinned the real carrier thread underneath a virtual thread. <code>ReentrantLock</code> does not pin it. That is another reason to use explicit locks in the partition.</p></details>
+  <details class="qa"><summary>How do you add a new partitioning rule without touching <code>Topic</code>?</summary><p>Implement <code>Partitioner</code> and pass it to <code>createTopic</code>. This is the open/closed principle: the topic depends only on the interface.</p></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–8 min</span><span>Clarify: groups, per-key ordering, pull, at-least-once, dynamic membership. Write the agreed requirements as a comment block at the top of <code>Main</code>.</span></div>
-    <div class="step"><span class="t">8–15 min</span><span>Sketch classes (table above) and the publish and consume flow. Name the patterns aloud.</span></div>
-    <div class="step"><span class="t">15–35 min</span><span><code>Message</code>, <code>Record</code>, <code>Partitioner</code>, <code>Partition</code> with lock and <code>Condition</code>, <code>Topic</code>. Quick test: concurrent producers, contiguous offsets.</span></div>
-    <div class="step"><span class="t">35–55 min</span><span><code>ConsumerGroup</code> with range assignment and generation, <code>ConsumerWorker</code> poll loop, <code>Broker</code> façade with virtual threads.</span></div>
-    <div class="step"><span class="t">55–70 min</span><span>Demo <code>main</code>: 3 partitions, 2 groups, 4 producers, per-key order check. Fix what breaks.</span></div>
-    <div class="step"><span class="t">70–82 min</span><span><code>RetryingHandler</code> + DLQ decorator, consumer leave and rebalance, clean <code>close()</code>.</span></div>
-    <div class="step"><span class="t">82–90 min</span><span>Run tests, tidy names, write a README-style comment listing guarantees and known limits (no persistence, at-least-once, retention not implemented).</span></div>
-    <div class="step"><span class="t">Review 30 min</span><span>Walk the reviewer through the lock map: which lock guards what. Expect "why", "what if a consumer crashes", "how to make it Kafka".</span></div>
+    <div class="step"><span class="t">0–8 min</span><span>Ask: groups, order per key, pull, at-least-once, consumers joining and leaving. Write the agreed requirements as a comment at the top of <code>Main</code>.</span></div>
+    <div class="step"><span class="t">8–15 min</span><span>Sketch the classes (table above) and the publish and read flow. Name the patterns out loud.</span></div>
+    <div class="step"><span class="t">15–35 min</span><span>Write <code>Message</code>, <code>Record</code>, <code>Partitioner</code>, <code>Partition</code> with a lock and <code>Condition</code>, and <code>Topic</code>. Quick test: many producers, offsets with no gaps.</span></div>
+    <div class="step"><span class="t">35–55 min</span><span>Write <code>ConsumerGroup</code> with range assignment and generation. Then the <code>ConsumerWorker</code> loop, and the <code>Broker</code> front class with virtual threads.</span></div>
+    <div class="step"><span class="t">55–70 min</span><span>Demo <code>main</code>: 3 partitions, 2 groups, 4 producers, order check per key. Fix what breaks.</span></div>
+    <div class="step"><span class="t">70–82 min</span><span>Add the <code>RetryingHandler</code> and DLQ decorator, consumer leave and rebalance, and a clean <code>close()</code>.</span></div>
+    <div class="step"><span class="t">82–90 min</span><span>Run tests and tidy names. Write a short comment listing guarantees and known limits: no saving to disk, at-least-once, no retention yet.</span></div>
+    <div class="step"><span class="t">Review 30 min</span><span>Walk the reviewer through each lock and what it protects. Expect "why", "what if a consumer crashes" and "how to make it Kafka".</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">The interviewer wants all events for one order processed in order. What do you guarantee?</p>
+  <div class="quiz" data-answer="2"><p class="q">The interviewer wants all events for one order handled in order. What do you promise?</p>
     <div class="opts"><button class="opt" type="button">Global order across the topic</button><button class="opt" type="button">Order only with a single consumer group</button><button class="opt" type="button">Order per key, because one key always maps to one partition</button></div>
-    <p class="why">Global order would force one partition. Hashing the order id to a partition keeps its events ordered while other keys run in parallel.</p></div>
+    <p class="why">Order for the whole topic would force one partition. Hashing the order id picks one partition for that order. Its events stay in order, while other orders run in parallel.</p></div>
   <div class="quiz" data-answer="0"><p class="q">You move <code>commit</code> before the handler call. What changes?</p>
     <div class="opts"><button class="opt" type="button">Delivery becomes at-most-once: a crash after commit loses the message</button><button class="opt" type="button">Delivery becomes exactly-once</button><button class="opt" type="button">Nothing, order is the same</button></div>
-    <p class="why">The offset already moved past the message, so nobody re-reads it after a crash.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Why use a log plus per-group offsets instead of a <code>LinkedBlockingQueue</code> per partition?</p>
+    <p class="why">The bookmark has already moved past the message. After a crash, nobody reads it again.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Why use a log plus one offset per group, instead of a <code>LinkedBlockingQueue</code> per partition?</p>
     <div class="opts"><button class="opt" type="button">It is faster to append</button><button class="opt" type="button">A queue removes on take, so other groups cannot read it and nobody can replay</button><button class="opt" type="button">BlockingQueue is not thread-safe</button></div>
-    <p class="why">A log keeps every message; each group tracks its own position, which gives fan-out and replay.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">A worker that lost its partition in a rebalance tries to commit. What stops it?</p>
+    <p class="why">A log keeps every message. Each group tracks its own position. So every group gets every message, and you can replay.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">A worker lost its partition in a rebalance. It now tries to commit. What stops it?</p>
     <div class="opts"><button class="opt" type="button">The partition lock</button><button class="opt" type="button"><code>ConcurrentHashMap</code></button><button class="opt" type="button">The generation number: a stale generation makes <code>commit</code> return false</button></div>
-    <p class="why">Each rebalance bumps the generation. Commits carry the generation they were assigned under, so old owners are fenced out.</p></div>
+    <p class="why">Each rebalance raises the generation. A commit carries the generation it started with. So old owners are shut out.</p></div>
 
   <div class="cheat" id="cheat"><b>Cheat sheet</b><ul>
-    <li>Topic → N partitions; partition = append-only list, offset = index.</li>
-    <li>Same key → same partition (<code>floorMod(hash, n)</code>); order is per partition only.</li>
-    <li>Different groups = broadcast; same group = load sharing, one consumer per partition.</li>
-    <li>Lock per partition + <code>Condition</code> long-poll; no busy-waiting.</li>
-    <li>Process then commit <code>offset + 1</code> = at-least-once; handlers idempotent.</li>
-    <li>Rebalance bumps generation; stale commits rejected; <code>merge(Math::max)</code>.</li>
-    <li>Strategy (partitioner), Decorator (retry/DLQ), Façade (Broker), no Singleton.</li>
-    <li>Have a running demo by minute 70; restore the interrupt flag on shutdown.</li>
+    <li>A topic has N partitions. A partition is a list that only grows at the end. Offset = list index.</li>
+    <li>Same key goes to the same partition (<code>floorMod(hash, n)</code>). Order holds only within a partition.</li>
+    <li>Different groups each get every message. One group shares the work, one consumer per partition.</li>
+    <li>One lock per partition, plus a <code>Condition</code> for waiting reads. No busy-waiting.</li>
+    <li>Process first, then commit <code>offset + 1</code>. That is at-least-once, so handlers must be idempotent.</li>
+    <li>A rebalance raises the generation. Old commits are rejected. Use <code>merge(Math::max)</code>.</li>
+    <li>Patterns: Strategy (partitioner), Decorator (retry, DLQ), Façade (Broker). No Singleton.</li>
+    <li>Have a running demo by minute 70. Set the interrupt flag again on shutdown.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">13</span>Sources</h2>

@@ -12,22 +12,32 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>Splitwise / Expense Sharing</h1>
-  <p class="lede">You will be able to code an expense-sharing service that is exact to the paisa, adds split types without touching the service, and stays consistent under concurrent writes.</p>
+  <p class="lede">Splitwise tracks who owes whom after shared spending, like a Goa trip with friends. By the end, you can code an expense-sharing service that is exact to the paisa. You can add new ways to split a bill without touching the service. And the balances stay correct when many people add expenses at once.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 90 min (Navi) to 2 h (Groww)</span>
-    <span class="fact"><b>Seen:</b> ~7 reports, 2025–26</span>
-    <span class="fact"><b>Format:</b> IDE share, main() driver or CLI commands</span>
+    <span class="fact"><b>Seen:</b> about 7 interview reports, 2025–26</span>
+    <span class="fact"><b>Format:</b> shared IDE, a main() driver, or command-line commands</span>
   </div>
   <div class="chips"><span class="chip hot">Groww</span><span class="chip hot">Navi</span><span class="chip hot">Walmart</span><span class="chip">Swiggy</span><span class="chip">Salesforce</span><span class="chip">Uber</span><span class="chip">Rippling</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Money in <code>long</code> paise; shares always sum exactly to the total.</li>
-    <li>Each split type is a Strategy; the service never branches on type.</li>
-    <li>One signed net number per user pair, updated under a group lock.</li>
-    <li>Simplify debts greedily; the true minimum is NP-hard.</li>
+    <li>Store money as a whole number of paise in a <code>long</code>. The shares must always add up exactly to the total.</li>
+    <li>Each way of splitting is its own Strategy class. The service never checks "which split type is this?".</li>
+    <li>Keep one signed number per pair of users. Update it while holding the group's lock.</li>
+    <li>Simplify debts with a greedy method. Finding the true minimum is NP-hard, meaning too slow for big groups.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>A hostel room's shared notebook. Instead of writing every IOU, each pair of roommates keeps one running number. ₹100 for three is 33.34 + 33.33 + 33.33, and someone has to take the extra paisa.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of a shared notebook in a hostel room. Nobody writes every IOU. Each pair of roommates keeps one running number instead. Split ₹100 three ways and you get 33.34 + 33.33 + 33.33. Someone has to take the extra paisa.</p></div>
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Paise</dt><dd>1/100 of a rupee. We store ₹100.50 as the whole number 10050, so there are no rounding errors.</dd>
+    <dt>Split type</dt><dd>How a bill is shared: equally, by exact amounts, by percentage, or by shares (like 2 shares for one person, 1 for another).</dd>
+    <dt>Balance / net</dt><dd>After all expenses, how much one person owes another. A positive net means you are owed money overall.</dd>
+    <dt>Settle up</dt><dd>Recording a real payment, like a UPI transfer, that reduces what someone owes.</dd>
+    <dt>Debt simplification</dt><dd>Reducing the number of payments needed. Instead of A pays B and B pays C, A pays C directly.</dd>
+    <dt>Idempotent</dt><dd>Doing it twice has the same effect as once. If the app retries "add dinner", the dinner is still added once.</dd>
+    <dt>Invariant</dt><dd>A rule that must always be true. Here, shares add up to the total, and a group's balances add up to zero.</dd>
+    <dt>NP-hard</dt><dd>A problem with no known fast exact solution. The time explodes as the input grows.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -48,74 +58,74 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Money correctness</h4><p>Integer paise; shares sum exactly; deterministic remainder.</p></div>
-    <div class="key"><h4>Extensibility</h4><p>New split type = one new strategy class.</p></div>
-    <div class="key"><h4>Balance model</h4><p>One net number per pair, not a growing IOU list.</p></div>
-    <div class="key"><h4>Completeness</h4><p>Runs end to end. Walmart's only critique: an unfinished service.</p></div>
+    <div class="key"><h4>Money correctness</h4><p>Whole-number paise. Shares add up exactly. The extra paisa always goes to the same person by a fixed rule.</p></div>
+    <div class="key"><h4>Extensibility</h4><p>A new split type is one new strategy class.</p></div>
+    <div class="key"><h4>Balance model</h4><p>One net number per pair, not an ever-growing list of IOUs.</p></div>
+    <div class="key"><h4>Completeness</h4><p>It runs end to end. Walmart's only criticism was an unfinished service.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: how the rounds ran and the full grading list</summary>
-  <p>Groww's SDE-II machine coding round was two hours to "build Splitwise"; the candidate who got the offer implemented the core features and verified them with multiple test cases from a main class. Navi gave 90 minutes onsite for an expense tracker "similar to Splitwise", with the focus on classes, interfaces and extensibility before the core implementation. Walmart's SDE-III LLD round had the candidate open an IDE: requirements covered users, groups, expenses, balances and settle-up, with equal / percentage / exact split types, of which only equal had to be coded. Split was modelled as an abstract class with a Strategy per type; feedback was positive, with "focus more on service completion" because the service was 70% done. Swiggy asked for splits by user percentage. Uber took it to HLD with debt minimisation. Rippling's AI-allowed coding rounds stressed clean classes and optimal complexity, and a delivery-cost problem there is a reminder that money in <code>double</code> breaks at the paisa.</p>
-  <p>Users, groups, expenses split equally, by exact amounts, by percentage or by shares, and a balance sheet showing who owes whom. It looks easy, and that is the trap. Interviewers grade money handling (no <code>double</code>, remainders that add up to the paisa), a Strategy seam for split types, consistent balances under concurrent writes, and a clear answer on debt simplification.</p>
+  <p>Groww's SDE-II machine coding round gave two hours to "build Splitwise". The candidate who got the offer built the core features. They checked them with several test cases run from a main class. Navi gave 90 minutes onsite for an expense tracker "similar to Splitwise". The focus was on classes, interfaces and extensibility, before the core code. Walmart's SDE-III LLD round had the candidate open an IDE. The requirements covered users, groups, expenses, balances and settle-up. Split types were equal, percentage and exact, but only equal had to be coded. The candidate modelled Split as an abstract class, with a Strategy per type. Feedback was positive, with "focus more on service completion", because the service was only 70% done. Swiggy asked for splits by user percentage. Uber took it into high-level design with debt minimisation. Rippling's coding rounds allowed AI tools and stressed clean classes and the best complexity. A delivery-cost problem there is a reminder that money in a <code>double</code> breaks at the paisa.</p>
+  <p>The task covers users and groups, and expenses split equally, by exact amounts, by percentage or by shares. It also needs a balance sheet showing who owes whom. It looks easy, and that is the trap. Interviewers grade money handling. That means no <code>double</code>, and remainders that add up to the paisa. They grade a Strategy interface for split types, and balances that stay correct with writes at the same time. They also want a clear answer on debt simplification.</p>
   <ul>
-    <li><b>Money correctness.</b> Integer paise or <code>BigDecimal</code>; shares always sum exactly to the total; deterministic remainder allocation.</li>
-    <li><b>Extensibility.</b> New split type = one new strategy class. Validation lives with the strategy that needs it.</li>
-    <li><b>Balance model.</b> One net number per pair, not a growing list of IOUs; O(1) update per participant.</li>
-    <li><b>Completeness.</b> The service runs end to end with a driver; Walmart's only critique was an unfinished service.</li>
-    <li><b>Concurrency.</b> Applying an expense is atomic: a reader never sees half of a multi-person split.</li>
-    <li><b>Algorithms.</b> Simplify debts: greedy in O(n log n); know that the true minimum is NP-hard.</li>
+    <li><b>Money correctness.</b> Use whole-number paise or <code>BigDecimal</code>. Shares always add up exactly to the total. Hand out leftover paise by a fixed rule.</li>
+    <li><b>Extensibility.</b> A new split type is one new strategy class. Each strategy checks its own inputs.</li>
+    <li><b>Balance model.</b> One net number per pair, not a growing list of IOUs. Each participant costs O(1) to update.</li>
+    <li><b>Completeness.</b> The service runs end to end with a driver. Walmart's only criticism was an unfinished service.</li>
+    <li><b>Concurrency.</b> Adding an expense happens as one step. A reader never sees half of a split among several people.</li>
+    <li><b>Algorithms.</b> Simplify debts greedily in O(n log n). Know that the true minimum is NP-hard.</li>
   </ul></details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Which split types?</td><td>Agree which to code, which to stub.</td></tr>
-    <tr><td>Who absorbs rounding?</td><td>Must be deterministic: first in order, or the payer.</td></tr>
-    <tr><td>Multiple payers?</td><td>Expense holds a map of paid amounts.</td></tr>
-    <tr><td>Groups only, or friends too?</td><td>Balances per group vs global.</td></tr>
-    <tr><td>Raw or simplified debts?</td><td>Simplifying changes who pays whom.</td></tr>
-    <tr><td>Edit or delete expenses?</td><td>Store shares so you can reverse.</td></tr>
-    <tr><td>Multi-currency? Input format?</td><td>Never sum currencies; CLI like <code>EXPENSE u1 1000 4 … EQUAL</code>.</td></tr>
+    <tr><td>Which split types?</td><td>Agree which to code and which to leave as stubs.</td></tr>
+    <tr><td>Who takes the rounding paisa?</td><td>It must follow a fixed rule, like the first person in order, or the payer.</td></tr>
+    <tr><td>Can several people pay one bill?</td><td>Then the expense holds a map of who paid how much.</td></tr>
+    <tr><td>Groups only, or friends outside groups too?</td><td>It decides whether balances are kept per group or overall.</td></tr>
+    <tr><td>Show raw or simplified debts?</td><td>Simplifying changes who pays whom.</td></tr>
+    <tr><td>Can expenses be edited or deleted?</td><td>Then store each expense's shares, so you can undo them.</td></tr>
+    <tr><td>Several currencies? What input format?</td><td>Never add different currencies together. Command-line input looks like <code>EXPENSE u1 1000 4 … EQUAL</code>.</td></tr>
   </table></div>
   <details class="deep"><summary>Go deeper: the full "why it matters" notes</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Which split types: equal, exact, percent, shares?</td><td>Each is a strategy; agree which to code and which to stub.</td></tr>
-    <tr><td>Who absorbs rounding? ₹100 / 3 = 33.33 + 33.33 + 33.34.</td><td>Must be deterministic and documented. Common rule: the extra paise go to the first participants in input order (or to the payer).</td></tr>
-    <tr><td>Is the payer always a participant? Can there be multiple payers?</td><td>Multi-payer changes the expense model to a map of paid amounts.</td></tr>
-    <tr><td>Groups only, or also non-group expenses between friends?</td><td>Balance sheet keyed globally vs per group.</td></tr>
-    <tr><td>Show raw pairwise balances or simplified debts?</td><td>Simplification changes who pays whom; Splitwise offers it as a group setting.</td></tr>
-    <tr><td>Can expenses be edited or deleted?</td><td>Requires storing shares per expense so you can reverse them.</td></tr>
-    <tr><td>Currency: one, or multi-currency?</td><td>Multi-currency means balances per currency; never sum different currencies.</td></tr>
-    <tr><td>Input: CLI commands, method calls, or REST?</td><td>Classic format: <code>EXPENSE u1 1000 4 u1 u2 u3 u4 EQUAL</code>, <code>SHOW</code>, <code>SHOW u1</code>.</td></tr>
+    <tr><td>Which split types: equal, exact, percent, shares?</td><td>Each is a strategy. Agree which to code and which to stub.</td></tr>
+    <tr><td>Who takes the rounding? ₹100 / 3 = 33.33 + 33.33 + 33.34.</td><td>It must follow a fixed, written rule. A common rule: extra paise go to the first participants in input order (or to the payer).</td></tr>
+    <tr><td>Is the payer always a participant? Can several people pay?</td><td>Several payers change the expense into a map of paid amounts.</td></tr>
+    <tr><td>Groups only, or also expenses between friends outside a group?</td><td>The balance sheet is then keyed overall rather than per group.</td></tr>
+    <tr><td>Show raw balances per pair, or simplified debts?</td><td>Simplifying changes who pays whom. Splitwise offers it as a group setting.</td></tr>
+    <tr><td>Can expenses be edited or deleted?</td><td>You must store the shares of each expense, so you can reverse them.</td></tr>
+    <tr><td>Currency: one, or several?</td><td>Several currencies means balances per currency. Never add different currencies together.</td></tr>
+    <tr><td>Input: command-line commands, method calls, or REST?</td><td>The classic format is <code>EXPENSE u1 1000 4 u1 u2 u3 u4 EQUAL</code>, <code>SHOW</code> and <code>SHOW u1</code>.</td></tr>
   </table></div></details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li>Users, groups, members.</li>
-      <li>Add expense: payer, total, split.</li>
-      <li>Show non-zero balances.</li>
-      <li>Settle up; simplify; history.</li>
+      <li>Users, groups and members.</li>
+      <li>Add an expense with payer, total and split.</li>
+      <li>Show balances that are not zero.</li>
+      <li>Settle up, simplify, and show history.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>Exact; group nets sum to zero.</li>
-      <li>Thread-safe, idempotent.</li>
-      <li>O(participants) per expense.</li>
+      <li>Exact to the paisa. A group's nets add up to zero.</li>
+      <li>Thread-safe. Retries don't add an expense twice.</li>
+      <li>Work grows only with the number of participants.</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>UPI, notifications, auth.</li>
-      <li>Persistence; FX rates.</li>
+      <li>UPI payments, notifications, login.</li>
+      <li>Saving to a database, exchange rates.</li>
     </ul></div>
   </div>
   <details class="deep"><summary>Go deeper: full requirement list</summary><ul>
-    <li>Create users and groups; add members.</li>
+    <li>Create users and groups. Add members.</li>
     <li>Add an expense: payer, total, participants, split type and values.</li>
-    <li>Show balances for all, for one user, or for one group; only non-zero entries.</li>
-    <li>Settle up (record a payment) fully or partially.</li>
-    <li>Simplify group debts on request.</li>
-    <li>Expense history per group / user.</li>
-    <li>Exact to the paisa; the sum of all balances in a group is always zero. Thread-safe expense application; idempotent expense creation. O(participants) per expense; O(1) pair lookup.</li>
-    <li>Out of scope (say so): real payments (UPI integration), notifications, auth; persistence (repository interfaces only); FX rates (keep per-currency balances if asked).</li>
+    <li>Show balances for everyone, for one user, or for one group. Show only entries that are not zero.</li>
+    <li>Settle up (record a payment), fully or partly.</li>
+    <li>Simplify group debts when asked.</li>
+    <li>Expense history per group and per user.</li>
+    <li>Exact to the paisa. All balances in a group always add up to zero. Adding an expense is thread-safe and idempotent. Each expense costs O(participants). Looking up a pair costs O(1).</li>
+    <li>Out of scope (say so): real payments (UPI integration), notifications and login. Also saving data, so only repository interfaces. Also exchange rates, but keep balances per currency if asked.</li>
   </ul></details>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
@@ -132,24 +142,24 @@
 
   <h3>Patterns: what and why here</h3>
   <div class="keys">
-    <div class="key"><h4>Strategy → split types</h4><p>Picked from a <code>Map&lt;SplitType, SplitStrategy&gt;</code>, so the service never branches on type. An abstract <code>Split</code> class works too.</p></div>
-    <div class="key"><h4>Value objects → ledger</h4><p><code>Expense</code> and <code>Transfer</code> are records: entries cannot change after they are applied.</p></div>
-    <div class="key"><h4>Repository → storage</h4><p>Interfaces for users, groups, expenses.</p></div>
-    <div class="key"><h4>Command → CLI input</h4><p>When the input is text like <code>EXPENSE …</code> and <code>SHOW</code>.</p></div>
+    <div class="key"><h4>Strategy → split types</h4><p>The service picks a strategy from a <code>Map&lt;SplitType, SplitStrategy&gt;</code>, so it never checks the type itself. An abstract <code>Split</code> class works too.</p></div>
+    <div class="key"><h4>Value objects → ledger</h4><p><code>Expense</code> and <code>Transfer</code> are records. Once an entry is applied, it can't change.</p></div>
+    <div class="key"><h4>Repository → storage</h4><p>Interfaces for users, groups and expenses, so a database can be plugged in later.</p></div>
+    <div class="key"><h4>Command → CLI input</h4><p>Use it when the input is text, like <code>EXPENSE …</code> and <code>SHOW</code>.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: class responsibilities and the request path</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
-    <tr><td><code>User</code> (record)</td><td>Identity</td><td>id, name, email</td></tr>
-    <tr><td><code>Group</code></td><td>Members and its own balance sheet</td><td>id, name, <code>Set&lt;String&gt; members</code>, <code>BalanceSheet</code></td></tr>
-    <tr><td><code>Money</code></td><td>Parse and format; all arithmetic in <code>long</code> paise</td><td><code>parse("1000.50")</code> → 100050, <code>format</code></td></tr>
+    <tr><td><code>User</code> (record)</td><td>Who the person is</td><td>id, name, email</td></tr>
+    <tr><td><code>Group</code></td><td>Members, and the group's own balance sheet</td><td>id, name, <code>Set&lt;String&gt; members</code>, <code>BalanceSheet</code></td></tr>
+    <tr><td><code>Money</code></td><td>Reads and prints amounts. All maths is in <code>long</code> paise.</td><td><code>parse("1000.50")</code> → 100050, <code>format</code></td></tr>
     <tr><td><code>SplitType</code> (enum)</td><td>Names the strategy</td><td>EQUAL, EXACT, PERCENT, SHARE</td></tr>
-    <tr><td><code>SplitStrategy</code> (interface)</td><td>Turns a total and inputs into exact shares; validates its own inputs</td><td><code>Map&lt;String, Long&gt; split(long total, List&lt;Participant&gt;)</code></td></tr>
-    <tr><td><code>Participant</code> (record)</td><td>User plus the split-specific value</td><td>userId, <code>BigDecimal value</code> (amount, percent or share; ignored for equal)</td></tr>
-    <tr><td><code>Expense</code> (record)</td><td>Immutable ledger entry with computed shares</td><td>id, groupId, paidBy, total, <code>Map&lt;String, Long&gt; shares</code>, type, createdAt</td></tr>
-    <tr><td><code>BalanceSheet</code></td><td>Net amount per unordered pair; per-user net</td><td><code>addDebt(debtor, creditor, paise)</code>, <code>balancesOf(user)</code>, <code>netByUser()</code></td></tr>
-    <tr><td><code>DebtSimplifier</code></td><td>Turns net balances into a small set of transfers</td><td><code>List&lt;Transfer&gt; simplify(Map&lt;String, Long&gt; net)</code></td></tr>
-    <tr><td><code>ExpenseService</code></td><td>Validates, splits, records, applies atomically</td><td><code>addExpense</code>, <code>settle</code>, <code>deleteExpense</code>, <code>show</code></td></tr>
+    <tr><td><code>SplitStrategy</code> (interface)</td><td>Turns a total and inputs into exact shares. Checks its own inputs.</td><td><code>Map&lt;String, Long&gt; split(long total, List&lt;Participant&gt;)</code></td></tr>
+    <tr><td><code>Participant</code> (record)</td><td>A user plus the value for this split</td><td>userId, <code>BigDecimal value</code> (amount, percent or share; ignored for equal)</td></tr>
+    <tr><td><code>Expense</code> (record)</td><td>A ledger entry that never changes, with the worked-out shares</td><td>id, groupId, paidBy, total, <code>Map&lt;String, Long&gt; shares</code>, type, createdAt</td></tr>
+    <tr><td><code>BalanceSheet</code></td><td>The net amount for each pair of users, and each user's overall net</td><td><code>addDebt(debtor, creditor, paise)</code>, <code>balancesOf(user)</code>, <code>netByUser()</code></td></tr>
+    <tr><td><code>DebtSimplifier</code></td><td>Turns net balances into a small set of payments</td><td><code>List&lt;Transfer&gt; simplify(Map&lt;String, Long&gt; net)</code></td></tr>
+    <tr><td><code>ExpenseService</code></td><td>Checks inputs, splits, records, and applies everything as one step</td><td><code>addExpense</code>, <code>settle</code>, <code>deleteExpense</code>, <code>show</code></td></tr>
   </table></div>
   <div class="flow">
     <span class="node">CLI / driver<small>EXPENSE u1 1000 …</small></span><span class="arrow">→</span>
@@ -159,57 +169,57 @@
     <span class="node store">BalanceSheet<small>net per pair</small></span><span class="arrow">→</span>
     <span class="node">DebtSimplifier<small>greedy</small></span>
   </div>
-  <p class="flow-caption">Figure: the service picks a strategy, gets exact shares, stores the immutable expense, then applies one debt per non-payer participant to the group's balance sheet.</p>
-  <p>Patterns in full: Strategy for split types, chosen through a <code>Map&lt;SplitType, SplitStrategy&gt;</code> registry so the service never branches on type. Walmart's candidate used an abstract <code>Split</code> class plus Strategy; either is accepted as long as adding a type touches one class. Value objects (records) for <code>Expense</code> and <code>Transfer</code> so ledger entries cannot change after they are applied. Repository interfaces for users, groups and expenses. Command pattern if the input is CLI text.</p></details>
+  <p class="flow-caption">Figure: the service picks a strategy and gets exact shares. It stores the expense, which never changes. Then it adds one debt to the group's balance sheet for each participant who did not pay.</p>
+  <p>Here are the patterns in full. Strategy handles split types. The service picks one through a <code>Map&lt;SplitType, SplitStrategy&gt;</code>, so it never checks the type. Walmart's candidate used an abstract <code>Split</code> class plus Strategy. Either is accepted, as long as adding a type touches only one class. <code>Expense</code> and <code>Transfer</code> are value objects (records). So ledger entries can't change after they are applied. Repository interfaces cover users, groups and expenses. Use the Command pattern if the input is command-line text.</p></details>
 
   <h2 id="flow"><span class="n">05</span>Watch an expense flow</h2>
   <div class="stepper"><b class="title">Group of u1, u2, u3; all amounts in paise</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell hl">"100"</span><span class="cell">→</span><span class="cell ok">10000</span></div>
       <div class="ptrs"><span class="on">addExpense(E1, u1 pays ₹100, EQUAL)</span><span>total=10000</span></div>
-      <figcaption><code>Money.parse</code> turns the string into 10000 paise via <code>BigDecimal</code>, never through <code>double</code>.</figcaption>
+      <figcaption>u1 pays ₹100 for the group, split equally. The text "100" becomes 10000 paise. It is converted exactly (with <code>BigDecimal</code>), never through a <code>double</code>.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell win">u1 3333+1</span><span class="cell win">u2 3333</span><span class="cell win">u3 3333</span></div>
       <div class="ptrs"><span class="on">EqualSplit</span><span>floors sum 9999</span><span>leftover 1 → u1</span><span>sum=10000</span></div>
-      <figcaption>Each gets the floor, 3333. The one leftover paisa goes to the first in input order. Shares sum exactly to the total.</figcaption>
+      <figcaption>Each person first gets 3333 paise, rounded down. That leaves 1 paisa, which goes to the first person in the list. The shares now add up exactly to ₹100.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">u2 → u1 33.33</span><span class="cell bad">u3 → u1 33.33</span></div>
       <div class="ptrs"><span class="on">synchronized(group)</span><span>net u1=+6666</span><span>u2=−3333</span><span>u3=−3333</span></div>
-      <figcaption>Under the group lock, one <code>addDebt</code> per participant. u1's own share creates no debt. Nets sum to 0.</figcaption>
+      <figcaption>While holding the group's lock, the service records that u2 and u3 each owe u1 ₹33.33. u1's own share creates no debt. All nets add up to 0.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell bad">u2 → u1 33.33</span><span class="cell bad">u3 → u1 33.33</span></div>
       <div class="ptrs"><span class="on">addExpense(E1, …) again</span><span>existing returned</span><span>no change</span></div>
-      <figcaption>The app retried after a timeout. Same expense id, so the stored expense returns and balances stay put.</figcaption>
+      <figcaption>The app timed out and sent the same expense again. The id is the same, so the service returns the saved expense. Balances do not change.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">u1 → u2 26.67</span><span class="cell bad">u3 → u1 33.33</span></div>
       <div class="ptrs"><span class="on">u2 pays ₹60 for u1 (EXACT)</span><span>pair(u1,u2): −3333 + 6000</span></div>
-      <figcaption>One signed number per pair nets automatically: u2 owed 33.33, now u1 owes u2 26.67. No duplicate IOUs.</figcaption>
+      <figcaption>Now u2 pays ₹60 for u1. The pair keeps one number, so the two debts cancel out. u2 owed ₹33.33, and now u1 owes u2 ₹26.67.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">u1 → u2 26.67</span><span class="cell win">u3 → u1 13.33</span></div>
       <div class="ptrs"><span class="on">settle(u3 → u1, ₹20)</span><span>net u1=−1334</span><span>u2=+2667</span><span>u3=−1333</span></div>
-      <figcaption>A payment is a debt in reverse: <code>addDebt(u1, u3, 2000)</code>. u3 now owes 13.33.</figcaption>
+      <figcaption>u3 pays u1 ₹20 over UPI. A payment is just a debt in the other direction (<code>addDebt(u1, u3, 2000)</code>). u3 now owes ₹13.33.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell hl">u1 → u2 13.34</span><span class="cell hl">u3 → u2 13.33</span></div>
       <div class="ptrs"><span class="on">simplify(nets)</span><span>creditor u2</span><span>debtors u1, u3</span></div>
-      <figcaption>Greedy matches the biggest creditor with the biggest debtor. Now u3 pays u2 directly, which is why simplification is opt-in.</figcaption>
+      <figcaption>Simplify pairs whoever is owed the most with whoever owes the most. Now u3 pays u2 directly, though they never shared a bill. That surprise is why simplifying is optional.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="concurrency"><span class="n">06</span>The race and the fix</h2>
-  <p>The bug: <code>BalanceSheet</code> uses a plain <code>HashMap</code>. Two expenses hit the same pair at once:</p>
+  <p>The bug: <code>BalanceSheet</code> uses a plain <code>HashMap</code>, and two expenses update the same pair at the same time:</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A (u2 owes u1 100)</th><th>Thread B (u2 owes u1 50)</th><th>pair(u1,u2)</th></tr></thead><tbody>
     <tr><td>t1</td><td>reads 0</td><td></td><td>0</td></tr>
     <tr><td>t2</td><td></td><td>reads 0</td><td>0</td></tr>
     <tr><td>t3</td><td>writes −100</td><td></td><td>−100</td></tr>
     <tr><td>t4</td><td></td><td>writes −50</td><td class="bad">−50: ₹100 lost</td></tr>
   </tbody></table></div>
-  <p>The fix: apply the whole expense inside <code>synchronized (group)</code>.</p>
+  <p>The fix is to apply the whole expense inside <code>synchronized (group)</code>. Only one expense per group is applied at a time.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>pair(u1,u2)</th></tr></thead><tbody>
     <tr><td>t1</td><td>enters group lock, reads 0</td><td>blocks on group lock</td><td>0</td></tr>
     <tr><td>t2</td><td>writes −100, nets, exits</td><td>waiting</td><td>−100</td></tr>
@@ -217,24 +227,24 @@
     <tr><td>t4</td><td></td><td>writes −150, exits</td><td class="ok">−150: both counted</td></tr>
   </tbody></table></div>
   <div class="callout warn"><b>Why per-key atomics are not enough</b><ul>
-    <li><code>ConcurrentHashMap.merge</code> makes each pair update atomic, but a five-person expense touches four pairs and five nets. A concurrent <code>show</code> could see half.</li>
-    <li>Idempotency check must sit under the same lock as the write.</li>
-    <li>Friend (non-group) expenses: lock the user pair, in sorted order.</li>
+    <li><code>ConcurrentHashMap.merge</code> makes each pair's update safe. But a five-person expense touches four pairs and five nets. A <code>show</code> running at the same time could see only half.</li>
+    <li>The "already added?" check must sit under the same lock as the write.</li>
+    <li>For expenses between friends outside a group, lock the pair of users, in sorted order.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: every concurrency and edge case</summary><ul>
-    <li><b>Atomic application.</b> An expense among five people updates four pairs and five nets. With per-key <code>ConcurrentHashMap.merge</code> each update is atomic but the expense is not: a concurrent <code>show</code> can see two of four debts. A per-group lock (or a <code>ReadWriteLock</code> if reads dominate) fixes it. Non-group expenses between friends use a lock per user pair, taken in sorted order.</li>
-    <li><b>Idempotency.</b> A client-generated expense id (or <code>Idempotency-Key</code> header) checked under the same lock as the write. A mobile app retrying on a timeout must not add the dinner twice.</li>
-    <li><b>Money invariants.</b> Sum of shares == total, checked after every strategy. Sum of nets in a group == 0; assert it in tests.</li>
-    <li><b><code>double</code> is wrong.</b> <code>0.1 + 0.2 != 0.3</code>, and <code>100.0 / 3 * 3</code> loses a paisa. Errors accumulate across thousands of expenses and balances stop netting to zero.</li>
-    <li><b><code>BigDecimal</code> traps.</b> <code>new BigDecimal(0.1)</code> captures the binary error, so use <code>BigDecimal.valueOf</code> or the String constructor. <code>equals</code> compares scale (2.0 ≠ 2.00); use <code>compareTo</code>. <code>divide</code> without a scale and rounding mode throws <code>ArithmeticException</code> on 1/3. Do not use <code>BigDecimal</code> as a <code>HashMap</code> key without normalising scale.</li>
-    <li><b>Validation.</b> Percentages sum to exactly 100; exact amounts sum to the total; no negative values; payer and participants are group members; duplicate participants merged or rejected.</li>
-    <li><b>Self-share.</b> The payer's own share creates no debt (<code>addDebt</code> ignores debtor == creditor).</li>
-    <li><b>Over-settlement.</b> Settling more than owed flips the direction. Either reject it or allow it explicitly (some apps do).</li>
-    <li><b>Time.</b> Inject <code>Clock</code> for <code>createdAt</code> so history ordering is testable.</li>
+    <li><b>Apply as one step.</b> An expense among five people updates four pairs and five nets. With <code>ConcurrentHashMap.merge</code> per key, each update is safe, but the expense as a whole is not. A <code>show</code> running at the same time can see two of four debts. A lock per group fixes it. If reads are much more common than writes, use a <code>ReadWriteLock</code>. Expenses between friends outside a group use a lock per pair of users, taken in sorted order.</li>
+    <li><b>Idempotency.</b> The app creates the expense id (or sends an <code>Idempotency-Key</code> header). Check it under the same lock as the write. A phone app that retries after a timeout must not add the dinner twice.</li>
+    <li><b>Money invariants.</b> After every strategy, check that the shares add up to the total. A group's nets must add up to 0. Assert this in tests.</li>
+    <li><b><code>double</code> is wrong.</b> <code>0.1 + 0.2 != 0.3</code>, and <code>100.0 / 3 * 3</code> loses a paisa. Errors pile up over thousands of expenses, and balances stop adding up to zero.</li>
+    <li><b><code>BigDecimal</code> traps.</b> <code>new BigDecimal(0.1)</code> copies the tiny binary error of the double. Use <code>BigDecimal.valueOf</code> or the String constructor. <code>equals</code> also compares the number of decimal places, so 2.0 ≠ 2.00. Use <code>compareTo</code>. <code>divide</code> without a scale and rounding mode throws <code>ArithmeticException</code> on 1/3. Don't use <code>BigDecimal</code> as a <code>HashMap</code> key unless you first normalise the decimal places.</li>
+    <li><b>Validation.</b> Percentages add up to exactly 100. Exact amounts add up to the total. No negative values. The payer and participants are group members. A participant listed twice is merged or refused.</li>
+    <li><b>Own share.</b> The payer's own share creates no debt. <code>addDebt</code> ignores the case where debtor and creditor are the same.</li>
+    <li><b>Paying too much.</b> Settling more than you owe flips the direction of the debt. Either refuse it, or allow it on purpose (some apps do).</li>
+    <li><b>Time.</b> Pass in a <code>Clock</code> for <code>createdAt</code>, so the order of history can be tested.</li>
   </ul></details>
 
   <h2 id="code"><span class="n">07</span>Core code</h2>
-  <p>The heart of <code>addExpense</code>: idempotency check and every balance update in one group-locked block.</p>
+  <p>Here is the heart of <code>addExpense</code>. The "already added?" check and every balance update sit in one block that holds the group lock.</p>
   <pre><code>        synchronized (g) {                                  // per-group: one expense applies fully or not at all
             Expense existing = expenses.get(expenseId);
             if (existing != null) return existing;
@@ -256,7 +266,7 @@
         return BigDecimal.valueOf(paise, 2).toPlainString();   // 100050 -&gt; "1000.50"
     }
 }</code></pre>
-    <p><code>long</code> paise is exact, fast and has no <code>equals</code> traps. If the interviewer prefers <code>BigDecimal</code> throughout, that is fine too; know the pitfalls listed in section 06.</p></details>
+    <p><code>long</code> paise are exact and fast, with no <code>equals</code> traps. If the interviewer prefers <code>BigDecimal</code> everywhere, that is fine too. Just know the traps listed in section 06.</p></details>
   <details class="code"><summary>Show split strategies (exact remainder allocation)</summary>
     <pre><code>public record Participant(String userId, BigDecimal value) {
     public static Participant of(String userId) { return new Participant(userId, BigDecimal.ONE); }
@@ -448,111 +458,111 @@ public final class DebtSimplifier {
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <h3>Simplify debts (Uber)</h3>
   <div class="vs">
-    <div class="pick"><h4>Greedy <span class="tag">usual pick</span></h4><ul><li class="pro">Largest creditor vs largest debtor</li><li class="pro">At most n−1 transfers, O(n log n)</li><li class="con">Not always the minimum</li></ul></div>
-    <div><h4>Exact minimum</h4><ul><li class="pro">Fewest transfers</li><li class="con">NP-hard: most zero-sum subsets</li><li class="con">Backtracking, ~12 people max (LeetCode 465)</li></ul></div>
+    <div class="pick"><h4>Greedy <span class="tag">usual pick</span></h4><ul><li class="pro">Match whoever is owed the most with whoever owes the most</li><li class="pro">At most n−1 payments, in O(n log n)</li><li class="con">Not always the fewest payments</li></ul></div>
+    <div><h4>Exact minimum</h4><ul><li class="pro">The fewest payments possible</li><li class="con">NP-hard: you must find the most groups of people whose debts cancel to zero</li><li class="con">Backtracking works for about 12 people at most (LeetCode 465)</li></ul></div>
   </div>
   <div class="grid">
-    <div class="card"><h4>New split type</h4><p>One new strategy; adjustment = exact first, rest equal.</p></div>
-    <div class="card"><h4>Multiple payers</h4><p><code>Map paid</code>; effect = paid − share.</p></div>
-    <div class="card"><h4>Edit expense</h4><p>Reverse old shares, apply new; ledger stays append-only.</p></div>
-    <div class="card"><h4>Multi-currency</h4><p>Balances per (pair, currency); convert only at settle-up.</p></div>
-    <div class="card"><h4>Persist and scale</h4><p>Expense + balance rows in one transaction; shard by group.</p></div>
-    <div class="card"><h4>Notifications</h4><p><code>ExpenseAdded</code> event after commit via outbox.</p></div>
+    <div class="card"><h4>New split type</h4><p>One new strategy. For an adjustment split, apply the fixed extras first, then split the rest equally.</p></div>
+    <div class="card"><h4>Multiple payers</h4><p>Store a <code>Map</code> of who paid what. Each person's effect is paid minus share.</p></div>
+    <div class="card"><h4>Edit expense</h4><p>Undo the old shares, then apply the new ones. The ledger only ever grows.</p></div>
+    <div class="card"><h4>Multi-currency</h4><p>Keep balances per pair and per currency. Convert only when settling up.</p></div>
+    <div class="card"><h4>Persist and scale</h4><p>Save the expense and balance rows in one transaction. Split data across databases by group.</p></div>
+    <div class="card"><h4>Notifications</h4><p>After saving, publish an <code>ExpenseAdded</code> event using the outbox pattern.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>Add a new split type (shares, adjustment, "everyone equal except +₹200 for u1")</summary><p>One new <code>SplitStrategy</code> registered in the map. Adjustment split = exact adjustments first, the remainder via <code>EqualSplit</code>; reuse <code>Allocation</code>. No change to the service or the balance sheet.</p></details>
-  <details class="qa"><summary>Simplify debts / minimise transactions (Uber)</summary><p>Net each user's balance, then greedy-match the largest creditor with the largest debtor: at most n−1 transfers, O(n log n). The true minimum is NP-hard (it reduces to partitioning users into the most zero-sum subsets); LeetCode 465 solves it by backtracking for about a dozen people. Mention that simplification changes who pays whom, which is why Splitwise makes it a group setting users opt into.</p></details>
-  <details class="qa"><summary>Multiple payers</summary><p><code>Map&lt;String, Long&gt; paid</code> on the expense. Each user's net effect = paid − share. Apply it by creating debts from users with negative effect to users with positive effect (a small greedy match within the expense), or keep only per-user net if pairwise detail is not required.</p></details>
-  <details class="qa"><summary>Edit an expense</summary><p>Under the group lock: reverse the old shares, compute and apply the new ones, store a new version. Keep the ledger append-only (an edit is a reversal plus a new entry) so history and audit stay correct.</p></details>
-  <details class="qa"><summary>Multi-currency</summary><p>Balances keyed by (pair, currency). Never auto-convert inside the ledger. Convert only at settle-up with a recorded FX rate.</p></details>
-  <details class="qa"><summary>Persist it / scale it (HLD follow-up)</summary><p>Tables: <code>expense</code>, <code>expense_share(expense_id, user_id, amount_paise)</code>, <code>balance(group_id, user_a, user_b, amount_paise)</code> with a primary key on (group, a, b). Insert the expense and update the balances in one transaction with <code>UPDATE … SET amount = amount + ?</code> (row locks per pair, taken in sorted order to avoid deadlocks). Or keep only the ledger and derive balances, caching them per group. Shard by group id; non-group friend balances by the sorted user pair.</p></details>
-  <details class="qa"><summary>Notifications and activity feed</summary><p>Publish an <code>ExpenseAdded</code> event after commit (outbox → Kafka); the notification and feed services consume it. Keep the core service synchronous and small.</p></details>
+  <details class="qa"><summary>Add a new split type (shares, adjustment, "everyone equal except +₹200 for u1")</summary><p>Add one new <code>SplitStrategy</code> and register it in the map. An adjustment split applies the exact extras first, then splits the rest with <code>EqualSplit</code>. Reuse <code>Allocation</code>. The service and the balance sheet don't change.</p></details>
+  <details class="qa"><summary>Simplify debts / minimise transactions (Uber)</summary><p>Work out each user's net balance. Then greedily match whoever is owed the most with whoever owes the most. This needs at most n−1 payments and runs in O(n log n). The true minimum is NP-hard. It means splitting users into as many groups as possible whose debts cancel to zero. LeetCode 465 solves it by backtracking for about a dozen people. Mention that simplifying changes who pays whom. That is why Splitwise makes it a group setting users choose to turn on.</p></details>
+  <details class="qa"><summary>Multiple payers</summary><p>Add a <code>Map&lt;String, Long&gt; paid</code> to the expense. Each user's net effect is paid minus share. Apply it by creating debts from users with a negative effect to users with a positive one, using a small greedy match within the expense. Or keep only each user's net, if you don't need per-pair detail.</p></details>
+  <details class="qa"><summary>Edit an expense</summary><p>While holding the group lock, undo the old shares. Then work out and apply the new ones, and store a new version. Keep the ledger append-only, meaning you only add entries and never change old ones. An edit is an undo entry plus a new entry. This keeps history and audit correct.</p></details>
+  <details class="qa"><summary>Multi-currency</summary><p>Key balances by pair and currency. Never convert automatically inside the ledger. Convert only at settle-up, and record the exchange rate used.</p></details>
+  <details class="qa"><summary>Persist it / scale it (HLD follow-up)</summary><p>Tables: <code>expense</code>, <code>expense_share(expense_id, user_id, amount_paise)</code>, and <code>balance(group_id, user_a, user_b, amount_paise)</code> with a primary key on (group, a, b). Insert the expense and update the balances in one transaction, with <code>UPDATE … SET amount = amount + ?</code>. This locks each pair's row. Take the rows in sorted order to avoid deadlocks. Or keep only the ledger, work out balances from it, and cache them per group. Shard (split the data across databases) by group id. Shard balances between friends outside groups by the sorted user pair.</p></details>
+  <details class="qa"><summary>Notifications and activity feed</summary><p>After the save commits, publish an <code>ExpenseAdded</code> event. Use the outbox pattern: save the event in the same transaction, and a separate process sends it to Kafka. The notification and feed services read it from there. Keep the core service small and synchronous.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Money</h4><p>₹100 / 3 → 33.34, 33.33, 33.33; percent ≠ 100 rejected; <code>"10.005"</code> rejected.</p></div>
-    <div class="key"><h4>Balances</h4><p>Pairs net across expenses; settle clears; delete reverses; idempotent by id.</p></div>
-    <div class="key"><h4>Invariants</h4><p>Group nets sum to 0 (seeded random); 32 threads match the sequential result.</p></div>
+    <div class="key"><h4>Money</h4><p>₹100 / 3 gives 33.34, 33.33, 33.33. Percentages that don't add up to 100 are refused. So is <code>"10.005"</code>.</p></div>
+    <div class="key"><h4>Balances</h4><p>Pairs net out across expenses. Settling clears them. Delete undoes. Adding twice with one id counts once.</p></div>
+    <div class="key"><h4>Invariants</h4><p>Group nets add up to 0 for random expenses. 32 threads give the same result as running one by one.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full test list</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>equalSplit_distributesRemainderDeterministically</code></td><td>₹100 / 3 → 33.34, 33.33, 33.33 (first in order gets the extra paisa); sum == 10000 paise.</td></tr>
+    <tr><td><code>equalSplit_distributesRemainderDeterministically</code></td><td>₹100 / 3 gives 33.34, 33.33, 33.33. The first in order gets the extra paisa. The sum is 10000 paise.</td></tr>
     <tr><td><code>percentSplit_rejectsWhenNot100</code></td><td>40 + 40 + 10 throws <code>InvalidSplit</code>.</td></tr>
-    <tr><td><code>percentSplit_largestRemainder</code></td><td>₹10 at 33.33 / 33.33 / 33.34 % sums exactly to 1000 paise.</td></tr>
-    <tr><td><code>exactSplit_rejectsMismatchedTotal</code></td><td>Amounts summing to 999.99 for a 1000 total throw.</td></tr>
-    <tr><td><code>money_parseRejectsThreeDecimals</code></td><td><code>"10.005"</code> throws; <code>"10.5"</code> → 1050.</td></tr>
-    <tr><td><code>addExpense_updatesPairwiseBalances</code></td><td>u1 pays 1000 for u1..u4 equally: u2, u3, u4 each owe u1 250.00; u1 owes nobody.</td></tr>
-    <tr><td><code>balances_netAcrossExpenses</code></td><td>u1 pays 100 for u2, then u2 pays 60 for u1: only "u2 owes u1: 40.00".</td></tr>
-    <tr><td><code>settle_reducesAndClearsBalance</code></td><td>Full settlement removes the pair from output.</td></tr>
-    <tr><td><code>addExpense_isIdempotentById</code></td><td>Same id twice: balances unchanged by the second call.</td></tr>
-    <tr><td><code>deleteExpense_reversesShares</code></td><td>Balances back to the previous state.</td></tr>
-    <tr><td><code>groupNets_alwaysSumToZero</code></td><td>Random expenses (seeded): sum of <code>netByUser</code> == 0.</td></tr>
-    <tr><td><code>simplify_producesAtMostNMinus1Transfers</code></td><td>Applying transfers zeroes every net.</td></tr>
-    <tr><td><code>concurrentExpenses_noLostUpdates</code></td><td>32 threads × 100 expenses of ₹3 split among 3: final balances equal the sequential result.</td></tr>
+    <tr><td><code>percentSplit_largestRemainder</code></td><td>₹10 at 33.33 / 33.33 / 33.34 % adds up to exactly 1000 paise.</td></tr>
+    <tr><td><code>exactSplit_rejectsMismatchedTotal</code></td><td>Amounts adding up to 999.99 for a total of 1000 throw.</td></tr>
+    <tr><td><code>money_parseRejectsThreeDecimals</code></td><td><code>"10.005"</code> throws. <code>"10.5"</code> gives 1050.</td></tr>
+    <tr><td><code>addExpense_updatesPairwiseBalances</code></td><td>u1 pays 1000 for u1..u4 equally. u2, u3 and u4 each owe u1 250.00. u1 owes nobody.</td></tr>
+    <tr><td><code>balances_netAcrossExpenses</code></td><td>u1 pays 100 for u2, then u2 pays 60 for u1. Output is only "u2 owes u1: 40.00".</td></tr>
+    <tr><td><code>settle_reducesAndClearsBalance</code></td><td>Settling in full removes the pair from the output.</td></tr>
+    <tr><td><code>addExpense_isIdempotentById</code></td><td>Same id twice. The second call does not change balances.</td></tr>
+    <tr><td><code>deleteExpense_reversesShares</code></td><td>Balances go back to the earlier state.</td></tr>
+    <tr><td><code>groupNets_alwaysSumToZero</code></td><td>Random expenses with a fixed seed. The sum of <code>netByUser</code> is 0.</td></tr>
+    <tr><td><code>simplify_producesAtMostNMinus1Transfers</code></td><td>Applying the payments brings every net to zero.</td></tr>
+    <tr><td><code>concurrentExpenses_noLostUpdates</code></td><td>32 threads × 100 expenses of ₹3 split among 3. Final balances equal the one-by-one result.</td></tr>
   </table></div></details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li><code>double</code> for money, or <code>BigDecimal.equals</code> and unbounded <code>divide</code>.</li>
-    <li>Equal split that drops the leftover paisa.</li>
-    <li>An IOU list: "u1 owes u2 100" and "u2 owes u1 40" at once.</li>
-    <li><code>if (type == EQUAL) … else if …</code> in the service.</li>
-    <li>Nice entities, unfinished service (Walmart).</li>
+    <li>Using <code>double</code> for money. Or using <code>BigDecimal.equals</code>, and <code>divide</code> with no rounding rule.</li>
+    <li>An equal split that drops the leftover paisa.</li>
+    <li>A list of IOUs that shows "u1 owes u2 100" and "u2 owes u1 40" at once.</li>
+    <li><code>if (type == EQUAL) … else if …</code> inside the service.</li>
+    <li>Nice entities, but an unfinished service (Walmart).</li>
     <li>Calling greedy simplification optimal. No driver or tests.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: the rejection notes in full</summary><ul>
-    <li><code>double</code> for money, or <code>BigDecimal</code> with <code>equals</code> and unbounded <code>divide</code>. Rounding bugs show up in the first demo.</li>
-    <li>Equal split that drops the leftover paisa, so shares do not sum to the total.</li>
-    <li>A growing list of IOUs per user instead of a netted balance per pair; output shows "u1 owes u2 100" and "u2 owes u1 40" at the same time.</li>
-    <li><code>if (type == EQUAL) … else if (type == PERCENT) …</code> inside the service: the extensibility question fails immediately.</li>
-    <li>Unfinished service layer with nice entities (Walmart feedback: "focus more on service completion").</li>
-    <li>Claiming the greedy simplification is optimal.</li>
-    <li>No driver or tests: the interviewer cannot see it work.</li>
+    <li>Using <code>double</code> for money, or <code>BigDecimal</code> with <code>equals</code> and <code>divide</code> with no rounding rule. Rounding bugs show up in the first demo.</li>
+    <li>An equal split that drops the leftover paisa, so shares don't add up to the total.</li>
+    <li>A growing list of IOUs per user instead of one net balance per pair. The output then shows "u1 owes u2 100" and "u2 owes u1 40" at the same time.</li>
+    <li><code>if (type == EQUAL) … else if (type == PERCENT) …</code> inside the service. The extensibility question fails at once.</li>
+    <li>An unfinished service layer with nice entities. Walmart's feedback was "focus more on service completion".</li>
+    <li>Claiming the greedy simplification gives the fewest payments.</li>
+    <li>No driver or tests, so the interviewer can't see it work.</li>
   </ul></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–10 min</span><span>Clarify split types, rounding, groups vs friends, settle-up, input format. Assumptions atop main.</span></div>
-    <div class="step"><span class="t">10–20 min</span><span>Models: <code>User</code>, <code>Group</code>, <code>Expense</code>, <code>Participant</code>, <code>Money</code>. Strategy + registry.</span></div>
-    <div class="step"><span class="t">20–40 min</span><span><code>EqualSplit</code>, <code>BalanceSheet</code>, <code>addExpense</code>, <code>show</code>. Run the four-user scenario.</span></div>
-    <div class="step"><span class="t">40–55 min</span><span>Exact and percent with validation; settle-up. Tests.</span></div>
-    <div class="step"><span class="t">55–70 min</span><span>Idempotent ids, group lock, concurrency and zero-sum tests.</span></div>
-    <div class="step"><span class="t">70–80 min</span><span>Greedy simplification and its test; edit/delete if time.</span></div>
-    <div class="step"><span class="t">80–90 min</span><span>Walkthrough: money type, add <code>ShareSplit</code> live, persistence sketch.</span></div>
+    <div class="step"><span class="t">0–10 min</span><span>Ask about split types, rounding, groups or friends, settle-up and input format. Write your assumptions at the top of main.</span></div>
+    <div class="step"><span class="t">10–20 min</span><span>Write the models: <code>User</code>, <code>Group</code>, <code>Expense</code>, <code>Participant</code>, <code>Money</code>. Add the Strategy interface and its map.</span></div>
+    <div class="step"><span class="t">20–40 min</span><span>Write <code>EqualSplit</code>, <code>BalanceSheet</code>, <code>addExpense</code> and <code>show</code>. Run the four-user example.</span></div>
+    <div class="step"><span class="t">40–55 min</span><span>Add exact and percent splits with input checks, and settle-up. Write tests.</span></div>
+    <div class="step"><span class="t">55–70 min</span><span>Add safe-retry ids and the group lock. Write the concurrency and zero-sum tests.</span></div>
+    <div class="step"><span class="t">70–80 min</span><span>Add greedy simplification and its test. Add edit and delete if there is time.</span></div>
+    <div class="step"><span class="t">80–90 min</span><span>Walk through it: the money type, adding <code>ShareSplit</code> live, and a sketch of saving to a database.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">Split ₹100 equally among 3. What must the shares be?</p>
+  <div class="quiz" data-answer="2"><p class="q">You split ₹100 equally among 3 people. What must the shares be?</p>
     <div class="opts"><button class="opt" type="button">33.33 each; one paisa disappears</button><button class="opt" type="button">33.333… each as <code>double</code></button><button class="opt" type="button">33.34, 33.33, 33.33 by a fixed rule, summing to exactly 100.00</button></div>
-    <p class="why">Shares must conserve money, and the rule must be deterministic so results are reproducible.</p></div>
+    <p class="why">No money may appear or vanish, so the shares must add up to exactly ₹100. The rule for the extra paisa must be fixed, so you get the same answer every time.</p></div>
   <div class="quiz" data-answer="0"><p class="q">The interviewer asks for an "adjustment" split. What should change?</p>
     <div class="opts"><button class="opt" type="button">One new <code>SplitStrategy</code> class registered in the map</button><button class="opt" type="button">A new <code>else if</code> in <code>addExpense</code></button><button class="opt" type="button">A new <code>BalanceSheet</code> method</button></div>
-    <p class="why">If adding a type touches the service, the extensibility question fails.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Pair updates use <code>ConcurrentHashMap.merge</code>. Why still lock the group?</p>
+    <p class="why">If adding a split type means editing the service, your design fails the extensibility question. A new strategy class keeps the service untouched.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Pair updates already use <code>ConcurrentHashMap.merge</code>. Why still lock the group?</p>
     <div class="opts"><button class="opt" type="button">merge is not atomic</button><button class="opt" type="button">One expense updates several pairs and nets; readers must never see half of it</button><button class="opt" type="button">To make reads faster</button></div>
-    <p class="why">Each merge is atomic on its own; the expense as a whole is not.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">Is greedy debt simplification optimal?</p>
+    <p class="why">Each <code>merge</code> is safe on its own. But one expense makes several updates, and the group lock makes them happen as one step.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Does greedy debt simplification always give the fewest payments?</p>
     <div class="opts"><button class="opt" type="button">Yes, always</button><button class="opt" type="button">Yes, for under 100 users</button><button class="opt" type="button">No: at most n−1 transfers, but the true minimum is NP-hard</button></div>
-    <p class="why">The minimum needs the most zero-sum subsets; backtracking only works for about a dozen people.</p></div>
+    <p class="why">The true minimum needs the most groups of people whose debts cancel to zero. Searching for that only works for about a dozen people.</p></div>
 
   <h2 id="viva"><span class="n">13</span>Interview questions</h2>
-  <details class="qa"><summary>Why long paise instead of BigDecimal?</summary><p>Exact, fast, no scale or <code>equals</code> traps, and <code>Long::sum</code> works with <code>merge</code>. <code>BigDecimal</code> is still used at the edges, for parsing and for weighted division. With multiple currencies the minor unit varies (JPY has 0 decimals, KWD has 3), so store the currency's exponent with the amount.</p></details>
-  <details class="qa"><summary>Why store per-pair balances and per-user nets?</summary><p>Pairs answer "who owes whom" in O(1) per pair. Nets feed simplification and the "you are owed ₹X in total" summary without scanning pairs.</p></details>
-  <details class="qa"><summary>Is your per-group <code>synchronized</code> a bottleneck?</summary><p>Only for one group, and a group sees a few writes per minute. Different groups run in parallel. A database version would take row locks per pair instead.</p></details>
-  <details class="qa"><summary>Who gets the extra paisa, and is that fair?</summary><p>It is deterministic (input order, or the payer), documented, and at most one paisa per person. The real requirement is that the sum is exact and the result is reproducible.</p></details>
-  <details class="qa"><summary>What is the time complexity of addExpense and simplify?</summary><p>addExpense is O(p log p) for p participants (the sort in largest-remainder); equal split can be O(p). Simplify is O(n log n) for n users with non-zero balances.</p></details>
+  <details class="qa"><summary>Why long paise instead of BigDecimal?</summary><p>Whole-number paise are exact and fast. There are no traps with decimal places or <code>equals</code>. And <code>Long::sum</code> works with <code>merge</code>. <code>BigDecimal</code> is still used at the edges, for reading input and for weighted division. With several currencies, the smallest unit differs. The Japanese yen (JPY) has 0 decimals and the Kuwaiti dinar (KWD) has 3. So store the currency's number of decimals with the amount.</p></details>
+  <details class="qa"><summary>Why store per-pair balances and per-user nets?</summary><p>Pairs answer "who owes whom" in O(1) per pair. Nets feed simplification and the "you are owed ₹X in total" summary, without scanning every pair.</p></details>
+  <details class="qa"><summary>Is your per-group <code>synchronized</code> a bottleneck?</summary><p>Only within one group, and a group sees a few writes per minute. Different groups run in parallel. A database version would lock each pair's row instead.</p></details>
+  <details class="qa"><summary>Who gets the extra paisa, and is that fair?</summary><p>It follows a fixed, written rule, such as input order or the payer. It is at most one paisa per person. What really matters is that the total is exact and the result is the same every time.</p></details>
+  <details class="qa"><summary>What is the time complexity of addExpense and simplify?</summary><p>addExpense is O(p log p) for p participants, because the largest-remainder method sorts. Equal split can be O(p). Simplify is O(n log n) for n users whose balance is not zero.</p></details>
 
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li><code>long</code> paise; parse via <code>BigDecimal</code>, never <code>double</code>.</li>
-    <li>Largest-remainder allocation: floors, then leftover paise by fraction, ties by order.</li>
-    <li><code>Map&lt;SplitType, SplitStrategy&gt;</code>; strategies validate their own input.</li>
-    <li>BalanceSheet: one signed number per sorted pair, plus per-user net.</li>
-    <li>Settle = <code>addDebt</code> in reverse. Delete = reverse shares.</li>
-    <li><code>synchronized (group)</code> around idempotency check + all updates.</li>
-    <li>Invariants: shares sum to total; group nets sum to 0.</li>
-    <li>Simplify: greedy two heaps, ≤ n−1 transfers; minimum is NP-hard.</li>
+    <li>Store <code>long</code> paise. Read input with <code>BigDecimal</code>, never <code>double</code>.</li>
+    <li>Largest remainder: round everyone down, then hand leftover paise to the biggest fractions. Break ties by order.</li>
+    <li>Use a <code>Map&lt;SplitType, SplitStrategy&gt;</code>. Each strategy checks its own input.</li>
+    <li>BalanceSheet: one signed number per sorted pair, plus each user's net.</li>
+    <li>Settle is <code>addDebt</code> in reverse. Delete undoes the shares.</li>
+    <li>Put <code>synchronized (group)</code> around the "already added?" check and all updates.</li>
+    <li>Invariants: shares add up to the total, and a group's nets add up to 0.</li>
+    <li>Simplify: greedy with two heaps, at most n−1 payments. The true minimum is NP-hard.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>
@@ -570,3 +580,4 @@ public final class DebtSimplifier {
 <script src="guide.js" defer></script>
 </body>
 </html>
+

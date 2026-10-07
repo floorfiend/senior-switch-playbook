@@ -12,22 +12,33 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
   <h1>Booking platform (BookMyShow / hotels / flights)</h1>
-  <p class="lede">Design a system that sells each seat or room-night to exactly one person, even when 50,000 people want it at once.</p>
+  <p class="lede">Design a system that sells each seat or hotel room-night to exactly one person. It must stay correct even when 50,000 people want the same seats at once.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> ~10 reports, 2024–26</span>
-    <span class="fact"><b>Probes:</b> double booking, payment/booking mismatch, idempotency</span>
+    <span class="fact"><b>Probes:</b> selling one seat twice, payment and booking out of sync, safe retries</span>
   </div>
   <div class="chips"><span class="chip hot">PhonePe</span><span class="chip hot">Expedia</span><span class="chip hot">Slice</span><span class="chip hot">Agoda</span><span class="chip">FanCode</span><span class="chip">Walmart</span><span class="chip">Booking.com</span><span class="chip">Amazon</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Pick a lockable unit: one row per seat, or per room per night.</li>
-    <li>Hold with one atomic conditional UPDATE; the database is the referee.</li>
-    <li>Hold → pay → confirm is a state machine with timeouts and refunds.</li>
-    <li>Search is cached and stale-ok; booking is strict. Waiting room for spikes.</li>
+    <li>Choose the smallest thing you can lock. That is one row per seat, or one row per room type per night.</li>
+    <li>Reserve a seat with one database update that only succeeds if the seat is still free. The database decides who wins.</li>
+    <li>Reserve, then pay, then confirm. Treat these as steps with timers and refunds, not one big operation.</li>
+    <li>Search can show slightly old data and is cached. Booking must be exact. Use a waiting room for huge rushes.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>An IRCTC Tatkal counter at 10 a.m. A guard lets people in a few at a time (waiting room). The clerk marks a berth "held" in the register the instant you ask, and if your UPI payment doesn't come through in 8 minutes, the berth goes back on the board.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of an IRCTC Tatkal counter at 10 a.m. A guard lets people in a few at a time. That is the waiting room. The clerk marks a berth "held" in the register the moment you ask. If your UPI payment does not arrive within 8 minutes, the berth goes back on the board for someone else.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Hold</dt><dd>A short, timed reservation. The seat is yours for a few minutes while you pay.</dd>
+    <dt>Conditional UPDATE</dt><dd>A database update with a check built in, like "mark F7 held, but only if it is still free". It changes zero rows if someone got there first.</dd>
+    <dt>Idempotency key</dt><dd>A unique ID the app sends with a request. If the same request arrives twice, the server returns the first result instead of doing the work again. Pressing "Pay" twice charges you once.</dd>
+    <dt>PSP</dt><dd>Payment service provider. The payment gateway, like Razorpay, that talks to UPI and card networks.</dd>
+    <dt>Webhook</dt><dd>A message the PSP sends to our server to say "this payment succeeded" or "failed".</dd>
+    <dt>TTL</dt><dd>Time to live. How long something lasts before it expires on its own.</dd>
+    <dt>Outbox</dt><dd>A table where we save "events to send" in the same database transaction as the booking. A separate process later sends them to Kafka, so no event is lost.</dd>
+    <dt>Saga</dt><dd>A process made of steps where each step has an "undo" action, such as a refund, instead of one big transaction.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -50,54 +61,54 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>A lockable inventory model</h4><p>Per seat per show, or per room type per night. Get this wrong and nothing else works.</p></div>
-    <div class="key"><h4>A correct concurrency primitive</h4><p>Conditional update, row lock, exclusion constraint or Redis hold, with the reason, and where the source of truth lives.</p></div>
-    <div class="key"><h4>Hold → pay → confirm</h4><p>A state machine with timeouts, not one big transaction wrapped around a payment call.</p></div>
-    <div class="key"><h4>Payment reconciliation</h4><p>Idempotency keys, webhooks plus polling, auto-refund when a paid booking can't be honoured.</p></div>
-    <div class="key"><h4>Read/write split</h4><p>Search is <dfn title="Available under a network partition; may serve slightly stale data">AP</dfn>, booking is <dfn title="Consistent under a partition; refuses rather than risk a wrong answer">CP</dfn>. Saying this unprompted is a senior signal.</p></div>
-    <div class="key"><h4>Hot events</h4><p>Blockbuster opening or flash sale: a virtual waiting room and admission control.</p></div>
+    <div class="key"><h4>Inventory you can lock</h4><p>Store one row per seat per show, or one row per room type per night. If this is wrong, nothing else works.</p></div>
+    <div class="key"><h4>A safe way to stop two winners</h4><p>Pick one way to let only one person win. One option is an update that works only if the seat is still free (conditional update). Others are a row lock, a no-overlap rule (exclusion constraint), or a Redis hold. Say which store holds the truth.</p></div>
+    <div class="key"><h4>Reserve, pay, confirm</h4><p>Model this as a set of states with timers. Do not wrap one big database transaction around the payment call.</p></div>
+    <div class="key"><h4>Matching payments to bookings</h4><p>Give each request a unique ID so retries are safe (idempotency keys). Listen for the payment company's callbacks (webhooks), and also ask it directly. Refund automatically when a paid booking cannot be honoured.</p></div>
+    <div class="key"><h4>Reads and writes behave differently</h4><p>Search is <dfn title="Stays available during a network split; may show slightly old data">AP</dfn>. Booking is <dfn title="Stays correct during a network split; refuses rather than risk a wrong answer">CP</dfn>. Saying this without being asked shows seniority.</p></div>
+    <div class="key"><h4>Huge rushes</h4><p>For a blockbuster opening or a flash sale, use a virtual waiting room. It lets in only as many people as the system can serve.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: what each company actually asked</summary><p>The reports are unusually consistent. PhonePe (hotel booking) spent the round on the data model, "how will we model booking for each day / room / hotel", then payments: double payment and idempotency. Expedia (Airbnb) asked what happens when two users book the same property for the same dates, when payment succeeds but booking creation fails, the reverse, which database and why, and how to stop fake reviews. Slice (BookMyShow) called its round "the most grilling": concurrent requests, double booking, race conditions. Agoda (flights) added CAP trade-offs and testing. Walmart asked a flash sale with optimistic locking and inventory reservation; Amazon asked about the last unit with two concurrent orders; Booking.com asked to sync hotel availability across Booking, Airbnb, Agoda and Expedia without overselling.</p></details>
+  <details class="deep"><summary>Go deeper: what each company actually asked</summary><p>The reports are very similar. PhonePe asked for hotel booking. The round focused on the data model: "how will we model booking for each day / room / hotel". Then it moved to payments, double payment and idempotency. Expedia asked for Airbnb. They asked what happens when two users book the same property for the same dates. They asked what happens when payment succeeds but booking creation fails, and the reverse. They asked which database and why, and how to stop fake reviews. Slice asked for BookMyShow and called it "the most grilling" round. It covered concurrent requests, double booking and race conditions. Agoda asked for flights and added CAP trade-offs and testing. Walmart asked for a flash sale with optimistic locking and inventory reservation. Amazon asked about the last unit with two orders at the same time. Booking.com asked how to sync hotel availability across Booking, Airbnb, Agoda and Expedia without overselling.</p></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
   <div class="tbl"><table>
     <thead><tr><th>Ask</th><th>Why it matters</th></tr></thead>
     <tbody>
-      <tr><td>What is the unit of inventory?</td><td>Specific seat, count of interchangeable rooms, or whole listing over dates: each needs a different lock.</td></tr>
-      <tr><td>Do we own the inventory?</td><td>Cinemas and airlines may hold the truth (theatre POS, GDS); we hold against their API.</td></tr>
-      <tr><td>Hold duration?</td><td>5–10 minutes for seats; hotel checkout can be longer.</td></tr>
-      <tr><td>Is overbooking allowed?</td><td>Airlines oversell on purpose; cinemas never do; hotels may keep a buffer.</td></tr>
-      <tr><td>Scale and peaks?</td><td>The opening-day spike drives the design, not the average.</td></tr>
-      <tr><td>Payment flow?</td><td>Redirect to UPI or cards means asynchronous confirmation by webhook.</td></tr>
+      <tr><td>What exactly are we selling?</td><td>A specific seat, a count of identical rooms, or a whole home for some dates. Each one needs a different kind of lock.</td></tr>
+      <tr><td>Do we own the inventory?</td><td>Cinemas and airlines may keep the true record in their own systems (theatre POS, airline GDS). Then we hold seats through their API.</td></tr>
+      <tr><td>How long is a hold?</td><td>5–10 minutes for seats. Hotel checkout can take longer.</td></tr>
+      <tr><td>Is overbooking allowed?</td><td>Airlines oversell on purpose. Cinemas never do. Hotels may keep a few rooms spare.</td></tr>
+      <tr><td>How big is the busiest moment?</td><td>The opening-day rush shapes the design, not the average day.</td></tr>
+      <tr><td>How does payment work?</td><td>UPI and cards redirect the user away. So confirmation arrives later, by webhook.</td></tr>
     </tbody>
   </table></div>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li>Search by city, date, movie or location; see availability and price.</li>
-      <li>Select seats or rooms; temporary hold.</li>
-      <li>Pay; confirm; ticket or voucher issued.</li>
-      <li>Cancel and refund per policy.</li>
-      <li>Reviews from verified guests.</li>
+      <li>Search by city, date, movie or location. See what is free and the price.</li>
+      <li>Pick seats or rooms and hold them for a short time.</li>
+      <li>Pay, get confirmation, and receive a ticket or voucher.</li>
+      <li>Cancel and get a refund as the policy allows.</li>
+      <li>Reviews only from guests who really stayed.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>Zero double booking (strong consistency on the booking path).</li>
-      <li>Search p99 &lt; 300 ms; hold p99 &lt; 500 ms.</li>
-      <li>Opening-day spike: 1M users in 10 minutes for one event.</li>
-      <li>99.95% availability; booking path degrades gracefully (queue, not crash).</li>
+      <li>Never sell one seat twice. The booking path must be strongly consistent.</li>
+      <li>Search p99 under 300 ms. Hold p99 under 500 ms. (p99: 99 of 100 requests are faster.)</li>
+      <li>Opening-day rush: 1 million users in 10 minutes for one event.</li>
+      <li>99.95% uptime. Under heavy load, booking makes people wait in a queue instead of crashing.</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>Dynamic pricing models, recommendations.</li>
+      <li>Dynamic pricing and recommendations.</li>
       <li>Building the payment gateway itself.</li>
-      <li>Partner onboarding UI.</li>
+      <li>Screens for onboarding partners.</li>
     </ul></div>
   </div>
 
   <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
   <div class="stats">
-    <div class="stat"><b>~17/s</b><span>bookings avg (1.5M tickets/day); ~10x on weekend evenings</span></div>
-    <div class="stat"><b>20k/s</b><span>peak search and seat-map reads (100:1 read:book)</span></div>
+    <div class="stat"><b>~17/s</b><span>bookings on average (1.5M tickets a day). About 10x on weekend evenings.</span></div>
+    <div class="stat"><b>20k/s</b><span>search and seat-map reads at the busiest time. People look 100 times for every booking.</span></div>
     <div class="stat"><b>~33k/s</b><span>seat-map reads for one blockbuster opening</span></div>
-    <div class="stat"><b>200</b><span>losers per seat: 50k people, 250 seats</span></div>
+    <div class="stat"><b>200</b><span>people lose for every seat: 50k people, 250 seats</span></div>
   </div>
   <details class="deep"><summary>Go deeper: the arithmetic</summary>
   <div class="tbl"><table>
@@ -112,14 +123,14 @@
     </tbody>
   </table></div>
   </details>
-  <div class="callout info"><b>Say the conclusion</b><p>Total throughput is modest and fits a sharded Postgres. The hard part is contention on a tiny set of rows during a spike, so the fix is admission control plus row-level atomic operations, not "more servers".</p></div>
+  <div class="callout info"><b>Say the conclusion</b><p>The total traffic is small. A Postgres database split across a few servers (sharded) handles it. The hard part is thousands of people fighting over a few rows during a rush. So the fix is a waiting room plus safe single-row updates. "More servers" does not solve it.</p></div>
 
   <h2 id="api"><span class="n">04</span>API design</h2>
   <ol class="walk">
-    <li><span class="who">Browse</span><span>Search shows or hotels, then load the seat map (cached ~1 s).</span></li>
-    <li><span class="who">Hold</span><span><code>POST /v1/holds</code> with Idempotency-Key #1 → 201 with an expiry, or 409 if taken.</span></li>
-    <li><span class="who">Book</span><span><code>POST /v1/bookings</code> with Idempotency-Key #2 → 202 PAYMENT_PENDING plus a payment redirect.</span></li>
-    <li><span class="who">PSP</span><span>Webhook to <code>/internal/payments/webhook</code>, signature verified, deduped by paymentId.</span></li>
+    <li><span class="who">Browse</span><span>Search shows or hotels, then load the seat map (cached for about 1 second).</span></li>
+    <li><span class="who">Hold</span><span>Ask to keep the seat for a few minutes. Send a unique request ID, so a retry never holds twice. You get the expiry time (201), or "seat taken" (409). Call: <code>POST /v1/holds</code> with Idempotency-Key #1.</span></li>
+    <li><span class="who">Book</span><span>Turn the hold into a booking. The server answers "accepted, waiting for payment" (HTTP 202, PAYMENT_PENDING) and sends a payment page link. Call: <code>POST /v1/bookings</code> with Idempotency-Key #2.</span></li>
+    <li><span class="who">PSP</span><span>The payment company calls our server to say the payment worked (a webhook). We check its signature to be sure it is genuine. We ignore repeats of the same payment ID. Endpoint: <code>/internal/payments/webhook</code>.</span></li>
   </ol>
   <details class="code"><summary>Show full API</summary><pre><code>GET  /v1/shows?city=BLR&amp;movieId=m1&amp;date=2026-10-10
 GET  /v1/shows/{showId}/seats                 -&gt; seat map with AVAILABLE | HELD | BOOKED (cached ~1 s)
@@ -142,96 +153,96 @@ GET  /v1/bookings/{bookingId}                -&gt; CONFIRMED | PAYMENT_PENDING |
 POST /v1/bookings/{bookingId}/cancel
 POST /v1/reviews   { "bookingId": "...", "rating": 4, "text": "..." }   // only after checkout</code></pre></details>
   <ul>
-    <li><b>Two idempotency keys</b> (a client-made ID that makes a retry return the first result): one for the hold, one for paying.</li>
-    <li>The booking ID is the PSP's merchant order reference, so the gateway itself refuses a second charge. That answers PhonePe's "double payment".</li>
+    <li><b>Two idempotency keys.</b> One protects the hold. The other protects the payment. If the app sends a request again, it gets the first result back.</li>
+    <li>We use the booking ID as the order reference we give the PSP. So the gateway itself refuses to charge the same order twice. This answers PhonePe's "double payment" question.</li>
   </ul>
 
   <h2 id="data"><span class="n">05</span>Data model</h2>
   <div class="tbl"><table>
     <thead><tr><th>Table</th><th>Key fields</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td>show</td><td>show_id, screen_id, movie_id, starts_at, status</td><td>Shard by show_id (or theatre_id)</td></tr>
-      <tr><td>show_seat</td><td>(show_id, seat_id) PK, status, hold_id, held_until, booking_id, price_tier, version</td><td>One row per seat per show: the lockable unit for cinemas and flights</td></tr>
-      <tr><td>room_inventory</td><td>(hotel_id, room_type_id, stay_date) PK, total, reserved, version</td><td>Per-day counter: the PhonePe answer. A 3-night stay touches 3 rows</td></tr>
-      <tr><td>reservation (Airbnb-style)</td><td>id, listing_id, stay daterange, status</td><td>Postgres exclusion constraint prevents overlapping ranges</td></tr>
-      <tr><td>hold</td><td>hold_id, user_id, resource refs, expires_at, status, idempotency_key UNIQUE</td><td>TTL sweeper releases expired holds</td></tr>
-      <tr><td>booking</td><td>booking_id, user_id, hold_id UNIQUE, amount, status, version, created_at</td><td>State machine; hold_id unique stops two bookings from one hold</td></tr>
-      <tr><td>payment</td><td>payment_id, booking_id, psp_order_id UNIQUE, psp_payment_id UNIQUE, status, amount</td><td>Unique PSP IDs make webhook processing idempotent</td></tr>
-      <tr><td>review</td><td>review_id, booking_id UNIQUE, listing_id, rating, text, created_at</td><td>One review per completed booking</td></tr>
+      <tr><td>show</td><td>show_id, screen_id, movie_id, starts_at, status</td><td>Split across servers by show_id (or theatre_id)</td></tr>
+      <tr><td>show_seat</td><td>(show_id, seat_id) PK, status, hold_id, held_until, booking_id, price_tier, version</td><td>One row per seat per show. This is the unit we lock for cinemas and flights.</td></tr>
+      <tr><td>room_inventory</td><td>(hotel_id, room_type_id, stay_date) PK, total, reserved, version</td><td>A counter per day. This is the PhonePe answer. A 3-night stay touches 3 rows.</td></tr>
+      <tr><td>reservation (Airbnb-style)</td><td>id, listing_id, stay daterange, status</td><td>A Postgres exclusion constraint blocks overlapping date ranges.</td></tr>
+      <tr><td>hold</td><td>hold_id, user_id, resource refs, expires_at, status, idempotency_key UNIQUE</td><td>A cleanup job frees holds after they expire.</td></tr>
+      <tr><td>booking</td><td>booking_id, user_id, hold_id UNIQUE, amount, status, version, created_at</td><td>Tracks booking states. A unique hold_id stops two bookings from one hold.</td></tr>
+      <tr><td>payment</td><td>payment_id, booking_id, psp_order_id UNIQUE, psp_payment_id UNIQUE, status, amount</td><td>Unique PSP IDs mean a repeated webhook does nothing.</td></tr>
+      <tr><td>review</td><td>review_id, booking_id UNIQUE, listing_id, rating, text, created_at</td><td>One review per completed booking.</td></tr>
     </tbody>
   </table></div>
   <div class="vs">
-    <div class="pick"><h4>Postgres / MySQL for booking <span class="tag">usual pick</span></h4><ul><li class="pro">Multi-row ACID, row locks, conditional updates</li><li class="pro">Unique and exclusion constraints</li><li class="con">Must shard by inventory owner (theatre, hotel)</li></ul><p class="when">Use for inventory, bookings, payments; a booking never spans shards.</p></div>
-    <div><h4>Cassandra / DynamoDB</h4><ul><li class="pro">Huge write scale</li><li class="con">Multi-row atomic updates across nights or seats don't come naturally</li></ul><p class="when">Poor fit for the booking core. Elasticsearch (CDC-fed) for search, Redis for caches and waiting room.</p></div>
+    <div class="pick"><h4>Postgres / MySQL for booking <span class="tag">usual pick</span></h4><ul><li class="pro">Updates many rows all-or-nothing (ACID). Has row locks and conditional updates.</li><li class="pro">Supports unique and exclusion constraints</li><li class="con">Must be split by inventory owner (theatre, hotel)</li></ul><p class="when">Use it for inventory, bookings and payments. One booking never spans two servers.</p></div>
+    <div><h4>Cassandra / DynamoDB</h4><ul><li class="pro">Handles huge write volumes</li><li class="con">Hard to update several nights or seats all-or-nothing</li></ul><p class="when">A poor fit for the booking core. Use Elasticsearch for search, fed by CDC (a stream of every database change). Use Redis for caches and the waiting room.</p></div>
   </div>
 
   <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
   <div class="arch">
     <div class="tier"><small>Clients</small><span class="node">App / web</span><span class="node">CDN<small>posters, static</small></span></div>
     <div class="down">↓ <small>HTTPS</small></div>
-    <div class="tier"><span class="node">API gateway<small>JWT, rate limit</small></span><span class="node">Waiting room<small>only for hot events</small></span></div>
+    <div class="tier"><span class="node">API gateway<small>login check, rate limit</small></span><span class="node">Waiting room<small>only for hot events</small></span></div>
     <div class="down">↓ <small>read path · write path</small></div>
-    <div class="tier"><span class="node">Search service</span><span class="node">Seat-map service</span><span class="node hl">Inventory / hold service</span><span class="node hl">Booking service<small>state machine</small></span><span class="node">Payment service</span></div>
+    <div class="tier"><span class="node">Search service</span><span class="node">Seat-map service</span><span class="node hl">Inventory / hold service</span><span class="node hl">Booking service<small>tracks booking status</small></span><span class="node">Payment service</span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node store">Elasticsearch<small>CDC-fed</small></span><span class="node store">Redis<small>seat-map cache</small></span><span class="node store">Postgres shards<small>show_seat, room_inventory</small></span><span class="node store">Kafka<small>booking events</small></span><span class="node">PSP<small>UPI / cards</small></span></div>
-    <div class="down">↓ <small>outbox → Kafka</small></div>
+    <div class="tier"><span class="node store">Elasticsearch<small>gets every DB change (CDC)</small></span><span class="node store">Redis<small>seat-map cache</small></span><span class="node store">Postgres shards<small>seat and room tables</small></span><span class="node store">Kafka<small>booking events</small></span><span class="node">PSP<small>UPI / cards</small></span></div>
+    <div class="down">↓ <small>saved events sent on to Kafka (outbox)</small></div>
     <div class="tier"><span class="node">Hold expiry sweeper</span><span class="node">Tickets, notifications, analytics</span></div>
   </div>
-  <p class="flow-caption">Figure: read path (search, seat map) is cached and eventually consistent; write path (hold, booking, payment) goes to the sharded relational store; side effects flow through Kafka via an outbox.</p>
+  <p class="flow-caption">Figure: the read side (search, seat map) is cached and may be a little out of date. The write side (hold, booking, payment) goes to the split relational database. Follow-up work like tickets flows through Kafka using an outbox.</p>
   <div class="keys">
-    <div class="key"><h4>Waiting room</h4><p>Per event. Signed token with a queue position; the gate admits N per second that the hold service can absorb. Fairer than random 500s.</p></div>
-    <div class="key"><h4>Inventory / hold service</h4><p>The only code allowed to change inventory. Every change is an atomic conditional update.</p></div>
-    <div class="key"><h4>Booking service</h4><p>Owns the state machine, talks to payments, writes booking state and an <dfn title="A table written in the same transaction as the business row, later relayed to Kafka">outbox</dfn> row in one transaction.</p></div>
-    <div class="key"><h4>Payment service</h4><p>Creates PSP orders keyed by booking ID, handles webhooks, reconciles against PSP reports.</p></div>
-    <div class="key"><h4>Sweeper</h4><p>Releases expired holds every few seconds. Reads also treat <code>held_until &lt; now()</code> as free, so a late sweeper never blocks a sale.</p></div>
-    <div class="key"><h4>Partner adapters</h4><p>Cinema POS, airline GDS, hotel channel managers: our hold step also places a hold on the partner system.</p></div>
+    <div class="key"><h4>Waiting room</h4><p>One per event. You get a signed pass that shows your place in the queue. The gate lets in only as many per second as the hold service can handle. This is fairer than random errors.</p></div>
+    <div class="key"><h4>Inventory / hold service</h4><p>The only code allowed to change inventory. Every change is one update that works only if the seat is still in the expected state (a conditional update).</p></div>
+    <div class="key"><h4>Booking service</h4><p>Owns the booking status and talks to payments. In one database step, it saves the new status and an event to send later (an <dfn title="A table written in the same transaction as the booking row, later sent on to Kafka">outbox</dfn> row).</p></div>
+    <div class="key"><h4>Payment service</h4><p>Creates a payment order with the payment company (PSP), tagged with the booking ID. Receives its callbacks (webhooks). Matches our records against the PSP's reports.</p></div>
+    <div class="key"><h4>Sweeper</h4><p>Frees expired holds every few seconds. Reads also treat a hold whose time is up as free (<code>held_until &lt; now()</code>). So a slow sweeper never blocks a sale.</p></div>
+    <div class="key"><h4>Partner adapters</h4><p>Connect to partners' own systems: cinema ticket counters (POS), airline booking networks (GDS) and hotel channel managers. When we hold a seat, we also hold it in the partner's system.</p></div>
   </div>
 
   <h2 id="follow"><span class="n">07</span>Follow one booking</h2>
   <div class="stepper"><b class="title">Riya books seat F7 for a Friday-night show</b><div class="frames">
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node">Booking svc</span><span class="node">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store">Postgres</span><span class="node store">Kafka</span></div></div>
-      <figcaption>Riya opens the show. It's a blockbuster opening, so the waiting room is on.</figcaption>
+      <figcaption>Riya opens the show. It is a blockbuster opening, so the waiting room is switched on.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Waiting room<small>position 4,120</small></span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node">Booking svc</span><span class="node">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store">Postgres</span><span class="node store">Kafka</span></div></div>
-      <figcaption>She gets a signed token and waits about a minute. The gate admits only what the hold service can take.</figcaption>
+      <figcaption>She gets a signed pass with her place in the queue and waits about a minute. The gate lets in only as many people as the hold service can handle.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node hl">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node">Booking svc</span><span class="node">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Redis<small>~1 s stale</small></span><span class="node store">Postgres</span><span class="node store">Kafka</span></div></div>
-      <figcaption>The seat map comes from Redis. A second of staleness is fine because the hold is the real check.</figcaption>
+      <figcaption>The seat map comes from Redis. Being one second out of date is fine. The hold is the real check.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Hold svc</span><span class="node">Booking svc</span><span class="node">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store hl">Postgres<small>F7 → HELD, 8 min</small></span><span class="node store">Kafka</span></div></div>
-      <figcaption>She taps F7. One conditional UPDATE flips it AVAILABLE → HELD. Another user tapping F7 now updates 0 rows and gets 409.</figcaption>
+      <figcaption>She taps F7. One update marks the seat as held, but only if it is still free (a conditional UPDATE, AVAILABLE → HELD). Anyone else tapping F7 now changes nothing and gets "seat taken" (409).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node hl">Booking svc<small>PAYMENT_PENDING</small></span><span class="node hl">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store">Postgres</span><span class="node store">Kafka</span></div></div>
-      <figcaption>POST /bookings creates bk_1 and a PSP order with bk_1 as reference. The hold is extended past the UPI window.</figcaption>
+      <figcaption>She taps Pay. We create her booking (bk_1) and a payment order tagged with the same ID, so the two can be matched later. Her hold is extended past the UPI payment time.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node hl">Booking svc<small>CONFIRMED</small></span><span class="node">PSP<small>webhook</small></span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store hl">Postgres<small>F7 → BOOKED + outbox</small></span><span class="node store">Kafka</span></div></div>
-      <figcaption>The webhook arrives, signature checked, deduped by paymentId. One transaction sets CONFIRMED, F7 BOOKED, and writes an outbox row.</figcaption>
+      <figcaption>The payment company tells us the money arrived (a webhook). We check it is genuine and ignore repeats. In one database step, the booking becomes CONFIRMED, F7 becomes BOOKED, and an event is saved for sending (an outbox row).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node">Booking svc</span><span class="node">PSP</span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store">Postgres</span><span class="node store hl">Kafka<small>BookingConfirmed</small></span></div></div>
-      <figcaption>The outbox relay publishes the event. Ticket, SMS and analytics consumers react, even if Kafka was briefly down.</figcaption>
+      <figcaption>A background job sends the saved event to Kafka (the outbox relay). Ticket, SMS and analytics services react. The event was saved first, so nothing is lost if Kafka was down for a moment.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node">App</span></div><div class="down">↓</div><div class="tier"><span class="node">Waiting room</span><span class="node">Seat-map svc</span></div><div class="down">↓</div><div class="tier"><span class="node">Hold svc</span><span class="node hl">Booking svc<small>PAID_BUT_EXPIRED</small></span><span class="node bad">PSP<small>webhook 12 min late</small></span></div><div class="down">↓</div><div class="tier"><span class="node store">Redis</span><span class="node store bad">Postgres<small>F7 already resold</small></span><span class="node store">Kafka</span></div></div>
-      <figcaption>Failure path: if the webhook came after the hold expired and F7 was resold, retry confirm, try an equivalent seat, else auto-refund keyed on bk_1.</figcaption>
+      <figcaption>Failure case: the payment message came 12 minutes late. The hold had expired and F7 was sold to someone else. We retry, then try a similar seat. If neither works, we refund automatically, using bk_1 so it happens once.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="deep"><span class="n">08</span>Deep dives</h2>
 
-  <h3>8.1 Preventing double booking: pick the primitive per inventory type</h3>
+  <h3>8.1 Stopping double booking: pick the right tool for each kind of inventory</h3>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>User A</th><th>User B</th><th>Seat F7</th></tr></thead><tbody>
     <tr><td>t1</td><td>UPDATE … WHERE status='AVAILABLE' (takes row lock)</td><td></td><td>AVAILABLE</td></tr>
     <tr><td>t2</td><td>commit</td><td>same UPDATE, waits on lock</td><td>HELD by A</td></tr>
     <tr><td>t3</td><td>8-minute timer</td><td>re-checks WHERE: 0 rows → 409</td><td>HELD by A</td></tr>
   </tbody></table></div>
-  <p>Seats and counts: conditional UPDATE. Hotel nights: <code>FOR UPDATE</code> in date order. Date ranges: exclusion constraint. Compared in <a href="#tradeoffs">Trade-offs</a>.</p>
+  <p>For seats and simple counts, use a conditional UPDATE. For hotel nights, lock the night rows with <code>FOR UPDATE</code>, always in date order. For date ranges, use an exclusion constraint. They are compared in <a href="#tradeoffs">Trade-offs</a>.</p>
   <details class="code"><summary>Show seat-hold SQL</summary><pre><code>UPDATE show_seat
    SET status = 'HELD', hold_id = :holdId, held_until = now() + interval '8 minutes'
  WHERE show_id = :showId
@@ -258,171 +269,171 @@ CREATE TABLE reservation (
     WHERE (status IN ('HELD', 'CONFIRMED'))
 );</code></pre></details>
   <div class="vs">
-    <div class="pick"><h4>Postgres conditional update as truth <span class="tag">usual pick</span></h4><ul><li class="pro">Durable, transactional</li><li class="con">Every loser still costs a DB round trip</li></ul><p class="when">Always the final guard.</p></div>
-    <div><h4>Redis lock only</h4><ul><li class="pro">Very fast, sheds losers early</li><li class="con">Expires in a GC pause; lost on async failover</li></ul><p class="when">Only as a front filter, never alone.</p></div>
+    <div class="pick"><h4>Postgres conditional update as the true record <span class="tag">usual pick</span></h4><ul><li class="pro">Survives crashes and is transactional</li><li class="con">Every loser still costs one database call</li></ul><p class="when">Always the final safety check.</p></div>
+    <div><h4>Redis lock only</h4><ul><li class="pro">Very fast, turns away losers early</li><li class="con">Can expire during a long garbage-collection (GC) pause. Can be lost when Redis fails over to a copy.</li></ul><p class="when">Only as a first filter, never alone.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: why each primitive works</summary>
-    <p><b>Specific seats.</b> One atomic conditional update over the requested seats; succeed only if every row matched. No explicit lock, no read-then-write gap: the <code>WHERE</code> is the check and the row lock taken by <code>UPDATE</code> serialises competitors. The loser blocks briefly on the row, re-evaluates the predicate, matches nothing, and gets 409.</p>
-    <p><b>Interchangeable units over nights.</b> Lock the night rows in a fixed order to avoid deadlocks between overlapping stays, then decrement. Why per-day rows rather than a list of bookings with overlap queries: availability for a night is one row read, the lock is narrow (only the nights you touch), and partial availability ("3 of 4 nights") is easy to show. Seed the rows a year ahead with a nightly job.</p>
-    <p><b>Whole listing over a date range.</b> Two concurrent inserts for overlapping dates: one commits, the other fails with an exclusion violation, which you map to 409. No application lock can be more correct than this.</p>
-    <p><b>Count-only stock.</b> Optimistic: <code>UPDATE inventory SET available = available - 1, version = version + 1 WHERE sku = ? AND available &gt; 0</code> and check the row count. With two concurrent orders for the last unit, exactly one update matches. Under extreme contention, put a Redis <code>DECR</code> gate in front (reject immediately when it goes negative, add back on failure) so only roughly as many requests as there are units reach the database, and create a reservation row with a TTL that the order must confirm.</p>
-    <p><b>Distributed locks: when to mention them.</b> A Redis lock (<code>SET seat:s42:F7 holdId NX PX 480000</code>) is a fine fast-path filter for seat holds and is what many write-ups propose. It must not be the only guard: a lock can expire during a GC pause or be lost on Redis failover. Keep the conditional update in Postgres as the source of truth, and treat Redis as an optimisation that sheds losers early.</p>
+  <details class="deep"><summary>Go deeper: why each tool works</summary>
+    <p><b>Specific seats.</b> Run one conditional update over all the requested seats. It succeeds only if every row matched. You need no separate lock, and there is no gap between "read" and "write". The <code>WHERE</code> clause is the check. The row lock that <code>UPDATE</code> takes makes competitors go one at a time. The loser waits briefly on the row. Then it re-checks the condition, matches nothing, and gets a 409.</p>
+    <p><b>Identical rooms over several nights.</b> Lock the night rows in a fixed order, then reduce the count. A fixed order avoids deadlocks between two overlapping stays. Why one row per day, and not a list of bookings with overlap queries? Checking one night is a single row read. The lock covers only the nights you touch. Showing partial availability, like "3 of 4 nights", is easy. A nightly job creates the rows one year ahead.</p>
+    <p><b>A whole home over a date range.</b> Two inserts for overlapping dates arrive together. One commits. The other fails with an exclusion error, which you turn into a 409. No lock in your application code can be more correct than this.</p>
+    <p><b>Stock that is just a count.</b> Use the optimistic approach: <code>UPDATE inventory SET available = available - 1, version = version + 1 WHERE sku = ? AND available &gt; 0</code>, then check the row count. If two orders race for the last unit, exactly one update matches. Under extreme load, put a Redis <code>DECR</code> gate in front. It rejects instantly once the count goes below zero, and adds back on failure. So only about as many requests as there are units reach the database. Each one creates a reservation row with a TTL that the order must confirm.</p>
+    <p><b>Distributed locks: when to mention them.</b> A Redis lock (<code>SET seat:s42:F7 holdId NX PX 480000</code>) is a good fast filter for seat holds. Many write-ups suggest it. But it must never be the only guard. A lock can expire during a GC pause. It can also be lost when Redis fails over. Keep the Postgres conditional update as the true record. Treat Redis as a speed-up that turns away losers early.</p>
   </details>
 
-  <h3>8.2 Hold, pay, confirm: the state machine</h3>
+  <h3>8.2 Hold, pay, confirm: the booking states</h3>
   <div class="flow">
     <span class="node">INITIATED</span><span class="arrow">→</span>
-    <span class="node">HELD<small>inventory reserved, TTL</small></span><span class="arrow">→</span>
+    <span class="node">HELD<small>seat kept for a few minutes</small></span><span class="arrow">→</span>
     <span class="node hl">PAYMENT_PENDING</span><span class="arrow">→</span>
     <span class="node">CONFIRMED</span>
   </div>
   <div class="flow">
     <span class="node">PAYMENT_PENDING</span><span class="arrow">→<small>timeout / failure</small></span>
-    <span class="node">EXPIRED / FAILED<small>release inventory</small></span><span class="arrow">·</span>
+    <span class="node">EXPIRED / FAILED<small>seat freed</small></span><span class="arrow">·</span>
     <span class="node">PAID_BUT_EXPIRED</span><span class="arrow">→</span>
     <span class="node">REFUND_PENDING → REFUNDED</span>
   </div>
-  <p class="flow-caption">Figure: booking states. Each transition is a conditional update on <code>(booking_id, status, version)</code>, so duplicate webhooks or racing workers cannot apply it twice.</p>
+  <p class="flow-caption">Figure: booking states. Each move happens only if the booking is still in the expected state. That is a conditional update on <code>(booking_id, status, version)</code>. So a repeated webhook or two racing workers cannot apply the same move twice.</p>
   <ul>
-    <li>Never hold a DB transaction open across the payment call. The hold is committed state with an expiry.</li>
-    <li>Hold TTL &gt; PSP payment window + margin, so a slow UPI approval doesn't lose the seat.</li>
-    <li>Webhook confirms (signature verified, deduped by <code>psp_payment_id</code>); a poller checks orders stuck in PAYMENT_PENDING.</li>
+    <li>Never keep a database transaction open while calling the payment gateway. The hold is a saved record with an expiry time.</li>
+    <li>Make the hold last longer than the PSP's payment window, plus some margin. Then a slow UPI approval does not lose the seat.</li>
+    <li>The webhook confirms the payment. We check it is genuine and ignore repeats of the same payment ID (<code>psp_payment_id</code>). A background job also asks the PSP about orders stuck waiting for payment (PAYMENT_PENDING).</li>
   </ul>
 
   <h3>8.3 Payment succeeds but booking fails (and the reverse)</h3>
   <div class="keys">
-    <div class="key"><h4>Paid, hold expired</h4><p>Retry confirm; else re-acquire an equivalent unit; else REFUND_PENDING and auto-refund keyed on booking ID. A compensating action in a <dfn title="A multi-step flow where each step has an undo action instead of one global transaction">saga</dfn>.</p></div>
-    <div class="key"><h4>Booked, payment failed</h4><p>Booking → FAILED and inventory released in the same transaction. User may retry payment on the same booking within the hold.</p></div>
-    <div class="key"><h4>Double payment</h4><p>Three layers: idempotency key, one PSP order per booking, unique <code>psp_payment_id</code>. Reconciliation refunds any genuine double capture.</p></div>
-    <div class="key"><h4>Reconciliation job</h4><p>Daily and hourly, match PSP settlement reports to our tables. Every mismatch becomes a ticket or an automated fix.</p></div>
+    <div class="key"><h4>Paid, but hold expired</h4><p>Retry the confirm. If that fails, grab a similar unit. If that fails too, mark it for refund (REFUND_PENDING) and refund automatically, using the booking ID so it happens once. This is an "undo" step in a <dfn title="A multi-step flow where each step has an undo action instead of one global transaction">saga</dfn>.</p></div>
+    <div class="key"><h4>Booked, but payment failed</h4><p>The booking becomes FAILED, and the seats are freed in the same transaction. The user may pay again on the same booking while the hold lasts.</p></div>
+    <div class="key"><h4>Double payment</h4><p>Three layers stop it. Each request has a unique ID (idempotency key). Each booking has one payment order. Each payment ID can be stored only once (unique <code>psp_payment_id</code>). The daily matching job (reconciliation) refunds any real double charge.</p></div>
+    <div class="key"><h4>Reconciliation job</h4><p>Every day and every hour, match the PSP's settlement reports to our tables. Every mismatch becomes a ticket or an automatic fix.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full mismatch playbook</summary><ul>
-    <li><b>Paid, but hold expired or confirm failed.</b> Retry confirm first (idempotent). If the inventory is genuinely gone, try to re-acquire equivalent inventory (same room type) if policy allows; otherwise move to <code>REFUND_PENDING</code> and issue an automatic refund with the booking ID as the refund idempotency key. Tell the user immediately. This is a compensating action in a saga, which is what interviewers want named.</li>
-    <li><b>Booking created, payment failed.</b> Booking moves to FAILED, inventory released by the same transaction. Let the user retry payment within the hold window with a new payment attempt on the same booking.</li>
-    <li><b>Double payment.</b> Prevented at three layers: client idempotency key on <code>POST /bookings</code>; one PSP order per booking (the PSP rejects a second capture on the same order); unique <code>psp_payment_id</code> in our table. If a second payment still lands (user paid via two UPI apps), reconciliation detects two captures for one booking and refunds one.</li>
-    <li><b>Reconciliation job.</b> Daily (and hourly for fresh data) match PSP settlement reports against our payment and booking tables. Every mismatch becomes a ticket or an automated fix. Airbnb's Orpheus write-up describes this approach of breaking payment flows into idempotent, retryable steps and reaching eventual consistency with the gateway.</li>
+    <li><b>Paid, but the hold expired or confirm failed.</b> First retry the confirm. It is safe to repeat. If the seat or room is really gone, try to grab a similar one (same room type) if the policy allows. Otherwise move to <code>REFUND_PENDING</code>. Issue an automatic refund that uses the booking ID as its idempotency key. Tell the user right away. This is an "undo" step in a saga, and interviewers want to hear that name.</li>
+    <li><b>Booking created, payment failed.</b> The booking moves to FAILED. The same transaction frees the inventory. The user can try paying again within the hold time. That makes a new payment attempt on the same booking.</li>
+    <li><b>Double payment.</b> Three layers prevent it. First, the app's idempotency key on <code>POST /bookings</code>. Second, one PSP order per booking, so the PSP rejects a second charge on the same order. Third, a unique <code>psp_payment_id</code> in our table. A second payment can still land if the user paid through two UPI apps. Reconciliation then finds two charges for one booking and refunds one.</li>
+    <li><b>Reconciliation job.</b> Every day, and every hour for fresh data, match PSP settlement reports against our payment and booking tables. Every mismatch becomes a ticket or an automatic fix. Airbnb's Orpheus write-up describes this approach. It splits payment flows into small steps that are safe to retry. Over time our records and the gateway's records agree (eventual consistency).</li>
   </ul></details>
 
-  <h3>8.4 Hot events and syncing inventory across channels</h3>
+  <h3>8.4 Huge rushes, and keeping hotel stock in sync across sites</h3>
   <ol class="walk">
-    <li><span class="who">Spike</span><span>Waiting room on; seat map from Redis refreshed every second.</span></li>
-    <li><span class="who">Isolate</span><span>Shard by show so one blockbuster can't starve others; pre-scale the hold service; cap seats per user.</span></li>
-    <li><span class="who">Global</span><span>Keep each event's inventory in its venue's region and route bookings there.</span></li>
+    <li><span class="who">Spike</span><span>Waiting room on. Seat map served from Redis, refreshed every second.</span></li>
+    <li><span class="who">Isolate</span><span>Split data by show so one blockbuster can't slow other shows. Add hold-service capacity early. Cap seats per user.</span></li>
+    <li><span class="who">Global</span><span>Keep each event's inventory in its venue's region. Send bookings there.</span></li>
   </ol>
   <div class="arch">
     <div class="tier"><span class="node">Booking.com</span><span class="node">Airbnb</span><span class="node">Agoda</span><span class="node">Expedia</span></div>
-    <div class="down">↓ <small>booking · ↑ versioned availability push</small></div>
-    <div class="tier"><span class="node hl">Channel manager / PMS<small>single source of truth</small></span></div>
+    <div class="down">↓ <small>bookings come in · ↑ room counts pushed out, each with a version number</small></div>
+    <div class="tier"><span class="node hl">Channel manager / PMS<small>holds the one true room count</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node store">room_inventory<small>per-day rows</small></span></div>
+    <div class="tier"><span class="node store">Rooms left per night<small>room_inventory table</small></span></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Shared pool + real-time check <span class="tag">usual pick</span></h4><ul><li class="pro">Best utilisation</li><li class="con">Depends on OTA support and latency</li></ul><p class="when">Modern channel-manager integrations.</p></div>
-    <div><h4>Per-channel allocation</h4><ul><li class="pro">No cross-channel oversell</li><li class="con">Unsold rooms stranded on a channel</li></ul><p class="when">Hotels with poor channel sync.</p></div>
+    <div class="pick"><h4>One shared pool, checked live <span class="tag">usual pick</span></h4><ul><li class="pro">Fewest empty rooms</li><li class="con">Depends on what each booking site supports, and how fast it is</li></ul><p class="when">Modern channel-manager setups.</p></div>
+    <div><h4>Fixed rooms per site</h4><ul><li class="pro">No overselling between sites</li><li class="con">Unsold rooms get stuck on one site</li></ul><p class="when">Hotels whose sync with booking sites is poor.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: spikes and multi-OTA sync</summary>
-    <p><b>Opening-day spike (FanCode's "global BookMyShow").</b> Turn on the waiting room for that event; serve the seat map from Redis refreshed every second (staleness is fine because the hold is the real check); shard by show so one blockbuster cannot starve other shows; pre-scale the hold service; cap seats per user; for global scale, keep each event's inventory in the region of its venue and route bookings there.</p>
-    <p><b>Booking.com's question: one hotel listed on Booking, Airbnb, Agoda and Expedia.</b> There must be one source of truth for the hotel's inventory: a channel manager or the property management system (PMS).</p>
+  <details class="deep"><summary>Go deeper: rushes and syncing many booking sites</summary>
+    <p><b>Opening-day rush (FanCode's "global BookMyShow").</b> Turn on the waiting room for that event. Serve the seat map from Redis, refreshed every second. Slightly old data is fine because the hold is the real check. Split data by show so one blockbuster cannot slow other shows. Add hold-service capacity before the rush. Cap seats per user. For global scale, keep each event's inventory in its venue's region and send bookings there.</p>
+    <p><b>Booking.com's question: one hotel is listed on Booking, Airbnb, Agoda and Expedia.</b> These sites are called OTAs (online travel agencies). The hotel's stock needs one true record. That is a channel manager or the hotel's property management system (PMS).</p>
     <ul>
-      <li>Each OTA booking is sent to the channel manager, which decrements the shared pool atomically (the per-day row model above) and pushes the new availability to every other OTA.</li>
-      <li>Pushes are asynchronous, so a window exists where two OTAs both think the last room is free. Close it with (a) a real-time availability check from the OTA to the channel manager before confirming, where the OTA supports it, or (b) keep a small buffer and stop selling the last room on lower-priority channels, or (c) allocations per channel (Booking gets 5 rooms, Expedia 3) at the cost of utilisation.</li>
-      <li>Updates are idempotent and versioned (each push carries a sequence number per hotel, room type and date; OTAs ignore older versions), so retries and reordering are safe.</li>
-      <li>If an oversell still happens, a defined playbook: relocate the guest to a comparable hotel at the platform's cost. Interviewers like hearing that the business process is part of the design.</li>
+      <li>Each OTA sends its booking to the channel manager. It reduces the shared count in one safe step, using the per-day rows above. Then it pushes the new availability to every other OTA.</li>
+      <li>Pushes arrive later, not instantly. So for a moment two OTAs may both think the last room is free. Close that gap in one of three ways. (a) The OTA checks live with the channel manager before confirming, if it supports this. (b) Keep a small buffer, and stop selling the last room on less important sites. (c) Give each site a fixed share (Booking gets 5 rooms, Expedia 3), at the cost of more empty rooms.</li>
+      <li>Updates are safe to repeat and carry a version. Each push has a sequence number per hotel, room type and date. OTAs ignore older versions. So retries and out-of-order messages are safe.</li>
+      <li>If an oversell still happens, follow a set plan. Move the guest to a similar hotel at the platform's cost. Interviewers like hearing that the business process is part of the design.</li>
     </ul>
   </details>
 
   <h2 id="scale"><span class="n">09</span>Scaling, failure handling and consistency</h2>
   <div class="vs">
-    <div><h4>Search and seat map: AP</h4><ul><li class="pro">Cached, fast, read replicas fine</li><li class="con">Can be a second stale</li></ul><p class="when">Browse traffic.</p></div>
-    <div class="pick"><h4>Hold and booking: CP <span class="tag">usual pick</span></h4><ul><li class="pro">Never sells a seat twice</li><li class="con">Refuses to book during a partition</li></ul><p class="when">Every write to inventory. Payments reconcile eventually.</p></div>
+    <div><h4>Search and seat map: AP</h4><ul><li class="pro">Cached and fast. Reading from database copies is fine.</li><li class="con">Can be a second out of date</li></ul><p class="when">Browsing traffic.</p></div>
+    <div class="pick"><h4>Hold and booking: CP <span class="tag">usual pick</span></h4><ul><li class="pro">Never sells a seat twice</li><li class="con">Refuses to book if the network splits</li></ul><p class="when">Every write to inventory. Payments are matched up later.</p></div>
   </div>
   <div class="keys">
-    <div class="key"><h4>What breaks at 10x</h4><p>Row contention on hot shows (waiting room, per-show sharding), then PSP rate limits (multiple PSPs with routing).</p></div>
-    <div class="key"><h4>Hot shard is OK</h4><p>One show lives on one shard by design; it has a few hundred seats and the waiting room bounds the rate.</p></div>
-    <div class="key"><h4>Outbox</h4><p>A confirmed booking always produces a ticket, even if Kafka is briefly down.</p></div>
-    <div class="key"><h4>Expired-hold storms</h4><p>Release via <code>held_until</code> at read time; the waiting room admits the next batch.</p></div>
+    <div class="key"><h4>What breaks at 10x</h4><p>First, fights over hot show rows. Fix with the waiting room and splitting by show. Next, PSP rate limits. Fix by routing across several PSPs.</p></div>
+    <div class="key"><h4>A busy server is OK</h4><p>One show lives on one database server by design. It has only a few hundred seats, and the waiting room limits the rate.</p></div>
+    <div class="key"><h4>Outbox</h4><p>The event is saved in the same database step as the booking. So a confirmed booking always produces a ticket, even if Kafka is down for a moment.</p></div>
+    <div class="key"><h4>Many holds expiring at once</h4><p>When reading, treat a hold as free once its time is up (<code>held_until</code> has passed). The waiting room lets in the next group.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: replicas, multi-region, fake reviews, testing</summary><ul>
-    <li><b>CAP, said plainly (Agoda).</b> Search and seat-map are AP: cached, can be a second stale. Hold and booking are CP: during a partition we refuse to book rather than risk selling a seat twice. Payments are reconciled eventually.</li>
-    <li><b>What breaks first at 10x:</b> row contention on hot shows, then the PSP's rate limits. Waiting room and per-show sharding address the first; multiple PSPs with routing address the second.</li>
-    <li><b>Hot shard.</b> A single show lives on one shard by design (keeps the transaction local). That is acceptable because one show has at most a few hundred seats; the waiting room bounds the rate.</li>
-    <li><b>Read replicas</b> for booking history and seat maps; never for hold decisions.</li>
-    <li><b>Outbox</b> for booking events (ticket generation, email, analytics), so a confirmed booking always produces a ticket even if Kafka is briefly down.</li>
-    <li><b>Expired-hold storms.</b> When thousands of holds expire at once, the seat map flips back to available; the waiting room admits the next batch. Releasing via <code>held_until</code> at read time avoids a sweeper bottleneck.</li>
-    <li><b>Multi-region.</b> Partition inventory by venue region (each event has a home region); users anywhere are routed there for writes. Search indices are replicated globally.</li>
-    <li><b>Fake reviews (Expedia).</b> Only bookings in CHECKED_OUT state can review (unique booking_id on review); rate-limit per account and device; flag bursts from new accounts, shared IPs or payment instruments, text similarity across reviews; hold suspicious ones for moderation; weight by reviewer history.</li>
-    <li><b>Testing (Agoda asked).</b> Concurrency tests that fire 100 parallel holds at one seat and assert one success; Testcontainers Postgres for the exclusion constraint; contract tests with the PSP sandbox; chaos tests killing the booking service between payment and confirm; load tests replaying an opening-day traffic shape.</li>
+    <li><b>CAP, said plainly (Agoda).</b> Search and the seat map are AP. They are cached and can be a second out of date. Hold and booking are CP. If the network splits, we refuse to book rather than risk selling a seat twice. Payments are matched up later.</li>
+    <li><b>What breaks first at 10x.</b> First, fights over rows of hot shows. Then the PSP's rate limits. The waiting room and splitting by show fix the first. Several PSPs with routing fix the second.</li>
+    <li><b>Hot shard.</b> One show lives on one database server (shard) by design. This keeps each transaction on one server. That is fine because one show has at most a few hundred seats. The waiting room limits the rate.</li>
+    <li><b>Read replicas</b> (read-only copies of the database) serve booking history and seat maps. Never use them for hold decisions.</li>
+    <li><b>Outbox</b> for booking events like ticket creation, email and analytics. A confirmed booking always produces a ticket, even if Kafka is down for a moment.</li>
+    <li><b>Many holds expiring at once.</b> When thousands of holds expire together, the seat map shows those seats free again. The waiting room lets in the next group. Checking <code>held_until</code> at read time means the sweeper never becomes a bottleneck.</li>
+    <li><b>Multi-region.</b> Split inventory by venue region, so each event has a home region. Users anywhere are sent there for writes. Search indexes are copied to every region.</li>
+    <li><b>Fake reviews (Expedia).</b> Only bookings in CHECKED_OUT state can leave a review (unique booking_id on review). Rate-limit per account and device. Flag bursts from new accounts, shared IPs or the same payment card. Flag reviews with very similar text. Hold suspicious ones for a moderator. Give more weight to reviewers with a good history.</li>
+    <li><b>Testing (Agoda asked).</b> Concurrency tests fire 100 holds at one seat at once and check that exactly one succeeds. Use Testcontainers Postgres to test the exclusion constraint. Run contract tests against the PSP sandbox. Run chaos tests that kill the booking service between payment and confirm. Run load tests that replay opening-day traffic.</li>
   </ul></details>
 
   <h2 id="tradeoffs"><span class="n">10</span>Trade-offs</h2>
   <div class="vs">
-    <div class="pick"><h4>Conditional UPDATE <span class="tag">usual pick</span></h4><ul><li class="pro">Simple, correct, no lock management</li><li class="con">Retries under contention</li></ul><p class="when">Default for specific seats (BookMyShow, flights) and count-only stock (flash sale, last unit).</p></div>
-    <div><h4><code>SELECT ... FOR UPDATE</code></h4><ul><li class="pro">Clear multi-row invariants</li><li class="con">Lock waits; deadlocks if order varies</li></ul><p class="when">Multi-night hotel stays (PhonePe per-day model); lock in date order.</p></div>
-    <div><h4>Exclusion constraint</h4><ul><li class="pro">Database guarantees no overlap</li><li class="con">Postgres-specific; GiST index cost</li></ul><p class="when">Date-range bookings of a single unit (Airbnb, Expedia).</p></div>
-    <div><h4>Redis lock / Lua hold</h4><ul><li class="pro">Very fast, sheds load</li><li class="con">Not durable; lock expiry hazards</li></ul><p class="when">Front filter for flash sales and hot shows.</p></div>
-    <div><h4>Version column (OCC)</h4><ul><li class="pro">No blocking reads</li><li class="con">High abort rate on hot rows</li></ul><p class="when">Low-contention updates (booking status).</p></div>
+    <div class="pick"><h4>Conditional UPDATE <span class="tag">usual pick</span></h4><ul><li class="pro">One update that succeeds only if the seat is still free. Simple and correct, with no locks to manage.</li><li class="con">Losers retry when many people compete</li></ul><p class="when">Default for specific seats (BookMyShow, flights) and for stock counts (flash sale, last unit).</p></div>
+    <div><h4><code>SELECT ... FOR UPDATE</code></h4><ul><li class="pro">Locks the rows you read until you finish. Clear rules across many rows.</li><li class="con">Others wait for the lock. Two bookings can block each other forever (deadlock) if they lock rows in different orders.</li></ul><p class="when">Multi-night hotel stays (PhonePe per-day model). Lock in date order.</p></div>
+    <div><h4>Exclusion constraint</h4><ul><li class="pro">The database itself guarantees no overlap</li><li class="con">Postgres only. Needs a special range index (GiST), which costs space and write time.</li></ul><p class="when">Date-range bookings of a single home (Airbnb, Expedia).</p></div>
+    <div><h4>Redis lock / Lua hold</h4><ul><li class="pro">A quick claim kept in memory, often by a small Lua script. Very fast, and takes load off the database.</li><li class="con">Can be lost if Redis crashes. Locks can expire at the wrong time.</li></ul><p class="when">First filter for flash sales and hot shows.</p></div>
+    <div><h4>Version column (OCC)</h4><ul><li class="pro">Optimistic concurrency control: reads never wait</li><li class="con">Many updates fail and retry on busy rows</li></ul><p class="when">Rows that few people change at once, like booking status.</p></div>
   </div>
 
   <h2 id="mistakes"><span class="n">11</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
-    <li>"Check if the seat is available, then insert the booking" with nothing making the two steps atomic.</li>
-    <li>A database transaction (or a <code>synchronized</code> block) held open across the payment gateway call.</li>
-    <li>Modelling hotel bookings without a per-night unit, then being unable to answer overlapping stays.</li>
-    <li>Relying only on a Redis lock for correctness.</li>
+    <li>"Check if the seat is free, then insert the booking", with nothing making the two steps happen as one.</li>
+    <li>Keeping a database transaction (or a <code>synchronized</code> block) open during the payment gateway call.</li>
+    <li>Modelling hotel bookings without one unit per night, then being stuck on overlapping stays.</li>
+    <li>Trusting only a Redis lock for correctness.</li>
     <li>No answer to "payment succeeded, booking failed" beyond "we will retry".</li>
-    <li>Treating search with the same consistency as booking, or the reverse.</li>
-    <li>Ignoring the spike: no waiting room or admission control for a blockbuster opening.</li>
+    <li>Making search as strict as booking, or making booking as loose as search.</li>
+    <li>Ignoring the rush: no waiting room or entry limit for a blockbuster opening.</li>
   </ul></div>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–5 min</span><span>Clarify inventory unit, ownership, hold time, overbooking, peaks. NFRs: zero double booking, latency, spike size.</span></div>
-    <div class="step"><span class="t">5–9 min</span><span>Capacity: modest average, extreme contention on hot rows. State the implication.</span></div>
-    <div class="step"><span class="t">9–15 min</span><span>APIs: search, seat map, hold, booking, webhook; two idempotency keys.</span></div>
-    <div class="step"><span class="t">15–22 min</span><span>Data model: show_seat or room_inventory per night, booking, payment; DB choice and shard key.</span></div>
-    <div class="step"><span class="t">22–28 min</span><span>Architecture: read path vs write path, waiting room, outbox to Kafka.</span></div>
-    <div class="step"><span class="t">28–38 min</span><span>Deep dives: the conditional update, state machine, payment mismatch and double payment.</span></div>
-    <div class="step"><span class="t">38–45 min</span><span>Spike handling, CAP statement, multi-channel sync or reviews if asked, trade-offs.</span></div>
+    <div class="step"><span class="t">0–5 min</span><span>Clarify what is sold, who owns it, hold time, overbooking and the busiest moment. Non-functional needs: no double booking, speed, rush size.</span></div>
+    <div class="step"><span class="t">5–9 min</span><span>Capacity: small average load, but huge competition for a few rows. Say what that means for the design.</span></div>
+    <div class="step"><span class="t">9–15 min</span><span>APIs: search, seat map, hold, booking, and the payment callback (webhook). Two unique request IDs (idempotency keys): one for the hold, one for the booking.</span></div>
+    <div class="step"><span class="t">15–22 min</span><span>Data model: one row per seat per show (show_seat), or rooms left per night (room_inventory). Add booking and payment tables. Choose the database and how to split it.</span></div>
+    <div class="step"><span class="t">22–28 min</span><span>Architecture: read side versus write side, waiting room, events saved with the booking then sent to Kafka (outbox).</span></div>
+    <div class="step"><span class="t">28–38 min</span><span>Deep dives: the conditional update, booking states, payment mismatches and double payment.</span></div>
+    <div class="step"><span class="t">38–45 min</span><span>Rush handling. Say which parts stay correct and which stay available during a network split (CAP). Multi-site sync or reviews if asked. Trade-offs.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">13</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">Two users hold seat F7 at the same millisecond using the conditional UPDATE. What happens?</p>
-    <div class="opts"><button class="opt" type="button">Both succeed; a cleanup job cancels one</button><button class="opt" type="button">A deadlock; Postgres kills both</button><button class="opt" type="button">One commits; the other waits, re-checks the WHERE, updates 0 rows and gets 409</button></div>
-    <p class="why">The UPDATE takes a row lock. The second statement re-evaluates its predicate against the committed row, sees HELD with a future expiry, and matches nothing.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">How should hotel availability be modelled for a 3-night stay?</p>
-    <div class="opts"><button class="opt" type="button">One row per booking, query for overlapping date ranges</button><button class="opt" type="button">One row per room type per night; lock the 3 nights in date order</button><button class="opt" type="button">One counter per hotel</button></div>
-    <p class="why">Per-night rows make availability a single-row read, keep the lock narrow, and fixed lock order prevents deadlocks between overlapping stays.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Two users try to hold seat F7 in the same millisecond, using the conditional UPDATE. What happens?</p>
+    <div class="opts"><button class="opt" type="button">Both succeed, and a cleanup job cancels one</button><button class="opt" type="button">A deadlock happens, and Postgres kills both</button><button class="opt" type="button">One commits. The other waits, re-checks the WHERE, changes 0 rows and gets 409</button></div>
+    <p class="why">The UPDATE locks the row. The second update waits, then re-checks its condition against the saved row. It sees HELD with an expiry in the future, so it matches nothing.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">How should you store hotel availability for a 3-night stay?</p>
+    <div class="opts"><button class="opt" type="button">One row per booking, and query for overlapping dates</button><button class="opt" type="button">One row per room type per night. Lock the 3 nights in date order.</button><button class="opt" type="button">One counter per hotel</button></div>
+    <p class="why">With one row per night, checking a night is a single row read, and the lock stays small. Locking in a fixed date order stops deadlocks between overlapping stays.</p></div>
   <div class="quiz" data-answer="0"><p class="q">Why not rely only on a Redis lock for seat holds?</p>
-    <div class="opts"><button class="opt" type="button">It can expire in a GC pause or vanish on async failover, letting two holders write</button><button class="opt" type="button">Redis is too slow for seat holds</button><button class="opt" type="button">Redis cannot store a TTL</button></div>
-    <p class="why">Redis is a fast filter that sheds losers; the Postgres conditional update stays the source of truth.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">Payment succeeded, but the hold expired and the seat was resold. What's the right move?</p>
-    <div class="opts"><button class="opt" type="button">Keep retrying confirm until it works</button><button class="opt" type="button">Book the seat anyway; the second buyer loses</button><button class="opt" type="button">Try an equivalent seat, else auto-refund keyed on the booking ID and notify the user</button></div>
-    <p class="why">It's a saga compensation: PAID_BUT_EXPIRED → REFUND_PENDING → REFUNDED, with an idempotent refund so retries never refund twice.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Total booking throughput is ~17/s. Why does the design still need a waiting room?</p>
-    <div class="opts"><button class="opt" type="button">To cache posters</button><button class="opt" type="button">A blockbuster sends ~1.7k arrivals/s at a few hundred rows; admission control protects them</button><button class="opt" type="button">To make search consistent</button></div>
-    <p class="why">The problem is contention on tiny hot sets during spikes, not average volume.</p></div>
+    <div class="opts"><button class="opt" type="button">It can expire during a GC pause or vanish when Redis fails over, so two people both think they hold the seat</button><button class="opt" type="button">Redis is too slow for seat holds</button><button class="opt" type="button">Redis cannot store a TTL</button></div>
+    <p class="why">Redis is a fast filter that turns away losers. The Postgres conditional update stays the true record.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Payment succeeded, but the hold expired and the seat was sold to someone else. What should happen?</p>
+    <div class="opts"><button class="opt" type="button">Keep retrying the confirm until it works</button><button class="opt" type="button">Book the seat anyway, and the second buyer loses it</button><button class="opt" type="button">Try a similar seat. If none, refund automatically using the booking ID and tell the user.</button></div>
+    <p class="why">This is a saga "undo" step: PAID_BUT_EXPIRED, then REFUND_PENDING, then REFUNDED. The refund uses an idempotency key, so retries never refund twice.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Average booking traffic is only about 17 per second. Why do we still need a waiting room?</p>
+    <div class="opts"><button class="opt" type="button">To cache posters</button><button class="opt" type="button">A blockbuster sends about 1.7k people per second at a few hundred rows. The waiting room protects those rows.</button><button class="opt" type="button">To make search consistent</button></div>
+    <p class="why">The problem is not average traffic. It is many people fighting over a few rows during a rush.</p></div>
 
   <h2 id="followups"><span class="n">14</span>Interview questions</h2>
-  <details class="qa"><summary>Two users click the same seat at the same millisecond. Walk me through it.</summary><p>Both send <code>POST /holds</code>. Both run the conditional UPDATE. Postgres row-locks the seat for the first; the second waits, then re-checks the WHERE clause against the committed row, finds it HELD with a future expiry, updates zero rows, rolls back and returns 409. The first user sees an 8-minute timer. No application lock needed.</p></details>
-  <details class="qa"><summary>How do you model hotel availability? Per booking or per day?</summary><p>Per room type per night: <code>(hotel_id, room_type_id, stay_date, total, reserved)</code>. A stay locks only its nights, in date order to avoid deadlocks, and checks <code>total - reserved &gt;= rooms</code> on each. Availability queries read N small rows. Individual room numbers are assigned at check-in, not at booking.</p></details>
-  <details class="qa"><summary>Payment succeeded but the booking failed. What does the user see?</summary><p>The booking moves to PAID_BUT_EXPIRED. We retry confirm; if inventory is gone, we try an equivalent unit, otherwise auto-refund with an idempotent refund keyed on the booking ID and notify the user within seconds. Reconciliation catches anything the online path missed.</p></details>
-  <details class="qa"><summary>How do you stop a user from being charged twice?</summary><p>Idempotency key on the booking request; one PSP order per booking so the PSP refuses a second capture; unique PSP payment ID in our table so duplicate webhooks are no-ops; reconciliation refunds any genuine double capture.</p></details>
-  <details class="qa"><summary>Which database and why?</summary><p>Postgres for inventory, bookings and payments: transactions across several rows, conditional updates, unique and exclusion constraints. Sharded by venue or hotel so a booking stays on one shard. Elasticsearch for search, Redis for caches and the waiting room, Kafka for events.</p></details>
-  <details class="qa"><summary>Why not hold a distributed lock in Redis and skip the DB check?</summary><p>Locks expire during GC pauses or network stalls, and Redis replication is async, so a failover can lose a lock. Then two holders write. The DB conditional update is the correctness guarantee; Redis is an optimisation that rejects most losers before they reach the DB.</p></details>
-  <details class="qa"><summary>Flash sale of 1,000 units with 1M buyers. Design the hot path.</summary><p>Waiting room, then a Redis <code>DECR</code> gate on stock so only about 1,000 requests pass; each creates a reservation row with a 10-minute TTL via an optimistic decrement in the DB; payment confirms it; expiry returns the unit to both Redis and DB. Everyone else gets "sold out" from Redis in a millisecond.</p></details>
-  <details class="qa"><summary>How do you avoid overselling a hotel listed on four OTAs?</summary><p>Single inventory source (channel manager or PMS); every OTA booking decrements it atomically and triggers versioned availability pushes to the others; real-time availability checks where OTAs support them; a buffer or per-channel allocation for the last rooms; and a relocation playbook for the rare oversell.</p></details>
+  <details class="qa"><summary>Two users click the same seat at the same millisecond. Walk me through it.</summary><p>Both send <code>POST /holds</code>. Both run the conditional UPDATE. Postgres gives the row lock to the first one. The second waits. Then it re-checks the WHERE clause against the saved row. It finds the seat HELD with an expiry in the future. It changes zero rows, rolls back, and returns 409. The first user sees an 8-minute timer. No lock in application code is needed.</p></details>
+  <details class="qa"><summary>How do you model hotel availability? Per booking or per day?</summary><p>Per room type per night: <code>(hotel_id, room_type_id, stay_date, total, reserved)</code>. A stay locks only its own nights. It locks them in date order to avoid deadlocks. On each night it checks <code>total - reserved &gt;= rooms</code>. An availability query reads N small rows. The actual room number is assigned at check-in, not at booking.</p></details>
+  <details class="qa"><summary>Payment succeeded but the booking failed. What does the user see?</summary><p>The booking moves to PAID_BUT_EXPIRED. We retry the confirm. If the inventory is gone, we try a similar unit. Otherwise we refund automatically. The refund is keyed on the booking ID, so it is safe to retry. We tell the user within seconds. Reconciliation catches anything the live flow missed.</p></details>
+  <details class="qa"><summary>How do you stop a user from being charged twice?</summary><p>Four things. An idempotency key on the booking request. One PSP order per booking, so the PSP refuses a second charge. A unique PSP payment ID in our table, so repeated webhooks do nothing. And reconciliation, which refunds any real double charge.</p></details>
+  <details class="qa"><summary>Which database and why?</summary><p>Postgres for inventory, bookings and payments. It gives transactions across several rows, conditional updates, and unique and exclusion constraints. Shard it (split it) by venue or hotel, so one booking stays on one server. Use Elasticsearch for search, Redis for caches and the waiting room, and Kafka for events.</p></details>
+  <details class="qa"><summary>Why not hold a distributed lock in Redis and skip the DB check?</summary><p>Locks can expire during GC pauses or network stalls. Redis also copies data to its replicas asynchronously, so a failover can lose a lock. Then two people both believe they hold the seat. The database conditional update is what guarantees correctness. Redis is a speed-up that rejects most losers before they reach the database.</p></details>
+  <details class="qa"><summary>Flash sale of 1,000 units with 1M buyers. Design the hot path.</summary><p>Start with a waiting room. Then use a Redis <code>DECR</code> gate on the stock count, so only about 1,000 requests get through. Each one creates a reservation row with a 10-minute TTL, using an optimistic decrement in the database. Payment confirms the reservation. If it expires, the unit goes back to both Redis and the database. Everyone else gets "sold out" from Redis in a millisecond.</p></details>
+  <details class="qa"><summary>How do you avoid overselling a hotel listed on four OTAs?</summary><p>Keep one true record of inventory, in a channel manager or PMS. Every OTA booking reduces it in one atomic step. That triggers versioned availability updates to the other OTAs. Use live availability checks where OTAs support them. Keep a buffer, or a fixed share per site, for the last rooms. Have a plan to move the guest for the rare oversell.</p></details>
 
   <h2 id="cheat"><span class="n">15</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Unit: show_seat row, or room_inventory per night, or daterange + exclusion constraint.</li>
-    <li>Hold = one conditional UPDATE; row count mismatch → 409.</li>
-    <li>Hotel nights: <code>FOR UPDATE</code> in date order, check <code>total - reserved</code>.</li>
-    <li>States: HELD → PAYMENT_PENDING → CONFIRMED; PAID_BUT_EXPIRED → refund.</li>
-    <li>Two idempotency keys; booking ID = PSP order ref; unique psp_payment_id.</li>
-    <li>Webhook + poller + daily reconciliation.</li>
-    <li>Search AP and cached; booking CP on sharded Postgres.</li>
-    <li>Waiting room + Redis DECR gate for spikes; Redis never the only guard.</li>
-    <li>Outbox → Kafka for tickets and notifications.</li>
+    <li>Unit: a show_seat row, a room_inventory row per night, or a daterange with an exclusion constraint.</li>
+    <li>Hold is one conditional UPDATE. If fewer rows changed than seats asked, return 409.</li>
+    <li>Hotel nights: <code>FOR UPDATE</code> in date order, then check <code>total - reserved</code>.</li>
+    <li>States: HELD, then PAYMENT_PENDING, then CONFIRMED. PAID_BUT_EXPIRED leads to a refund.</li>
+    <li>Two idempotency keys. Booking ID is the PSP order reference. psp_payment_id is unique.</li>
+    <li>Webhook, plus a poller, plus daily reconciliation.</li>
+    <li>Search is AP and cached. Booking is CP on sharded Postgres.</li>
+    <li>Waiting room and a Redis DECR gate for rushes. Redis is never the only guard.</li>
+    <li>Outbox to Kafka for tickets and notifications.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">16</span>Sources</h2>

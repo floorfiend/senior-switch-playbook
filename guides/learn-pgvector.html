@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html" aria-current="page">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../ai.html">Lesson · AI engineering</a></div>
   <h1>pgvector, hands-on</h1>
-  <p class="lede">Store contract chunks and their embeddings in Postgres, index them, and run fast per-tenant similarity search from Python and Spring AI.</p>
+  <p class="lede">You will store small pieces of contracts in Postgres, together with a list of numbers that captures their meaning. Then you will search them by meaning, fast, and only inside one customer's data. You will do it from Python and from Spring AI.</p>
   <div class="facts">
     <span class="fact"><b>Time:</b> 3–4 hours</span>
     <span class="fact"><b>Stack:</b> Docker, Postgres 18 + pgvector 0.8.7, Python (psycopg 3), Spring AI 2.0</span>
@@ -21,13 +21,24 @@
   <div class="chips"><span class="chip hot">Adobe</span><span class="chip">RAG rounds generally</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>pgvector adds a <code>vector(n)</code> column and distance operators to Postgres.</li>
-    <li><code>ORDER BY embedding &lt;=&gt; :q LIMIT 5</code> = the five closest chunks.</li>
-    <li>An HNSW index makes it fast but approximate; filters can silently drop rows.</li>
-    <li>Chunks, tenants and ACLs share one database and one transaction.</li>
+    <li>pgvector is a Postgres add-on. It gives you a <code>vector(n)</code> column type and operators that measure how far apart two vectors are.</li>
+    <li>To search, you sort the rows by distance to the question and keep the closest five. In SQL that is <code>ORDER BY embedding &lt;=&gt; :q LIMIT 5</code>.</li>
+    <li>An HNSW index makes this fast, but the answer is approximate. A <code>WHERE</code> filter can then quietly return fewer rows than you asked for.</li>
+    <li>Text pieces, customers (tenants) and access rules (ACLs) live in one database. So one transaction can change all of them together.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>Finding a house in a new city: take the highway to the right area, then a main road, then the lane. You never check every house, so you are fast, and once in a while you miss a slightly closer one. That is HNSW.</p></div>
+  <div class="analogy"><b>Picture it</b><p>You are looking for a house in a new city. You take the highway to the right area, then a main road, then the lane. You never check every house, so you are fast. Once in a while you miss a house that was slightly closer. That is how HNSW works.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Embedding</dt><dd>A list of numbers (for example 1,024 of them) that captures what a piece of text means. Texts with similar meaning get similar numbers, like two shops on the same street having close addresses.</dd>
+    <dt>Vector</dt><dd>Just a fixed-length list of numbers. An embedding is stored as a vector. Think of it as a point on a map with many directions instead of two.</dd>
+    <dt>Distance</dt><dd>How far apart two vectors are. Small distance means similar meaning. Every pgvector operator follows the rule "smaller is closer".</dd>
+    <dt>Cosine distance</dt><dd>Measures whether two vectors point in the same direction, ignoring their length. 0 means same direction (same meaning). It is the usual choice for text.</dd>
+    <dt>ANN (approximate nearest neighbour)</dt><dd>A search that checks only part of the data to be fast. It may miss a few of the true closest matches.</dd>
+    <dt>HNSW</dt><dd>Hierarchical Navigable Small World. An index shaped like a road map with layers: highways on top, lanes at the bottom. The usual index choice.</dd>
+    <dt>IVFFlat</dt><dd>A different index. It groups vectors into clusters, like shelves in a library. A search only reads the nearest few shelves.</dd>
+    <dt>Recall</dt><dd>Out of the truly closest rows, how many the search actually found. Recall@5 = 0.8 means 4 of the right 5 came back.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#ideas">Key ideas</a></li>
@@ -44,44 +55,44 @@
 
   <h2 id="ideas"><span class="n">01</span>Key ideas</h2>
   <div class="keys">
-    <div class="key"><h4>A vector is just a column</h4><p>An <dfn title="A fixed-length array of floats that encodes meaning; similar texts get nearby vectors">embedding</dfn> is e.g. 1,024 floats from <code>voyage-4</code>. Store it as <code>vector(1024)</code> next to the text.</p></div>
-    <div class="key"><h4>Distance is a Comparator</h4><p><code>ORDER BY embedding &lt;=&gt; :query LIMIT 5</code> sorts rows by distance to the query and keeps the closest five.</p></div>
-    <div class="key"><h4>No index = exact</h4><p>Postgres computes every distance. Perfect recall, fine up to tens of thousands of rows.</p></div>
-    <div class="key"><h4>Index = approximate</h4><p><dfn title="Approximate nearest neighbour: a search that skips most rows and may miss a few true neighbours">ANN</dfn> is much faster but may return different rows. Most pgvector bugs start here.</p></div>
-    <div class="key"><h4>Metadata is the product</h4><p>Tenant, document, page and model columns turn "similar text" into "text this user may see, with a page to cite".</p></div>
+    <div class="key"><h4>A vector is just a column</h4><p>An <dfn title="A fixed-length list of numbers that captures meaning. Similar texts get nearby vectors.">embedding</dfn> is, for example, 1,024 numbers from the <code>voyage-4</code> model. You store it in a <code>vector(1024)</code> column, next to the text.</p></div>
+    <div class="key"><h4>Distance works like a Comparator</h4><p>Sort the rows by how far they are from the question, then keep the closest five. In SQL: <code>ORDER BY embedding &lt;=&gt; :query LIMIT 5</code>.</p></div>
+    <div class="key"><h4>No index means exact</h4><p>Postgres measures the distance to every row. It never misses a match. This is fine up to tens of thousands of rows.</p></div>
+    <div class="key"><h4>An index means approximate</h4><p><dfn title="Approximate nearest neighbour: a search that skips most rows and may miss a few true matches">ANN</dfn> search is much faster. But it may return different rows than an exact search. Most pgvector bugs start here.</p></div>
+    <div class="key"><h4>The extra columns matter most</h4><p>Columns for customer, document, page and model change "similar text" into "text this user may see, with a page number to quote".</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: what you'll be able to do, and the exact-vs-approximate detail</summary>
+  <details class="deep"><summary>Go deeper: what you'll be able to do, and exact versus approximate search</summary>
     <ul>
-      <li>Start Postgres with pgvector in one <code>docker run</code> and enable the extension.</li>
-      <li>Design a chunk table with tenant, document, page and model metadata, a generated <code>tsvector</code>, and the right indexes.</li>
-      <li>Choose between HNSW and IVFFlat, set <code>m</code>, <code>ef_construction</code>, <code>ef_search</code>, <code>lists</code> and <code>probes</code>, and explain the recall trade-off.</li>
-      <li>Use the six distance operators correctly, and write queries the planner can actually serve from the index.</li>
-      <li>Run filtered (per-tenant) nearest-neighbour queries without silently losing results.</li>
-      <li>Ingest contract PDFs from a Python script, idempotently.</li>
-      <li>Do the same with Spring AI <code>PgVectorStore</code>, and argue pgvector vs Pinecone vs Qdrant.</li>
+      <li>Start Postgres with pgvector using one <code>docker run</code> command, and turn on the extension.</li>
+      <li>Design a table of text pieces. It holds customer, document, page and model columns, a full-text column (<code>tsvector</code>), and the right indexes.</li>
+      <li>Choose between HNSW and IVFFlat. Set <code>m</code>, <code>ef_construction</code>, <code>ef_search</code>, <code>lists</code> and <code>probes</code>. Explain how each one trades speed for accuracy.</li>
+      <li>Use the six distance operators correctly. Write queries that Postgres can actually answer from the index.</li>
+      <li>Search inside one customer's data without quietly losing results.</li>
+      <li>Load contract PDFs from a Python script. Running it twice must not create duplicates.</li>
+      <li>Do the same with Spring AI <code>PgVectorStore</code>. Explain when to pick pgvector, Pinecone or Qdrant.</li>
     </ul>
-    <p>You already run Postgres in production. pgvector adds a vector column type, distance operators and two approximate indexes, so contract chunks, their embeddings, tenant ids and full-text index can live in one table under one transaction. This lesson runs it in Docker, designs the table, ingests PDFs from Python, and then does the same thing with Spring AI's <code>PgVectorStore</code>.</p>
-    <p>An embedding is a fixed-length array of floats, for example 1,024 numbers from <code>voyage-4</code>. pgvector adds a type <code>vector(n)</code> that stores it, plus operators that compute the distance between two vectors. Think of it as adding a new <code>Comparator</code> to Postgres: <code>ORDER BY embedding &lt;=&gt; :query LIMIT 5</code> means "sort rows by how far their embedding is from the query embedding and give me the closest five".</p>
-    <p>Without an index this is an exact scan: Postgres computes the distance for every row, which gives perfect recall and is fine up to tens of thousands of rows (and can use parallel workers). With an index it becomes approximate nearest-neighbour (ANN) search: much faster, but the README warns that "you will see different results for queries after adding an approximate index". That sentence is the root of most pgvector production bugs.</p>
+    <p>You already run Postgres in production. pgvector adds three things: a vector column type, distance operators, and two approximate indexes. So the text pieces, their embeddings, the customer ids and the full-text index can all live in one table. One transaction can change them together. This lesson runs it in Docker and designs the table. Then it loads PDFs from Python. Finally it does the same thing with Spring AI's <code>PgVectorStore</code>.</p>
+    <p>An embedding is a fixed-length list of decimal numbers. For example, <code>voyage-4</code> gives 1,024 numbers. pgvector adds a type, <code>vector(n)</code>, to store it. It also adds operators that measure the distance between two vectors. Think of it as adding a new <code>Comparator</code> to Postgres. <code>ORDER BY embedding &lt;=&gt; :query LIMIT 5</code> means "sort rows by how far their embedding is from the question's embedding, and give me the closest five".</p>
+    <p>Without an index, this is an exact scan. Postgres measures the distance for every row, so it never misses a match (perfect recall). That is fine up to tens of thousands of rows, and it can use several CPU workers in parallel. With an index, it becomes approximate nearest-neighbour (ANN) search. It is much faster. But the README warns that "you will see different results for queries after adding an approximate index". That one sentence causes most pgvector bugs in production.</p>
   </details>
 
   <h2 id="operators"><span class="n">02</span>Distance operators</h2>
   <div class="tbl"><table>
-    <tr><th>Operator</th><th>Meaning</th><th>Index opclass</th><th>Use when</th></tr>
-    <tr><td><code>&lt;-&gt;</code></td><td>L2 (Euclidean) distance</td><td><code>vector_l2_ops</code></td><td>Model docs say L2, or image-style embeddings</td></tr>
-    <tr><td><code>&lt;#&gt;</code></td><td><b>Negative</b> inner product</td><td><code>vector_ip_ops</code></td><td>Vectors are normalised to length 1: same ranking as cosine, cheaper</td></tr>
-    <tr><td><code>&lt;=&gt;</code></td><td>Cosine distance (1 − cosine similarity)</td><td><code>vector_cosine_ops</code></td><td>Default for text embeddings; safe if you are not sure vectors are normalised</td></tr>
-    <tr><td><code>&lt;+&gt;</code></td><td>L1 (Manhattan) distance</td><td><code>vector_l1_ops</code></td><td>Rare in RAG</td></tr>
-    <tr><td><code>&lt;~&gt;</code>, <code>&lt;%&gt;</code></td><td>Hamming, Jaccard</td><td><code>bit_hamming_ops</code>, <code>bit_jaccard_ops</code></td><td>Binary vectors / binary quantisation</td></tr>
+    <tr><th>Operator</th><th>Meaning</th><th>Index opclass (which index type serves it)</th><th>Use when</th></tr>
+    <tr><td><code>&lt;-&gt;</code></td><td>L2 (Euclidean) distance: the straight-line distance, like a ruler</td><td><code>vector_l2_ops</code></td><td>The model's docs say L2, or the embeddings come from images</td></tr>
+    <tr><td><code>&lt;#&gt;</code></td><td><b>Negative</b> inner product</td><td><code>vector_ip_ops</code></td><td>Vectors are normalised (scaled to length 1). It ranks the same as cosine, and is cheaper to compute.</td></tr>
+    <tr><td><code>&lt;=&gt;</code></td><td>Cosine distance (1 − cosine similarity): do the two point the same way?</td><td><code>vector_cosine_ops</code></td><td>The default for text. Safe when you are not sure the vectors are normalised.</td></tr>
+    <tr><td><code>&lt;+&gt;</code></td><td>L1 (Manhattan) distance: walking along city blocks</td><td><code>vector_l1_ops</code></td><td>Rare in RAG (retrieval-augmented generation)</td></tr>
+    <tr><td><code>&lt;~&gt;</code>, <code>&lt;%&gt;</code></td><td>Hamming, Jaccard: count differing or shared bits</td><td><code>bit_hamming_ops</code>, <code>bit_jaccard_ops</code></td><td>Binary vectors, or binary quantisation (squeezing each number into one bit)</td></tr>
   </table></div>
   <ul>
-    <li>Every operator means "smaller is closer". That is why <code>&lt;#&gt;</code> returns the <b>negative</b> inner product.</li>
-    <li>An index serves one opclass: a cosine HNSW index is useless for <code>ORDER BY &lt;-&gt;</code>.</li>
-    <li>Voyage embeddings are unit length, so cosine, inner product and L2 give the same ranking.</li>
+    <li>Every operator follows "smaller is closer". That is why <code>&lt;#&gt;</code> returns the <b>negative</b> inner product.</li>
+    <li>An index only works with one kind of distance (its opclass). A cosine HNSW index cannot help <code>ORDER BY &lt;-&gt;</code>.</li>
+    <li>Voyage embeddings have length 1. So cosine, inner product and L2 all give the same order.</li>
   </ul>
 
   <h2 id="hnsw"><span class="n">03</span>How HNSW finds neighbours</h2>
-  <p><dfn title="Hierarchical Navigable Small World: a multi-layer graph where each vector links to its nearest neighbours">HNSW</dfn> is a layered graph: few nodes on top, every node at the bottom. Search starts at the top and walks greedily towards the query, dropping a layer at a time.</p>
+  <p><dfn title="Hierarchical Navigable Small World: a graph with layers, where each vector links to its nearest neighbours">HNSW</dfn> is a graph with layers. The top layer has a few points. The bottom layer has every point. The search starts at the top. At each step it moves to whichever neighbour is closer to the question. When it cannot get closer, it drops one layer down.</p>
   <div class="stepper"><b class="title">Query "Can the customer terminate early?" (LIMIT 2, ef_search = 3)</b><div class="frames">
     <figure class="frame">
       <div class="arch">
@@ -92,7 +103,7 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node dim">#3</span><span class="node dim">#4</span><span class="node dim">#6</span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node dim">#15</span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">at=#9</span><span>dist=0.62</span></div>
-      <figcaption>Start at the fixed entry point on the top layer. Distance from chunk #9 to the query is 0.62.</figcaption>
+      <figcaption>The search starts on the small top "highway" layer, at the same fixed starting point every time. Text piece #9 is 0.62 away from the question (smaller means closer in meaning).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -103,7 +114,7 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node dim">#3</span><span class="node dim">#4</span><span class="node dim">#6</span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node dim">#15</span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">at=#1</span><span>dist=0.40</span></div>
-      <figcaption>Neighbour #1 is closer (0.40), so move there. No neighbour of #1 beats it on this layer, so drop down.</figcaption>
+      <figcaption>Its linked neighbour #1 is closer (0.40), so the search moves there. Nothing linked to #1 is closer on this layer, so it goes down one layer.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -114,7 +125,7 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node dim">#3</span><span class="node dim">#4</span><span class="node dim">#6</span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node dim">#15</span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">at=#4</span><span>dist=0.18</span></div>
-      <figcaption>Layer 1 has more links. Neighbour #4 is at 0.18, so move again, then drop to the bottom layer.</figcaption>
+      <figcaption>The middle layer has more points, like main roads. Neighbour #4 is at 0.18, so the search moves again. Then it goes down to the bottom layer, which holds every piece.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -125,7 +136,7 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node">#3<small>0.25</small></span><span class="node hl">#4<small>0.18</small></span><span class="node">#6<small>0.07</small></span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node dim">#15</span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">candidates=[#6 0.07, #4 0.18, #3 0.25]</span></div>
-      <figcaption>On layer 0 it keeps a candidate list of size <code>ef_search</code> (3 here, 40 by default). It scores #4's neighbours #3 and #6.</figcaption>
+      <figcaption>On the bottom layer it keeps a shortlist of the best matches so far. Here the shortlist holds 3 (the default is 40, set by <code>ef_search</code>). It measures #4's neighbours, #3 and #6.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -136,7 +147,7 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node dim">#3</span><span class="node">#4<small>0.18</small></span><span class="node hl">#6<small>0.07</small></span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node">#15<small>0.05</small></span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">candidates=[#15 0.05, #6 0.07, #4 0.18]</span></div>
-      <figcaption>Expand the best candidate #6. Its neighbour #15 is at 0.05 and pushes #3 out of the list.</figcaption>
+      <figcaption>Look around the best match, #6. Its neighbour #15 is at 0.05. It enters the shortlist and pushes #3 out.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -147,46 +158,46 @@
         <div class="tier"><small>Layer 0 · all chunks</small><span class="node dim">#1</span><span class="node dim">#3</span><span class="node dim">#4</span><span class="node hl">#6<small>0.07</small></span><span class="node dim">#9</span><span class="node dim">#12</span><span class="node hl">#15<small>0.05</small></span><span class="node dim">#17</span></div>
       </div>
       <div class="ptrs"><span class="on">result=[#15, #6]</span><span>visited 6 of 8</span></div>
-      <figcaption>No unvisited neighbour beats the list, so stop and return the top 2. Chunks #12 and #17 were never scored, which is why it is approximate.</figcaption>
+      <figcaption>No new neighbour beats the shortlist, so stop and return the top 2. Pieces #12 and #17 were never measured. That is why the search is approximate.</figcaption>
     </figure>
   </div></div>
 
   <div class="vs">
     <div class="pick"><h4>HNSW (graph) <span class="tag">usual pick</span></h4><ul>
-      <li class="pro">Better speed/recall trade-off</li>
-      <li class="pro">No training step: build it on an empty table</li>
-      <li class="con">Slower build, more memory</li></ul>
-      <p class="when"><code>m</code> = links per node (16) · <code>ef_construction</code> = build list (64) · <code>hnsw.ef_search</code> = query list (40)</p></div>
+      <li class="pro">Better balance of speed and accuracy</li>
+      <li class="pro">No training step, so you can build it on an empty table</li>
+      <li class="con">Slower to build, and uses more memory</li></ul>
+      <p class="when"><code>m</code> = links per point (16) · <code>ef_construction</code> = shortlist size while building (64) · <code>hnsw.ef_search</code> = shortlist size per search (40)</p></div>
     <div><h4>IVFFlat (clusters)</h4><ul>
-      <li class="pro">Faster build, less memory</li>
-      <li class="con">Lower recall at the same speed</li>
-      <li class="con">Build <b>after</b> data exists (k-means centroids)</li></ul>
-      <p class="when"><code>lists</code> = rows/1000 (≤1M rows), sqrt(rows) above · <code>ivfflat.probes</code> default 1, start at sqrt(lists)</p></div>
+      <li class="pro">Faster to build, uses less memory</li>
+      <li class="con">Finds fewer of the true matches at the same speed</li>
+      <li class="con">Build it <b>after</b> the data is loaded, because it learns its groups (k-means centroids) from the data</li></ul>
+      <p class="when"><code>lists</code> = rows/1000 (up to 1M rows), sqrt(rows) above that · <code>ivfflat.probes</code> is 1 by default; start at sqrt(lists)</p></div>
   </div>
-  <div class="callout tip"><b>Default choice</b><p>HNSW + cosine for contracts. Index limit: 2,000 dims for <code>vector</code>, 4,000 for <code>halfvec</code>.</p></div>
-  <details class="deep"><summary>Go deeper: the original HNSW and IVFFlat descriptions</summary>
-    <div class="callout"><b>Default choice</b><p>Use HNSW with cosine for a contract corpus. Use IVFFlat only when build time or memory dominates, for example re-indexing tens of millions of vectors nightly. Both are limited to 2,000 dimensions for <code>vector</code>; <code>halfvec</code> indexes up to 4,000, and binary quantisation up to 64,000.</p></div>
-    <p><b>HNSW (graph).</b> A multi-layer "skip list of neighbours". Search starts at a sparse top layer, greedily walks towards the query, and drops a layer at a time. Like finding a house by motorway, then main road, then lane. Better speed/recall trade-off, slower build, more memory, no training step, so you can create it on an empty table.</p>
-    <p><b>IVFFlat (clusters).</b> k-means splits vectors into <code>lists</code> clusters. A query only scans the <code>probes</code> nearest clusters. Like a library: go to the right shelves, then read every book on them. Faster build, less memory, lower recall at the same speed. Must be built <b>after</b> data exists (centroids are trained from it).</p>
+  <div class="callout tip"><b>Default choice</b><p>Use HNSW with cosine for contracts. An index can hold at most 2,000 dimensions (numbers per vector) for <code>vector</code>, and 4,000 for <code>halfvec</code>.</p></div>
+  <details class="deep"><summary>Go deeper: HNSW and IVFFlat in more detail</summary>
+    <div class="callout"><b>Default choice</b><p>Use HNSW with cosine for a collection of contracts. Use IVFFlat only when build time or memory is the main problem. An example is rebuilding the index for tens of millions of vectors every night. Both index types allow at most 2,000 dimensions for <code>vector</code>. <code>halfvec</code> (half-size numbers) allows up to 4,000. Binary quantisation allows up to 64,000.</p></div>
+    <p><b>HNSW (graph).</b> Think of it as a "skip list of neighbours" with many layers. The search starts at a thin top layer. It keeps moving to the neighbour closest to the question, and drops one layer at a time. It is like finding a house by motorway, then main road, then lane. It balances speed and accuracy better. It builds more slowly and uses more memory. It has no training step, so you can create it on an empty table.</p>
+    <p><b>IVFFlat (clusters).</b> A method called k-means splits the vectors into groups. The number of groups is <code>lists</code>. A search only reads the nearest few groups, and that number is <code>probes</code>. It is like a library: walk to the right shelves, then read every book on them. It builds faster and uses less memory. At the same speed, it finds fewer of the true matches. You must build it <b>after</b> the data exists, because the group centres (centroids) are learned from the data.</p>
   </details>
 
   <h2 id="filtering"><span class="n">04</span>The filtering trap (the senior question)</h2>
   <div class="stats">
-    <div class="stat"><b>40</b><span>candidates from the index (ef_search)</span></div>
-    <div class="stat"><b>10%</b><span>of rows belong to tenant acme</span></div>
-    <div class="stat"><b>~4</b><span>rows survive <code>WHERE tenant_id</code></span></div>
+    <div class="stat"><b>40</b><span>rows the index hands back (ef_search)</span></div>
+    <div class="stat"><b>10%</b><span>of all rows belong to customer acme</span></div>
+    <div class="stat"><b>~4</b><span>rows left after <code>WHERE tenant_id</code></span></div>
     <div class="stat"><b>10</b><span>rows you asked for with LIMIT</span></div>
   </div>
-  <p>With an ANN index, <code>WHERE</code> runs <i>after</i> the index returns candidates. You asked for 10 and silently got 4. Fixes, in the order to try them:</p>
+  <p>With an ANN index, the <code>WHERE</code> filter runs <i>after</i> the index picks its rows. You asked for 10 rows and quietly got 4. No error tells you. Here are the fixes, in the order to try them.</p>
   <ol class="walk">
-    <li><span class="who">Iterative scan</span><span><code>SET hnsw.iterative_scan = strict_order</code> or <code>relaxed_order</code> (0.8.0+). Keeps scanning until enough rows pass or <code>hnsw.max_scan_tuples</code> (20,000) is hit.</span></li>
-    <li><span class="who">B-tree on filter</span><span>For a small tenant the planner may prefer an exact scan of its rows: exact and fast.</span></li>
-    <li><span class="who">Partial index</span><span>For a few distinct values: <code>... WHERE (clause_type = 'termination')</code>.</span></li>
-    <li><span class="who">Partition</span><span>List-partition by tenant, or separate tables. A shared ANN index lets one tenant's vectors affect another's recall and speed.</span></li>
+    <li><span class="who">Iterative scan</span><span>Tell the index to keep searching until enough rows pass the filter. It gives up after 20,000 rows (<code>hnsw.max_scan_tuples</code>). Needs version 0.8.0 or later: <code>SET hnsw.iterative_scan = strict_order</code> or <code>relaxed_order</code>.</span></li>
+    <li><span class="who">B-tree on filter</span><span>Add a normal index on the filter column. For a small customer, Postgres may then just check all their rows. That is exact and still fast.</span></li>
+    <li><span class="who">Partial index</span><span>When a column has only a few values, build a separate small index for each value. For example, one only for termination clauses: <code>... WHERE (clause_type = 'termination')</code>.</span></li>
+    <li><span class="who">Partition</span><span>Split the table by customer, or use separate tables. With one shared ANN index, one customer's data can hurt another customer's accuracy and speed.</span></li>
   </ol>
-  <details class="deep"><summary>Go deeper: the README arithmetic and why Postgres at all</summary>
-    <p>With an approximate index, the <code>WHERE</code> clause is applied <i>after</i> the index returns candidates. The README's own arithmetic: if <code>tenant_id = 'acme'</code> matches 10% of rows and <code>ef_search</code> is 40, the index hands back about 40 candidates and only around 4 survive the filter. You asked for <code>LIMIT 10</code> and silently got 4.</p>
-    <p><b>Why Postgres instead of a vector database.</b> For a Spring Boot team the argument is operational. The chunks join to <code>documents</code>, <code>tenants</code> and ACL tables you already have; inserts and deletes are transactional with the rest of your data (delete a contract and its chunks vanish in the same commit); WAL replication, PITR, backups and Flyway migrations already work. You give up the convenience of a managed, horizontally sharded ANN service, which you need only at a scale most legal-tech tenants never reach.</p>
+  <details class="deep"><summary>Go deeper: the README's numbers, and why use Postgres at all</summary>
+    <p>With an approximate index, Postgres applies the <code>WHERE</code> clause <i>after</i> the index returns its rows. The README gives the numbers. Say <code>tenant_id = 'acme'</code> matches 10% of rows and <code>ef_search</code> is 40. The index hands back about 40 rows. Only around 4 of them pass the filter. You asked for <code>LIMIT 10</code> and quietly got 4.</p>
+    <p><b>Why Postgres instead of a separate vector database.</b> For a Spring Boot team, the reason is ease of running it. The text pieces can join to the <code>documents</code>, <code>tenants</code> and access-rule (ACL) tables you already have. Inserts and deletes share a transaction with the rest of your data. So when you delete a contract, its pieces disappear in the same commit. Replication (WAL), point-in-time restore (PITR), backups and Flyway migrations already work. You give up a managed ANN service that spreads data over many machines for you. You only need that at a size most legal-tech customers never reach.</p>
   </details>
 
   <h2 id="handson"><span class="n">05</span>Hands-on: Docker, SQL, Python, Spring AI</h2>
@@ -205,10 +216,10 @@ SELECT extversion FROM pg_extension WHERE extname = 'vector';
 
   <h3>Step 2: design the table</h3>
   <ul>
-    <li>Real columns for anything you filter on; <code>jsonb</code> for the rest.</li>
-    <li><code>embedding_model</code>: re-embed side by side, never compare vectors from two models.</li>
-    <li><code>UNIQUE (document_id, chunk_index)</code> + delete-then-insert = safe re-ingestion.</li>
-    <li><code>content_tsv</code>: for hybrid search in the next lesson.</li>
+    <li>Use real columns for anything you filter on. A <code>jsonb</code> column is fine for the rest.</li>
+    <li><code>embedding_model</code> records which model made the vector. You can then re-embed with a new model side by side. Never compare vectors from two different models.</li>
+    <li><code>UNIQUE (document_id, chunk_index)</code>, plus "delete old rows, then insert" in one transaction, makes re-loading a document safe.</li>
+    <li><code>content_tsv</code> is for hybrid search (meaning plus keywords) in the next lesson.</li>
   </ul>
   <details class="code"><summary>Show SQL: table, sample rows, indexes</summary><pre><code>CREATE TABLE contract_chunks (
     id              bigserial PRIMARY KEY,
@@ -241,8 +252,8 @@ CREATE INDEX ON contract_chunks USING hnsw (embedding vector_cosine_ops) WITH (m
 CREATE INDEX ON contract_chunks (tenant_id);
 CREATE INDEX ON contract_chunks USING gin (content_tsv);</code></pre></details>
   <details class="deep"><summary>Go deeper: why each column</summary>
-    <p>Metadata is what turns "similar text" into "similar text the user is allowed to see, from the right document, with a page to cite". Use real columns for anything you filter on; a <code>jsonb</code> column is fine for the rest.</p>
-    <p>Why each column: <code>embedding_model</code> lets you re-embed with a new model side by side and never compare vectors from two models (their spaces are unrelated). <code>UNIQUE (document_id, chunk_index)</code> plus delete-then-insert in one transaction makes re-ingestion safe. <code>content_tsv</code> is there for hybrid search in the next lesson.</p>
+    <p>The extra columns (metadata) change "similar text" into "similar text this user may see, from the right document, with a page to quote". Use real columns for anything you filter on. A <code>jsonb</code> column is fine for the rest.</p>
+    <p>Why each column exists. <code>embedding_model</code> lets you re-embed with a new model side by side. You never compare vectors from two models, because their numbers mean unrelated things. It is like comparing a Celsius and a Fahrenheit reading. <code>UNIQUE (document_id, chunk_index)</code>, plus delete-then-insert in one transaction, makes loading the same document again safe. <code>content_tsv</code> is there for hybrid search in the next lesson.</p>
   </details>
 
   <h3>Step 3: query it, and read the output</h3>
@@ -257,7 +268,7 @@ LIMIT 3;
 --   1 | termination |    4 |          0.0061
 --   4 | termination |    3 |          0.0369
 --   3 | limitation  |    7 |          0.7592</code></pre>
-  <p>Chunk 5 (globex) is closer than chunk 3 but never appears: the tenant filter worked. All operators on one row:</p>
+  <p>Row 5 belongs to customer globex. It is closer than row 3, but it never appears. So the customer filter worked. Here is every operator on one row.</p>
   <pre><code>SELECT embedding &lt;-&gt; '[1,0,0]' AS l2, embedding &lt;#&gt; '[1,0,0]' AS neg_inner,
        embedding &lt;=&gt; '[1,0,0]' AS cosine_dist, 1 - (embedding &lt;=&gt; '[1,0,0]') AS cosine_sim,
        embedding &lt;+&gt; '[1,0,0]' AS l1
@@ -266,7 +277,7 @@ FROM contract_chunks WHERE id = 1;
 --  l2     0.1414   neg_inner -0.9000   cosine_dist 0.0061   cosine_sim 0.9939   l1 0.2000</code></pre>
 
   <h3>Step 4: make sure the index is used</h3>
-  <p>The planner uses a vector index only for <code>ORDER BY &lt;distance operator&gt; ASC</code> plus <code>LIMIT</code>. Ordering by an expression disables it:</p>
+  <p>The planner is the part of Postgres that decides how to run a query. It uses a vector index only for <code>ORDER BY &lt;distance operator&gt; ASC</code> together with <code>LIMIT</code>. If you sort by a calculation instead, it skips the index.</p>
   <pre><code>EXPLAIN (COSTS OFF) SELECT id FROM contract_chunks ORDER BY embedding &lt;=&gt; '[1,0,0]' LIMIT 5;
 --  Limit
 --    -&gt;  Index Scan using contract_chunks_embedding_idx on contract_chunks
@@ -277,12 +288,12 @@ EXPLAIN (COSTS OFF) SELECT id FROM contract_chunks ORDER BY 1 - (embedding &lt;=
 --    -&gt;  Sort
 --          Sort Key: (('1'::double precision - (embedding &lt;=&gt; '[1,0,0]'::vector))) DESC
 --          -&gt;  Seq Scan on contract_chunks</code></pre>
-  <p>Compute similarity in the select list for display; order by the bare distance.</p>
-  <details class="deep"><summary>Go deeper: how this was verified</summary><p>The planner only uses a vector index when the query has <code>ORDER BY &lt;distance operator&gt; ASC</code> and a <code>LIMIT</code>. Ordering by an expression such as similarity disables it. Verified on the container above (with <code>enable_seqscan = off</code> so a 5-row table still shows the choice). Compute similarity in the select list for display, order by the bare distance. In production use <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p></details>
+  <p>Show similarity in the SELECT list if you want it on screen. But sort by the plain distance.</p>
+  <details class="deep"><summary>Go deeper: how this was checked</summary><p>The planner only uses a vector index when the query has <code>ORDER BY &lt;distance operator&gt; ASC</code> and a <code>LIMIT</code>. Sorting by a calculation, such as similarity, turns the index off. This was checked on the container above. It used <code>enable_seqscan = off</code>, so even a 5-row table shows the planner's choice. Show similarity in the SELECT list, and sort by the plain distance. In production, use <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p></details>
 
   <h3>Step 5: tune recall per query, and filter safely</h3>
   <ul>
-    <li><code>SET LOCAL</code>, not <code>SET</code>: behind HikariCP a plain <code>SET</code> leaks to the next borrower.</li>
+    <li>Use <code>SET LOCAL</code>, not <code>SET</code>. Behind a connection pool like HikariCP, a plain <code>SET</code> stays on the connection. The next request that borrows it gets your setting too.</li>
     <li><code>relaxed_order</code> can return rows slightly out of distance order.</li>
   </ul>
   <details class="code"><summary>Show SQL: ef_search, iterative scan, IVFFlat, partitions</summary><pre><code>BEGIN;
@@ -301,7 +312,7 @@ SET ivfflat.probes = 10;                     -- default 1; start near sqrt(lists
 CREATE TABLE chunks_p (tenant_id text NOT NULL, embedding vector(1024), content text)
     PARTITION BY LIST (tenant_id);
 CREATE TABLE chunks_acme PARTITION OF chunks_p FOR VALUES IN ('acme');</code></pre></details>
-  <details class="deep"><summary>Go deeper: SET LOCAL and strict ordering</summary><p><code>SET LOCAL</code> scopes the setting to the transaction, which matters behind a connection pool such as HikariCP: a plain <code>SET</code> leaks to the next borrower of that connection. With <code>relaxed_order</code>, results can be slightly out of distance order; wrap the query in a <code>MATERIALIZED</code> CTE and re-sort (<code>ORDER BY distance + 0</code> on Postgres 17+) if you need strict order.</p></details>
+  <details class="deep"><summary>Go deeper: SET LOCAL and strict ordering</summary><p><code>SET LOCAL</code> keeps the setting inside the current transaction only. This matters behind a connection pool such as HikariCP. A plain <code>SET</code> stays on the connection and reaches the next code that borrows it. With <code>relaxed_order</code>, results can be slightly out of distance order. If you need strict order, wrap the query in a <code>MATERIALIZED</code> CTE and sort again. On Postgres 17 and later, use <code>ORDER BY distance + 0</code> for that.</p></details>
 
   <h3>Step 6: ingest PDFs from Python</h3>
   <pre><code>uv venv &amp;&amp; source .venv/bin/activate
@@ -309,9 +320,9 @@ uv pip install "psycopg[binary]" pgvector pypdf voyageai numpy
 export VOYAGE_API_KEY=...        # Anthropic has no embedding model; its docs point to Voyage AI
 python ingest_pdfs.py acme contracts/*.pdf</code></pre>
   <ul>
-    <li>~500-token windows, 10% overlap, page numbers kept for citations.</li>
-    <li>Embeddings batched 128 at a time with <code>input_type="document"</code>; queries use <code>input_type="query"</code>.</li>
-    <li>Deterministic <code>uuid5</code> document id: a second run replaces rows instead of duplicating.</li>
+    <li>Each piece is about 500 tokens (roughly 375 words). Neighbouring pieces overlap by 10%, so a sentence on the border is not lost. Page numbers are kept for quoting.</li>
+    <li>Embeddings are requested 128 pieces at a time with <code>input_type="document"</code>. Questions use <code>input_type="query"</code>.</li>
+    <li>The document id comes from <code>uuid5</code>, so the same file always gets the same id. A second run replaces rows instead of duplicating them.</li>
   </ul>
   <details class="code"><summary>Show Python: ingest_pdfs.py</summary><pre><code>"""Ingest contract PDFs into pgvector: python ingest_pdfs.py acme contracts/*.pdf"""
 import sys
@@ -437,12 +448,12 @@ if __name__ == "__main__":
         for row in search(conn, voyageai.Client(), "acme", "Can the customer terminate early?"):
             print(row)</code></pre></details>
   <details class="deep"><summary>Go deeper: what the script does and how it was tested</summary>
-    <p>What it does: one row per ~500-token window with 10% overlap, page numbers kept for citations, embeddings batched 128 at a time with <code>input_type="document"</code>, and a deterministic <code>uuid5</code> document id so running it twice replaces rows instead of duplicating them. I ran the chunking and database path against the container with a fake embedder: 3 chunks of 1,979 / 1,964 / 1,856 characters, and 3 rows after two runs. For a big initial load, the README recommends <code>COPY ... WITH (FORMAT BINARY)</code> and creating indexes after loading (<code>CREATE INDEX CONCURRENTLY</code> in production, and enough <code>maintenance_work_mem</code> for the HNSW graph to fit).</p>
-    <p>Query side, note <code>input_type="query"</code>. Expected output: tuples of <code>('msa.pdf', 4, 'Either party may terminate ...', 0.21...)</code>, nearest first. Distances depend on your documents.</p>
+    <p>What it does. It writes one row per window of about 500 tokens, with 10% overlap. It keeps page numbers for quoting. It asks for embeddings 128 at a time with <code>input_type="document"</code>. The document id comes from <code>uuid5</code>, so it is the same every time. That means running the script twice replaces rows instead of duplicating them. I tested the splitting and database steps against the container with a fake embedding model. It produced 3 pieces of 1,979, 1,964 and 1,856 characters, and still 3 rows after two runs. For a big first load, the README recommends <code>COPY ... WITH (FORMAT BINARY)</code>. It also says to create indexes after loading. In production, use <code>CREATE INDEX CONCURRENTLY</code>. Give it enough <code>maintenance_work_mem</code> so the whole HNSW graph fits in memory.</p>
+    <p>On the search side, note <code>input_type="query"</code>. You should see tuples like <code>('msa.pdf', 4, 'Either party may terminate ...', 0.21...)</code>, closest first. The distances depend on your documents.</p>
   </details>
 
   <h3>Step 7: the Spring AI equivalent with PgVectorStore</h3>
-  <p>Spring AI 2.0 targets Spring Boot 4.0/4.1. Add the BOM and starters (with the Leegality build, versions come from the catalog):</p>
+  <p>Spring AI 2.0 works with Spring Boot 4.0 and 4.1. Add the BOM (the list of matching versions) and the starters. In the Leegality build, versions come from the version catalog.</p>
   <pre><code>dependencies {
     implementation platform("org.springframework.ai:spring-ai-bom:2.0.0")
     implementation "org.springframework.ai:spring-ai-starter-vector-store-pgvector"
@@ -462,7 +473,7 @@ if __name__ == "__main__":
         dimensions: 1536            # must equal your embedding model's output size
         initialize-schema: true     # dev only; use Flyway in prod
         table-name: vector_store</code></pre>
-  <p>With <code>initialize-schema: true</code> it creates this table (interviewers ask what the abstraction hides):</p>
+  <p>With <code>initialize-schema: true</code>, it creates the table below. Interviewers like to ask what Spring hides from you here.</p>
   <pre><code>CREATE TABLE IF NOT EXISTS vector_store (
     id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
     content text,
@@ -513,107 +524,107 @@ class ContractSearchController {
                 .build());
     }
 }</code></pre></details>
-  <p>Use <code>FilterExpressionBuilder</code>, never <code>"tenantId == '" + x + "'"</code>: a tenant name with a quote becomes an injection. The text form is fine for constants: <code>"clause_type in ['termination','indemnity'] &amp;&amp; year &gt;= 2024"</code>.</p>
+  <p>Use <code>FilterExpressionBuilder</code>. Never build the filter as <code>"tenantId == '" + x + "'"</code>. A customer name containing a quote mark would break out of the string, like SQL injection. The text form is fine for fixed values: <code>"clause_type in ['termination','indemnity'] &amp;&amp; year &gt;= 2024"</code>.</p>
   <div class="callout warn"><b>Production gotchas of the default store</b><ul>
-    <li>Metadata is one <code>json</code> column: tenant filters are JSON-path, not B-tree. Own the table at scale.</li>
-    <li><code>dimensions</code> must match the model; new model = new column and re-embed.</li>
-    <li><code>initialize-schema</code> off in prod; DDL in Flyway.</li>
+    <li>All extra fields live in one <code>json</code> column. So customer filters dig into JSON instead of using a fast B-tree index. At scale, create your own table.</li>
+    <li><code>dimensions</code> must match the model. A new model means a new column and re-embedding everything.</li>
+    <li>Turn <code>initialize-schema</code> off in production. Create tables with Flyway instead.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: the gotchas in full</summary><div class="callout"><b>Production gotchas of the default store</b><ul>
-    <li>Metadata lives in one <code>json</code> column, so tenant filters are JSON-path predicates, not a B-tree lookup. At scale, own the table (your own schema plus a custom query, or a <code>JdbcTemplate</code> repository) so <code>tenant_id</code> is a real indexed column or a partition key.</li>
-    <li><code>dimensions</code> must match the embedding model; switching models means a new table or column and a re-embed, never mixed vectors.</li>
-    <li>Leave <code>initialize-schema</code> off in production and own the DDL in Flyway, like any other table.</li>
+    <li>All extra fields live in one <code>json</code> column. So customer filters are JSON-path checks, not a fast B-tree lookup. At scale, own the table. Use your own schema with a custom query, or a <code>JdbcTemplate</code> repository. Then <code>tenant_id</code> becomes a real indexed column or a partition key.</li>
+    <li><code>dimensions</code> must match the embedding model. Switching models means a new table or column and re-embedding everything. Never mix vectors from two models.</li>
+    <li>Leave <code>initialize-schema</code> off in production. Own the table definitions (DDL) in Flyway, like any other table.</li>
   </ul></div></details>
 
   <h2 id="choose"><span class="n">06</span>pgvector vs Pinecone vs Qdrant (the Adobe question)</h2>
   <div class="vs">
     <div class="pick"><h4>pgvector <span class="tag">usual pick</span></h4><ul>
-      <li class="pro">Joins and ACID with business data</li><li class="pro">One backup/HA story, SQL full-text</li>
-      <li class="con">Single-node by default; index memory competes with OLTP</li></ul>
-      <p class="when">Up to tens of millions of chunks, team already runs Postgres.</p></div>
+      <li class="pro">Joins and safe transactions (ACID) with your business data</li><li class="pro">One backup and failover setup, plus SQL keyword search</li>
+      <li class="con">Runs on one machine by default. The index uses memory your normal app queries (OLTP) also need.</li></ul>
+      <p class="when">Up to tens of millions of text pieces, and the team already runs Postgres.</p></div>
     <div><h4>Pinecone</h4><ul>
-      <li class="pro">Zero ops, scales for you</li><li class="con">Data leaves your VPC (DPDP)</li><li class="con">Cost at volume, second store to sync</li></ul>
-      <p class="when">Small team, no infra appetite, huge or spiky corpus.</p></div>
+      <li class="pro">Nothing to run yourself. It grows for you.</li><li class="con">Data leaves your private network (VPC). That raises questions under India's DPDP data law.</li><li class="con">Costly at large volume. A second store to keep in sync.</li></ul>
+      <p class="when">Small team, no wish to run servers, huge or very bursty data.</p></div>
     <div><h4>Qdrant</h4><ul>
-      <li class="pro">Filtering built into search, quantisation</li><li class="con">Another stateful cluster plus sync</li></ul>
-      <p class="when">Hundreds of millions of vectors, heavy filtered search.</p></div>
+      <li class="pro">Filtering built into the search, and compression (quantisation)</li><li class="con">Another database cluster to run, plus syncing</li></ul>
+      <p class="when">Hundreds of millions of vectors, with lots of filtered searches.</p></div>
   </div>
-  <div class="callout tip"><b>Senior framing</b><p>"Start with pgvector because the hard part of enterprise RAG is permissions and freshness, and those are joins and transactions. I'd move to a dedicated engine when p95 ANN latency or index memory starts hurting the OLTP workload, and measure that with recall@k on a golden set before and after."</p></div>
+  <div class="callout tip"><b>Senior framing</b><p>"I'd start with pgvector. The hard part of enterprise RAG is permissions and fresh data, and those are joins and transactions. I'd move to a dedicated engine when search gets slow or the index uses too much memory. Slow here means p95 ANN latency: the time 95 out of 100 searches finish within. Too much memory means it starts hurting the normal app queries (OLTP). I'd measure recall@k on a fixed set of test questions (a golden set) before and after."</p></div>
   <details class="deep"><summary>Go deeper: the full comparison table</summary>
   <div class="tbl"><table>
     <tr><th></th><th>pgvector</th><th>Pinecone</th><th>Qdrant</th></tr>
-    <tr><td>What it is</td><td>Postgres extension</td><td>Fully managed vector DB (SaaS)</td><td>Open-source vector DB (Rust), self-host or managed cloud</td></tr>
-    <tr><td>Strengths</td><td>Joins, ACID with your business data, one backup/HA story, SQL full-text for hybrid, no new vendor</td><td>Zero ops, scales storage and query capacity for you, namespaces for tenant separation</td><td>Payload filtering built into the search, quantisation options, purpose-built ANN performance at large scale</td></tr>
-    <tr><td>Weaknesses</td><td>Single-node by default (shard with Citus etc.); index memory competes with OLTP; post-filtering pitfalls</td><td>Data leaves your VPC (a DPDP/data-residency conversation), cost at volume, a second consistency boundary to sync</td><td>Another stateful cluster to run and secure, plus sync from Postgres</td></tr>
-    <tr><td>Choose when</td><td>Up to tens of millions of chunks, team already runs Postgres, strong tenant/ACL joins</td><td>Small team, no infra appetite, very large or spiky corpus</td><td>Hundreds of millions of vectors, heavy filtered search, want open source</td></tr>
+    <tr><td>What it is</td><td>Postgres extension</td><td>Fully managed vector database you rent (SaaS)</td><td>Open-source vector database (written in Rust). Run it yourself or use their cloud.</td></tr>
+    <tr><td>Strengths</td><td>Joins and ACID transactions with your business data. One backup and failover (HA) setup. SQL full-text for hybrid search. No new vendor.</td><td>Nothing to operate. It grows storage and query capacity for you. Namespaces keep customers apart.</td><td>Filtering on extra fields (payload) built into the search. Compression (quantisation) options. Built for fast ANN at large scale.</td></tr>
+    <tr><td>Weaknesses</td><td>One machine by default (you can split data across machines with Citus and similar). The index uses memory your app queries (OLTP) need. Filter-after-search traps.</td><td>Data leaves your private network (VPC), which starts a DPDP and data-location discussion. Cost at volume. A second store that must stay consistent with Postgres.</td><td>Another database cluster to run and secure, plus syncing from Postgres</td></tr>
+    <tr><td>Choose when</td><td>Up to tens of millions of text pieces. Team already runs Postgres. You need strong joins on customers and access rules.</td><td>Small team, no wish to run servers, very large or bursty data</td><td>Hundreds of millions of vectors, lots of filtered search, you want open source</td></tr>
   </table></div>
   </details>
 
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li>Ordering by <code>1 - distance DESC</code>: the index is skipped.</li>
-    <li>Query operator does not match the index opclass.</li>
-    <li>Tenant filter + ANN index without iterative scan: fewer rows than LIMIT.</li>
-    <li>Plain <code>SET</code> behind a connection pool.</li>
+    <li>Sorting by <code>1 - distance DESC</code>. Postgres then skips the index.</li>
+    <li>The query's operator does not match the index's opclass.</li>
+    <li>A customer filter with an ANN index but no iterative scan. You get fewer rows than LIMIT.</li>
+    <li>A plain <code>SET</code> behind a connection pool.</li>
     <li>Mixing vectors from two embedding models.</li>
-    <li>Tenant id from a request parameter instead of the JWT.</li>
+    <li>Taking the customer id from a request parameter instead of the JWT (the signed login token).</li>
   </ul></div>
 
   <h2 id="interviews"><span class="n">07</span>Interview questions</h2>
-  <details class="qa"><summary>HNSW or IVFFlat for 5M contract chunks?</summary><p>HNSW. It has the better speed/recall trade-off and needs no training step, so it stays correct as data grows. Cost: slower build and more memory, so set <code>maintenance_work_mem</code> high enough for the graph during builds and build <code>CONCURRENTLY</code>. IVFFlat (lists ≈ sqrt(5M) ≈ 2,236, probes ≈ 47) is the answer if nightly rebuild time or RAM is the constraint.</p></details>
-  <details class="qa"><summary>After adding an HNSW index, a tenant's search returns 3 results instead of 10. Why?</summary><p>Post-filtering. The index returns about <code>ef_search</code> (40) candidates and the <code>WHERE tenant_id</code> filter discards most. Fix with <code>hnsw.iterative_scan</code>, a higher <code>ef_search</code> via <code>SET LOCAL</code>, a B-tree on <code>tenant_id</code> so small tenants get an exact scan, or partitioning by tenant.</p></details>
-  <details class="qa"><summary>What do m, ef_construction and ef_search control?</summary><p><code>m</code> is the number of neighbours per node (graph density, memory). <code>ef_construction</code> is the candidate list size during build (graph quality, build time). <code>ef_search</code> is the candidate list size per query (recall vs latency), and it is the only one you can change without rebuilding. Defaults 16 / 64 / 40.</p></details>
-  <details class="qa"><summary>Cosine, inner product or L2?</summary><p>Use whatever the embedding model was trained for, usually cosine. If vectors are unit-normalised (Voyage's are), all three rank identically, and inner product (<code>&lt;#&gt;</code>) is the cheapest. The index opclass must match the operator in the query.</p></details>
-  <details class="qa"><summary>Why is my vector query doing a sequential scan?</summary><p>No <code>LIMIT</code>, ordering by an expression (<code>1 - distance DESC</code>), an operator that does not match the index opclass, or a table small enough that the planner rightly prefers a scan. Check with <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p></details>
-  <details class="qa"><summary>How do you isolate tenants in a shared vector table?</summary><p>Tenant id from the JWT is added to every query in the repository layer, never from parameters. Add row-level security as defence in depth. For large tenants, list partitions so each has its own ANN index, which also stops one tenant's data distribution hurting another's recall. Test isolation with an automated cross-tenant query that must return zero rows.</p></details>
-  <details class="qa"><summary>Your embedding model has 3,072 dimensions. Can pgvector index it?</summary><p>Not as <code>vector</code>: the index limit is 2,000 dimensions. Index it as <code>halfvec</code> (up to 4,000) with an expression index, use binary quantisation with re-ranking, or ask the model for fewer dimensions (Matryoshka models such as voyage-4 offer 256–2048).</p></details>
-  <details class="qa"><summary>How do you re-embed the corpus with a new model with zero downtime?</summary><p>Add a new column or table with the new dimension and <code>embedding_model</code> value, backfill in batches, build its index concurrently, dual-write new documents, switch reads behind a flag after recall@k on the golden set is equal or better, then drop the old column. Never compare vectors across models.</p></details>
-  <details class="qa"><summary>Deletes and updates: anything special?</summary><p>They are ordinary MVCC rows, which is the advantage: a contract delete removes its chunks in the same transaction. Dead tuples can reduce results, and vacuuming HNSW can be slow; the README suggests <code>REINDEX INDEX CONCURRENTLY</code> then <code>VACUUM</code> after large deletes.</p></details>
-  <details class="qa"><summary>When would you leave pgvector?</summary><p>When vector search load or index memory starts degrading the transactional workload, or the corpus outgrows a single node, at a size where Citus-style sharding is more work than a dedicated engine. Before that, read replicas for search traffic, <code>halfvec</code> and binary quantisation buy a lot of headroom.</p></details>
+  <details class="qa"><summary>HNSW or IVFFlat for 5M contract chunks?</summary><p>HNSW. It balances speed and recall better. It needs no training step, so it stays correct as data grows. The cost is a slower build and more memory. So set <code>maintenance_work_mem</code> high enough for the graph during builds, and build <code>CONCURRENTLY</code> so writes are not blocked. Pick IVFFlat if nightly rebuild time or RAM is the limit. Then use lists ≈ sqrt(5M) ≈ 2,236 and probes ≈ 47.</p></details>
+  <details class="qa"><summary>After adding an HNSW index, a tenant's search returns 3 results instead of 10. Why?</summary><p>Post-filtering, meaning the filter runs after the search. The index returns about <code>ef_search</code> (40) rows. Then the <code>WHERE tenant_id</code> filter throws most of them away. Fixes: turn on <code>hnsw.iterative_scan</code>. Raise <code>ef_search</code> with <code>SET LOCAL</code>. Add a B-tree on <code>tenant_id</code>, so small customers get an exact scan. Or partition the table by customer.</p></details>
+  <details class="qa"><summary>What do m, ef_construction and ef_search control?</summary><p><code>m</code> is the number of neighbours each point links to. It sets how dense the graph is, and how much memory it uses. <code>ef_construction</code> is the shortlist size while building. It sets graph quality and build time. <code>ef_search</code> is the shortlist size per search. It trades recall against speed (latency). It is the only one you can change without rebuilding. The defaults are 16, 64 and 40.</p></details>
+  <details class="qa"><summary>Cosine, inner product or L2?</summary><p>Use whatever the embedding model was trained for, usually cosine. If vectors are unit-normalised (scaled to length 1, as Voyage's are), all three give the same order. Then inner product (<code>&lt;#&gt;</code>) is the cheapest. The index opclass must match the operator in the query.</p></details>
+  <details class="qa"><summary>Why is my vector query doing a sequential scan?</summary><p>A sequential scan means reading every row. Common causes: no <code>LIMIT</code>. Sorting by a calculation, like <code>1 - distance DESC</code>. An operator that does not match the index opclass. Or the table is so small that reading it all really is faster. Check with <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</p></details>
+  <details class="qa"><summary>How do you isolate tenants in a shared vector table?</summary><p>The repository layer adds the customer id from the JWT to every query. It never takes it from request parameters. Add row-level security (Postgres rules that hide other customers' rows) as a second safety layer. For large customers, use list partitions so each has its own ANN index. That also stops one customer's data shape from hurting another's recall. Test it with an automated cross-customer query that must return zero rows.</p></details>
+  <details class="qa"><summary>Your embedding model has 3,072 dimensions. Can pgvector index it?</summary><p>Not as <code>vector</code>, because the index limit is 2,000 dimensions. You have three options. Index it as <code>halfvec</code> (up to 4,000) with an expression index. Use binary quantisation and then re-rank the top results with full vectors. Or ask the model for fewer dimensions. Matryoshka models such as voyage-4 offer 256 to 2048.</p></details>
+  <details class="qa"><summary>How do you re-embed the corpus with a new model with zero downtime?</summary><p>Add a new column or table with the new dimension and <code>embedding_model</code> value. Fill it in batches (backfill). Build its index concurrently. Write new documents to both old and new (dual-write). Switch reads behind a feature flag once recall@k on the golden set is equal or better. Then drop the old column. Never compare vectors across models.</p></details>
+  <details class="qa"><summary>Deletes and updates: anything special?</summary><p>They are ordinary rows under MVCC (Postgres keeps old row versions until cleanup). That is the advantage: deleting a contract removes its pieces in the same transaction. But dead rows (dead tuples) can reduce results, and vacuuming an HNSW index can be slow. After large deletes, the README suggests <code>REINDEX INDEX CONCURRENTLY</code> and then <code>VACUUM</code>.</p></details>
+  <details class="qa"><summary>When would you leave pgvector?</summary><p>When vector search load or index memory starts slowing the normal transactional work. Or when the data outgrows one machine, and splitting it Citus-style is more work than a dedicated engine. Before that point, you have cheaper options. Send search traffic to read replicas (read-only copies). Use <code>halfvec</code> and binary quantisation to shrink the index.</p></details>
 
   <h2 id="quiz"><span class="n">08</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">A tenant search with <code>LIMIT 10</code> returns 4 rows after you add an HNSW index. Most likely cause?</p>
+  <div class="quiz" data-answer="2"><p class="q">You add an HNSW index. Now a customer's search with <code>LIMIT 10</code> returns only 4 rows. What is the most likely cause?</p>
     <div class="opts"><button class="opt" type="button">HNSW caps results at 4 per query</button><button class="opt" type="button">The tenant has only 4 chunks</button><button class="opt" type="button">The WHERE filter runs after the index returns ~40 candidates</button><button class="opt" type="button">Cosine distance cannot be filtered</button></div>
-    <p class="why">Post-filtering: only the acme rows among ef_search candidates survive. Turn on <code>hnsw.iterative_scan</code> or partition by tenant.</p></div>
+    <p class="why">The filter runs after the search. The index hands back about ef_search rows, and only the acme ones survive. Turn on <code>hnsw.iterative_scan</code>, or partition by customer.</p></div>
   <div class="quiz" data-answer="1"><p class="q">Which query can use a <code>vector_cosine_ops</code> HNSW index?</p>
     <div class="opts"><button class="opt" type="button"><code>ORDER BY 1 - (embedding &lt;=&gt; :q) DESC LIMIT 5</code></button><button class="opt" type="button"><code>ORDER BY embedding &lt;=&gt; :q LIMIT 5</code></button><button class="opt" type="button"><code>ORDER BY embedding &lt;-&gt; :q LIMIT 5</code></button><button class="opt" type="button"><code>ORDER BY embedding &lt;=&gt; :q</code> with no LIMIT</button></div>
-    <p class="why">The index needs the bare distance operator matching its opclass, ascending, with a LIMIT.</p></div>
+    <p class="why">The index needs three things. The plain distance operator that matches its opclass. Ascending order. And a LIMIT.</p></div>
   <div class="quiz" data-answer="0"><p class="q">Which HNSW setting can you change per query without rebuilding the index?</p>
     <div class="opts"><button class="opt" type="button"><code>hnsw.ef_search</code></button><button class="opt" type="button"><code>m</code></button><button class="opt" type="button"><code>ef_construction</code></button></div>
-    <p class="why"><code>m</code> and <code>ef_construction</code> shape the graph at build time; <code>ef_search</code> is a query-time setting, ideally via <code>SET LOCAL</code>.</p></div>
-  <div class="quiz" data-answer="3"><p class="q">Why must IVFFlat be built after loading data, while HNSW need not be?</p>
+    <p class="why"><code>m</code> and <code>ef_construction</code> shape the graph when it is built. <code>ef_search</code> is read at search time. Set it with <code>SET LOCAL</code>.</p></div>
+  <div class="quiz" data-answer="3"><p class="q">Why must you build IVFFlat after loading data, but not HNSW?</p>
     <div class="opts"><button class="opt" type="button">IVFFlat stores vectors uncompressed</button><button class="opt" type="button">HNSW ignores new rows</button><button class="opt" type="button">IVFFlat only supports L2</button><button class="opt" type="button">IVFFlat trains k-means centroids from existing rows</button></div>
-    <p class="why">Its <code>lists</code> are clusters learned from the data. An empty table gives useless centroids; HNSW has no training step.</p></div>
+    <p class="why">Its <code>lists</code> are groups learned from the data. An empty table gives useless group centres (centroids). HNSW has no training step.</p></div>
 
   <h2 id="exercise"><span class="n">09</span>Capstone checkpoint</h2>
   <ol class="walk">
-    <li><span class="who">Flyway</span><span><code>contract_chunks</code>: <code>vector(1024)</code>, tenant B-tree, GIN on <code>content_tsv</code>, HNSW cosine.</span></li>
-    <li><span class="who">Ingest</span><span>5–10 sample contracts for two tenants; a second run keeps the row count.</span></li>
-    <li><span class="who">Measure</span><span>15 golden questions; recall@5 with/without HNSW, <code>ef_search</code> 40 vs 200.</span></li>
-    <li><span class="who">Test</span><span><code>globex</code> can never retrieve an <code>acme</code> chunk.</span></li>
-    <li><span class="who">Spring</span><span><code>GET /contracts/search</code> with tenant from the JWT.</span></li>
+    <li><span class="who">Flyway</span><span>Create the table of text pieces with a database migration. Give it a column for 1,024-number embeddings, a normal index on the customer, a keyword-search index, and an HNSW cosine index.</span></li>
+    <li><span class="who">Ingest</span><span>Load 5–10 sample contracts for two customers. A second run must keep the same row count.</span></li>
+    <li><span class="who">Measure</span><span>Write 15 test questions with known right answers. Check how many right pieces land in the top 5 (recall@5). Compare with and without HNSW, and with a shortlist of 40 versus 200 (<code>ef_search</code>).</span></li>
+    <li><span class="who">Test</span><span>Prove one customer can never see another customer's text. Customer <code>globex</code> must never get back an <code>acme</code> piece.</span></li>
+    <li><span class="who">Spring</span><span>Add a search endpoint, <code>GET /contracts/search</code>. Take the customer from the signed login token (JWT), never from the request.</span></li>
   </ol>
   <details class="deep"><summary>Go deeper: the checkpoint in full</summary>
-  <p>For the contract Q&amp;A and risky-clause flagger capstone:</p>
+  <p>These steps build toward the capstone: contract Q&amp;A plus a tool that flags risky clauses.</p>
   <ol>
-    <li>Create <code>contract_chunks</code> with <code>vector(1024)</code>, a <code>tenant_id</code> B-tree, a GIN index on <code>content_tsv</code> and HNSW cosine, all through a Flyway migration.</li>
-    <li>Ingest 5–10 sample contracts (public sample NDAs and MSAs) for two fake tenants with <code>ingest_pdfs.py</code>, and confirm a second run leaves the row count unchanged.</li>
-    <li>Write 15 golden questions with the expected document and page. Measure recall@5 with and without the HNSW index, and with <code>ef_search</code> at 40 and 200.</li>
-    <li>Write a test proving tenant <code>globex</code> can never retrieve an <code>acme</code> chunk, even for a question copied from an acme contract.</li>
-    <li>Expose <code>GET /contracts/search</code> in Spring Boot with tenant from the JWT, as in step 7.</li>
+    <li>Create <code>contract_chunks</code> through a Flyway migration. Give it <code>vector(1024)</code>, a B-tree on <code>tenant_id</code>, a GIN index on <code>content_tsv</code>, and an HNSW cosine index.</li>
+    <li>Load 5–10 sample contracts with <code>ingest_pdfs.py</code>. Use public sample NDAs and MSAs, split across two fake customers. Check that a second run leaves the row count unchanged.</li>
+    <li>Write 15 golden questions, each with the expected document and page. Measure recall@5 with and without the HNSW index. Also measure it with <code>ef_search</code> at 40 and at 200.</li>
+    <li>Write a test proving customer <code>globex</code> can never get back an <code>acme</code> text piece. It must hold even for a question copied word for word from an acme contract.</li>
+    <li>Expose <code>GET /contracts/search</code> in Spring Boot, as in step 7. Take the customer from the JWT.</li>
   </ol>
   </details>
-  <div class="callout info"><b>Done when</b><p>You can show the <code>EXPLAIN</code> output using the HNSW index, a recall table, and a green cross-tenant test.</p></div>
+  <div class="callout info"><b>Done when</b><p>You can show three things. <code>EXPLAIN</code> output that uses the HNSW index. A recall table. And a passing cross-customer test.</p></div>
 
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li><code>docker run pgvector/pgvector:pg18-trixie</code>, then <code>CREATE EXTENSION vector</code>.</li>
-    <li>Text embeddings → cosine <code>&lt;=&gt;</code> + <code>vector_cosine_ops</code>; unit vectors → <code>&lt;#&gt;</code> is cheapest.</li>
-    <li>Index used only for <code>ORDER BY distance ASC LIMIT k</code>.</li>
-    <li>HNSW default (m 16, ef_construction 64, ef_search 40); IVFFlat when build time/RAM dominates.</li>
-    <li>Filtered ANN: iterative scan → B-tree → partial index → partition by tenant.</li>
-    <li><code>SET LOCAL</code> behind a pool; tenant from the JWT.</li>
-    <li>Index limit 2,000 dims (<code>halfvec</code> 4,000).</li>
-    <li>One model per column; re-embed with a new column and a flag.</li>
-    <li>pgvector until ANN load hurts OLTP; then Qdrant/Pinecone.</li>
+    <li>Run <code>docker run pgvector/pgvector:pg18-trixie</code>, then <code>CREATE EXTENSION vector</code>.</li>
+    <li>For text embeddings, use cosine <code>&lt;=&gt;</code> with <code>vector_cosine_ops</code>. If vectors have length 1, <code>&lt;#&gt;</code> is the cheapest.</li>
+    <li>The index is used only for <code>ORDER BY distance ASC LIMIT k</code>.</li>
+    <li>Default to HNSW (m 16, ef_construction 64, ef_search 40). Use IVFFlat when build time or RAM is the main limit.</li>
+    <li>Filtered search fixes, in order: iterative scan, then B-tree, then partial index, then partition by customer.</li>
+    <li>Use <code>SET LOCAL</code> behind a connection pool. Take the customer from the JWT.</li>
+    <li>Index limit is 2,000 dimensions (<code>halfvec</code>: 4,000).</li>
+    <li>One model per column. To switch models, add a new column and flip a flag.</li>
+    <li>Stay on pgvector until search load hurts normal app queries. Then look at Qdrant or Pinecone.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">10</span>Sources / go deeper</h2>

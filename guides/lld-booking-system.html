@@ -12,22 +12,32 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html" aria-current="page">LLD / machine coding</a><a href="../hld.html">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../lld.html">Machine coding · LLD</a></div>
   <h1>Booking System with No Double-Booking</h1>
-  <p class="lede">You will be able to code a booking service where two concurrent requests never both win the last seat, and say how a database enforces the same rule.</p>
+  <p class="lede">Two people may tap "Book" for the last seat at the same moment. By the end, you can code a booking service where only one of them wins. You will also be able to explain how a database enforces the same rule.</p>
   <div class="facts">
-    <span class="fact"><b>Time-box:</b> 90 min coding + 30–45 min review</span>
-    <span class="fact"><b>Seen:</b> ~15 reports, 2025–26 (most common prompt)</span>
-    <span class="fact"><b>Format:</b> CLI, in-memory, or REST API</span>
+    <span class="fact"><b>Time-box:</b> 90 min coding, then 30–45 min review</span>
+    <span class="fact"><b>Seen:</b> about 15 interview reports, 2025–26 (the most common prompt)</span>
+    <span class="fact"><b>Format:</b> command line, in-memory, or REST API</span>
   </div>
   <div class="chips"><span class="chip hot">Flipkart</span><span class="chip hot">Udaan</span><span class="chip hot">Swiggy</span><span class="chip">Postman</span><span class="chip">InMobi</span><span class="chip">CRED</span><span class="chip">Atlassian</span><span class="chip">Eightfold</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Rooms, gym slots, train seats: same core, capacity plus no user overlap.</li>
-    <li>Half-open <code>[start, end)</code> intervals; overlap check via <code>TreeMap.lowerEntry</code>.</li>
-    <li>Check and book under one lock: user lock, then slot lock, always.</li>
-    <li>Retries are idempotent; in a database, constraints enforce the rule.</li>
+    <li>Rooms, gym slots and train seats share one core. Respect the capacity, and never let one user book two clashing times.</li>
+    <li>A time range includes its start but not its end, so back-to-back bookings fit. A sorted map finds clashes quickly.</li>
+    <li>Check and book while holding locks. Always take the user's lock first, then the slot's lock.</li>
+    <li>Sending the same booking twice must not book twice. In a database, constraints enforce the rules.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>The Tatkal counter at a railway station. Two clerks must not sell the last berth twice, so a clerk holds the coach's ledger while checking and writing. Late passengers go on a waitlist and move up when someone cancels.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of the Tatkal counter at a railway station. Two clerks must not sell the last berth twice. So a clerk holds the coach's ledger while checking it and writing in it. Late passengers go on a waitlist. They move up when someone cancels.</p></div>
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>Double booking</dt><dd>Two people both get the same last seat. This is the bug the whole page is about.</dd>
+    <dt>Half-open interval</dt><dd>Written <code>[start, end)</code>. It includes the start time but not the end time. So 9–10 and 10–11 do not clash.</dd>
+    <dt>Lock</dt><dd>A "one at a time" token. While one thread holds it, other threads must wait before touching the same data.</dd>
+    <dt>Deadlock</dt><dd>Two threads each hold a lock the other needs. Both wait forever.</dd>
+    <dt>Idempotent</dt><dd>Doing the same thing twice has the same effect as doing it once. If the app retries "Book", you still get one booking.</dd>
+    <dt>Waitlist (FIFO)</dt><dd>A queue for a full slot. FIFO means first in, first out: whoever joined first moves up first.</dd>
+    <dt>Hold with TTL</dt><dd>A seat kept for you for a short time while you pay. TTL (time to live) is how long until the hold expires.</dd>
+    <dt>Constraint</dt><dd>A rule the database itself enforces, such as "no two rows with the same seat". Even buggy code cannot break it.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -48,72 +58,72 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Overlap logic</h4><p>Half-open intervals so back-to-back works; O(log n), not a scan.</p></div>
-    <div class="key"><h4>Atomic check-and-book</h4><p>Check and write under one lock or one DB constraint. Every review asks this.</p></div>
-    <div class="key"><h4>Staged delivery</h4><p>Finish and demo each stage before the next (Udaan says so).</p></div>
-    <div class="key"><h4>Idempotency, errors, DB</h4><p>Retry is harmless; typed errors; same invariant with N pods.</p></div>
+    <div class="key"><h4>Overlap logic</h4><p>Use half-open ranges so back-to-back works. Find clashes in O(log n) time, not by scanning every booking.</p></div>
+    <div class="key"><h4>Atomic check-and-book</h4><p>Check and write under one lock or one database constraint. Every review asks about this.</p></div>
+    <div class="key"><h4>Staged delivery</h4><p>Finish and demo each stage before starting the next. Udaan says so in the prompt.</p></div>
+    <div class="key"><h4>Idempotency, errors, DB</h4><p>A retry does no harm. Errors have clear types. The same rule holds across many servers.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: how the rounds ran and the full grading list</summary><p>The variants differ in nouns but grade the same things. Flipkart's SDE-2 round gave 30 minutes to clarify and 90 minutes to build appointment booking end to end, then a 45-minute presentation where the interviewer pushed on avoiding concurrency issues while booking. Udaan's fitness-slot prompt was staged: Stage 1 (capacity, no user overlaps, back-to-back allowed) must be fully working before Stage 2 (FIFO waitlist, daily limit K, idempotent BOOK, validation). Postman wanted a meeting-room REST API callable from Postman with correct status codes and headers for success and failure. InMobi asked for pessimistic vs optimistic locking in an IRCTC design. CRED pushed into seat locks, per-seat prices and double booking across platforms. Eightfold's "Strong Hire" was meeting rooms with recurring bookings. Atlassian runs the same core as a tennis court booking problem.</p>
+  <details class="deep"><summary>Go deeper: how the rounds ran and the full grading list</summary><p>The variants use different nouns but grade the same things. Flipkart's SDE-2 round gave 30 minutes to clarify. Then came 90 minutes to build appointment booking end to end. A 45-minute presentation followed. There, the interviewer pushed on how to avoid concurrency issues while booking. Udaan's fitness-slot prompt came in stages. Stage 1 had to work fully before Stage 2. Stage 1 covered capacity, no clashing bookings per user, and back-to-back allowed. Stage 2 covered a FIFO waitlist, a daily limit K, an idempotent BOOK and validation. Postman wanted a meeting-room REST API you could call from Postman. It needed correct status codes and headers for success and failure. InMobi asked about pessimistic vs optimistic locking in an IRCTC design. CRED pushed into seat locks, per-seat prices, and double booking across platforms. Eightfold's "Strong Hire" was meeting rooms with recurring bookings. Atlassian runs the same core as a tennis court booking problem.</p>
   <ul>
-    <li><b>Correct overlap logic.</b> Half-open intervals <code>[start, end)</code> so back-to-back is allowed; O(log n) lookup, not a scan.</li>
-    <li><b>Atomic check-and-book.</b> The availability check and the write happen under one lock or one DB constraint. This is the core question of every review.</li>
-    <li><b>Staged delivery.</b> Each feature finished and demoed before the next. Udaan's prompt says this explicitly.</li>
-    <li><b>Modularity.</b> Models, repository, service, CLI/controller in separate layers; in-memory repository swappable for JPA.</li>
-    <li><b>Idempotency and errors.</b> Retrying BOOK is harmless; failures are typed exceptions mapped to clear messages or HTTP codes.</li>
-    <li><b>Production translation.</b> How the same invariant holds with N app pods: row locks, version columns, exclusion constraints, holds with TTL.</li>
+    <li><b>Correct overlap logic.</b> Use half-open ranges <code>[start, end)</code>, so back-to-back is allowed. Look up clashes in O(log n), not with a scan.</li>
+    <li><b>Atomic check-and-book.</b> The "is it free?" check and the write happen under one lock or one database constraint. This is the core question of every review.</li>
+    <li><b>Staged delivery.</b> Finish and demo each feature before the next. Udaan's prompt says this clearly.</li>
+    <li><b>Modularity.</b> Keep models, repository, service and the command line or controller in separate layers. You can then swap the in-memory repository for JPA.</li>
+    <li><b>Idempotency and errors.</b> Retrying BOOK does no harm. Failures are typed exceptions, turned into clear messages or HTTP codes.</li>
+    <li><b>Production version.</b> Explain how the same rule holds with many app servers. Talk about row locks, version columns, exclusion constraints, and holds that expire.</li>
   </ul></details>
 
   <h2 id="clarify"><span class="n">02</span>Clarifying questions to ask</h2>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Free-form range (rooms) or slot with capacity (gym)?</td><td>Range → <code>TreeMap</code> overlap. Slot → counter. Often both.</td></tr>
-    <tr><td>End exclusive? Back-to-back allowed?</td><td>Most common boundary bug.</td></tr>
-    <tr><td>When full: reject or FIFO waitlist?</td><td>Queue per slot, promotion on cancel.</td></tr>
-    <tr><td>Per-user rules: no overlap, max K per day?</td><td>Per-user index and lock.</td></tr>
-    <tr><td>Repeated request: no-op or error?</td><td>Return the same booking.</td></tr>
-    <tr><td>Hold then pay, or instant confirm?</td><td>Holds need TTL and expiry.</td></tr>
-    <tr><td>Time zones? Recurrence? CLI or REST?</td><td>Store <code>Instant</code>; Postman expected REST.</td></tr>
+    <tr><td>Any time range (rooms), or fixed slots with a capacity (gym)?</td><td>Ranges need a <code>TreeMap</code> clash check. Slots need a counter. Often you need both.</td></tr>
+    <tr><td>Is the end time excluded? Is back-to-back allowed?</td><td>This is the most common edge bug.</td></tr>
+    <tr><td>When full, refuse or add to a FIFO waitlist?</td><td>A waitlist needs a queue per slot, and promotion when someone cancels.</td></tr>
+    <tr><td>Per-user rules, like no clashes or at most K a day?</td><td>You need a per-user index and a per-user lock.</td></tr>
+    <tr><td>Same request sent twice: ignore it, or error?</td><td>Usually return the same booking.</td></tr>
+    <tr><td>Hold the seat and then pay, or confirm at once?</td><td>Holds need a time limit and a way to expire.</td></tr>
+    <tr><td>Time zones? Repeating bookings? Command line or REST?</td><td>Store times as <code>Instant</code>. Postman expected REST.</td></tr>
   </table></div>
   <details class="deep"><summary>Go deeper: the full "why it matters" notes</summary>
   <div class="tbl"><table>
     <tr><th>Question</th><th>Why it matters</th></tr>
-    <tr><td>Is the unit a free-form time range (rooms, courts) or a pre-defined slot with capacity (gym, train coach)?</td><td>Range → interval tree / <code>TreeMap</code> overlap check. Slot → counter with capacity. Many prompts have both: slot capacity plus per-user overlap.</td></tr>
-    <tr><td>Is end time exclusive? Is back-to-back allowed?</td><td>Off-by-one at boundaries is the most common functional bug.</td></tr>
-    <tr><td>What happens when full: reject, or waitlist? FIFO? Auto-promote on cancel?</td><td>Adds a queue per slot and promotion logic on cancel.</td></tr>
-    <tr><td>Per-user rules: no overlapping bookings, max K per day?</td><td>Needs a per-user index and a lock that covers user state too.</td></tr>
-    <tr><td>Is a repeated identical request a no-op or an error?</td><td>Idempotency semantics: return the same booking, not a second one or a failure.</td></tr>
-    <tr><td>Two-phase (hold then pay) or instant confirm?</td><td>Holds need TTL and expiry handling (flights, movies, trains).</td></tr>
-    <tr><td>Time zones? Recurring bookings?</td><td>Store <code>Instant</code>; expand recurrence in the resource's zone so DST is handled.</td></tr>
-    <tr><td>Interface: CLI, REST, or just a service with a main()?</td><td>Postman expected REST with proper codes; Udaan allowed CLI or REST.</td></tr>
+    <tr><td>Is the unit any time range (rooms, courts)? Or a fixed slot with a capacity (gym, train coach)?</td><td>Ranges need an interval tree or a <code>TreeMap</code> clash check. Slots need a counter with a capacity. Many prompts have both: slot capacity plus no clashes per user.</td></tr>
+    <tr><td>Is the end time excluded? Is back-to-back allowed?</td><td>Off-by-one mistakes at the edges are the most common bug.</td></tr>
+    <tr><td>What happens when full? Refuse, or waitlist? Is the waitlist FIFO? Does someone move up automatically on a cancel?</td><td>This adds a queue per slot, plus promotion logic on cancel.</td></tr>
+    <tr><td>Per-user rules: no clashing bookings, at most K per day?</td><td>You need a per-user index, and a lock that also covers the user's data.</td></tr>
+    <tr><td>Is a repeated identical request ignored, or an error?</td><td>This is idempotency. Return the same booking, not a second booking or a failure.</td></tr>
+    <tr><td>Two steps (hold, then pay) or instant confirm?</td><td>Holds need a TTL and expiry handling. Flights, movies and trains work this way.</td></tr>
+    <tr><td>Time zones? Repeating bookings?</td><td>Store <code>Instant</code>. Expand repeats in the resource's own time zone, so daylight saving time (DST) changes are handled.</td></tr>
+    <tr><td>Interface: command line, REST, or just a service with a main()?</td><td>Postman expected REST with proper codes. Udaan allowed command line or REST.</td></tr>
   </table></div></details>
 
   <h2 id="reqs"><span class="n">03</span>Requirements</h2>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li>Add, list, book, cancel slots.</li>
-      <li>Book only with capacity and no user overlap.</li>
-      <li>Cancel promotes the waitlist head.</li>
-      <li>Stage 2: waitlist, daily K, idempotent.</li>
+      <li>Add, list, book and cancel slots.</li>
+      <li>Book only if there is room and the user has no clash.</li>
+      <li>A cancel moves the first waitlisted person up.</li>
+      <li>Stage 2: waitlist, daily limit K, and safe retries.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>No overbooking, no deadlocks.</li>
-      <li>Per-slot and per-user locks.</li>
-      <li>O(log n) check; injected <code>Clock</code>.</li>
+      <li>Never overbook. Never deadlock.</li>
+      <li>One lock per slot and one per user.</li>
+      <li>Clash check in O(log n). The clock is passed in.</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>Payments, auth, notifications.</li>
-      <li>Persistence beyond in-memory.</li>
+      <li>Payments, login, notifications.</li>
+      <li>Storage beyond in-memory.</li>
     </ul></div>
   </div>
   <details class="deep"><summary>Go deeper: full requirement list</summary><ul>
-    <li>Add resource / slot (id, title, start, end, capacity); validate start &lt; end, capacity &gt; 0, unique id.</li>
-    <li>List slots by date, title substring or time window.</li>
-    <li>Book: succeeds only if capacity remains and the user has no overlapping booking.</li>
-    <li>Cancel: frees capacity; promotes the head of the waitlist.</li>
+    <li>Add a resource or slot with id, title, start, end and capacity. Check that start &lt; end, capacity &gt; 0, and the id is unique.</li>
+    <li>List slots by date, by part of the title, or by time window.</li>
+    <li>Book: succeeds only if there is still room and the user has no clashing booking.</li>
+    <li>Cancel: frees a place and moves the first waitlisted person up.</li>
     <li>List a user's upcoming bookings.</li>
-    <li>Stage 2: FIFO waitlist, daily limit K, idempotent book.</li>
-    <li>No overbooking under concurrent requests. No deadlocks; lock scope per resource and per user, never global. O(log n) availability check. Testable time (injected <code>Clock</code>) for "upcoming" and hold expiry.</li>
-    <li>Out of scope (state it): payments (stub a <code>PaymentGateway</code> if holds are in scope); auth, notifications, search ranking; persistence beyond an in-memory repository, unless asked.</li>
+    <li>Stage 2: FIFO waitlist, daily limit K, and idempotent booking.</li>
+    <li>Never overbook, even with many requests at once. Never deadlock. Lock per resource and per user, never one global lock. Check availability in O(log n). Make time testable by passing in a <code>Clock</code>, for "upcoming" and for hold expiry.</li>
+    <li>Out of scope (say so): payments. Stub a <code>PaymentGateway</code> if holds are in scope. Also login, notifications and search ranking. Also storage beyond an in-memory repository, unless asked.</li>
   </ul></details>
 
   <h2 id="design"><span class="n">04</span>Class design</h2>
@@ -130,25 +140,25 @@
 
   <h3>Patterns: what and why here</h3>
   <div class="keys">
-    <div class="key"><h4>Chain of rules → validation</h4><p>"Max K per day" or "7 days ahead" is one new <code>BookingRule</code> class.</p></div>
-    <div class="key"><h4>Repository → storage</h4><p>Gives "how with a database?" an obvious seam: in-memory now, JPA later.</p></div>
-    <div class="key"><h4>State enum → lifecycle</h4><p>Guarded transitions: an EXPIRED hold can never be confirmed.</p></div>
-    <div class="key"><h4>Command → CLI</h4><p><code>Map&lt;String, Command&gt;</code> keeps parsing out of the service.</p></div>
-    <div class="key"><h4>Observer → promotion</h4><p>Notify the promoted user through a stubbed listener.</p></div>
+    <div class="key"><h4>Chain of rules → validation</h4><p>A new rule like "at most K per day" or "at most 7 days ahead" is one new <code>BookingRule</code> class.</p></div>
+    <div class="key"><h4>Repository → storage</h4><p>When asked "how with a database?", you have a clear place to plug it in. In-memory now, JPA later.</p></div>
+    <div class="key"><h4>State enum → lifecycle</h4><p>Only allowed status changes can happen. For example, an EXPIRED hold can never be confirmed.</p></div>
+    <div class="key"><h4>Command → CLI</h4><p>A <code>Map&lt;String, Command&gt;</code> keeps command parsing out of the service.</p></div>
+    <div class="key"><h4>Observer → promotion</h4><p>Tell the promoted user through a listener. Stub the listener for now.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: class responsibilities and the request path</summary>
   <div class="tbl"><table>
     <tr><th>Class</th><th>Responsibility</th><th>Key fields / methods</th></tr>
-    <tr><td><code>Slot</code></td><td>A bookable unit with capacity; owns its lock, bookings and waitlist</td><td>id, title, <code>TimeRange</code>, capacity, <code>Set&lt;String&gt; bookedUsers</code>, <code>Deque&lt;String&gt; waitlist</code></td></tr>
-    <tr><td><code>TimeRange</code> (record)</td><td>Half-open interval and overlap test</td><td><code>overlaps(other)</code>: <code>a.start &lt; b.end &amp;&amp; b.start &lt; a.end</code></td></tr>
-    <tr><td><code>Booking</code> (record)</td><td>Immutable fact: user, slot, status, createdAt</td><td>id, userId, slotId, <code>BookingStatus</code></td></tr>
-    <tr><td><code>BookingStatus</code> (enum)</td><td>State machine</td><td>HELD → CONFIRMED → CANCELLED; WAITLISTED → CONFIRMED; HELD → EXPIRED</td></tr>
-    <tr><td><code>UserSchedule</code></td><td>A user's bookings ordered by start, for overlap and daily-limit checks</td><td><code>TreeMap&lt;Instant, Booking&gt;</code>, <code>overlaps(range)</code>, <code>countOn(date)</code></td></tr>
-    <tr><td><code>RoomCalendar</code></td><td>Free-form ranges for one room (meeting-room variant)</td><td><code>TreeMap&lt;Instant, Booking&gt;</code>, <code>tryBook(range)</code></td></tr>
-    <tr><td><code>BookingRule</code> (interface)</td><td>Pluggable validation: overlap, daily limit, advance window</td><td><code>check(user, slot)</code> throws <code>BookingRejected</code></td></tr>
-    <tr><td><code>BookingService</code></td><td>Orchestrates locking, rules, booking, waitlist promotion</td><td><code>book</code>, <code>cancel</code>, <code>listForUser</code></td></tr>
-    <tr><td><code>SlotRepository</code>, <code>BookingRepository</code></td><td>Storage interfaces; in-memory now, JPA later</td><td><code>ConcurrentHashMap</code>-backed</td></tr>
-    <tr><td><code>CommandParser</code> / <code>BookingController</code></td><td>CLI or REST adapter; maps exceptions to output or HTTP codes</td><td><code>ADD_SLOT</code>, <code>BOOK</code>, <code>CANCEL</code>…</td></tr>
+    <tr><td><code>Slot</code></td><td>A bookable unit with a capacity. It owns its lock, its bookings and its waitlist.</td><td>id, title, <code>TimeRange</code>, capacity, <code>Set&lt;String&gt; bookedUsers</code>, <code>Deque&lt;String&gt; waitlist</code></td></tr>
+    <tr><td><code>TimeRange</code> (record)</td><td>A half-open range and its clash test</td><td><code>overlaps(other)</code>: <code>a.start &lt; b.end &amp;&amp; b.start &lt; a.end</code></td></tr>
+    <tr><td><code>Booking</code> (record)</td><td>A fact that never changes: user, slot, status, createdAt</td><td>id, userId, slotId, <code>BookingStatus</code></td></tr>
+    <tr><td><code>BookingStatus</code> (enum)</td><td>The allowed status changes (a state machine)</td><td>HELD → CONFIRMED → CANCELLED; WAITLISTED → CONFIRMED; HELD → EXPIRED</td></tr>
+    <tr><td><code>UserSchedule</code></td><td>A user's bookings sorted by start time, for clash and daily-limit checks</td><td><code>TreeMap&lt;Instant, Booking&gt;</code>, <code>overlaps(range)</code>, <code>countOn(date)</code></td></tr>
+    <tr><td><code>RoomCalendar</code></td><td>Any time ranges for one room (meeting-room variant)</td><td><code>TreeMap&lt;Instant, Booking&gt;</code>, <code>tryBook(range)</code></td></tr>
+    <tr><td><code>BookingRule</code> (interface)</td><td>Checks you can plug in: clashes, daily limit, how far ahead</td><td><code>check(user, slot)</code> throws <code>BookingRejected</code></td></tr>
+    <tr><td><code>BookingService</code></td><td>Runs the whole flow: locks, rules, booking, waitlist promotion</td><td><code>book</code>, <code>cancel</code>, <code>listForUser</code></td></tr>
+    <tr><td><code>SlotRepository</code>, <code>BookingRepository</code></td><td>Storage interfaces. In-memory now, JPA later.</td><td>Backed by <code>ConcurrentHashMap</code></td></tr>
+    <tr><td><code>CommandParser</code> / <code>BookingController</code></td><td>Command-line or REST layer. Turns exceptions into messages or HTTP codes.</td><td><code>ADD_SLOT</code>, <code>BOOK</code>, <code>CANCEL</code>…</td></tr>
   </table></div>
   <div class="flow">
     <span class="node">CLI / REST<small>CommandParser</small></span><span class="arrow">→</span>
@@ -158,25 +168,25 @@
     <span class="node">UserSchedule<small>TreeMap by start</small></span><span class="arrow">→</span>
     <span class="node store">Repositories<small>in-memory / JPA</small></span>
   </div>
-  <p class="flow-caption">Figure: the service takes the user lock then the slot lock, runs every rule, then mutates slot and user schedule together.</p>
-  <p>Patterns in full: Chain of rules (a list of <code>BookingRule</code> strategies) so "daily limit K" or "no booking more than 7 days ahead" is one new class. Repository so the review question "how would this work with a database?" has an obvious seam. State enum with guarded transitions so an EXPIRED hold can never be confirmed. Command pattern for the CLI (<code>Map&lt;String, Command&gt;</code>) keeps parsing out of the service. Observer for "notify the promoted waitlisted user", stubbed with a listener interface.</p></details>
+  <p class="flow-caption">Figure: the service takes the user lock, then the slot lock. It runs every rule. Then it updates the slot and the user's schedule together.</p>
+  <p>Here are the patterns in full. A chain of rules is a list of <code>BookingRule</code> strategies. So "daily limit K" or "no booking more than 7 days ahead" is one new class. A repository gives the review question "how would this work with a database?" a clear answer. A state enum allows only valid status changes, so an EXPIRED hold can never be confirmed. The Command pattern for the command line (<code>Map&lt;String, Command&gt;</code>) keeps parsing out of the service. An Observer handles "tell the waitlisted user they got in". Stub it with a listener interface.</p></details>
 
   <h2 id="flow"><span class="n">05</span>Watch a booking flow</h2>
   <div class="stepper"><b class="title">Yoga 07:00–08:00, capacity 2; users A, B, C</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell">seat</span><span class="cell">seat</span></div>
       <div class="ptrs"><span class="on">addSlot(S1)</span><span>booked={}</span><span>waitlist=[]</span></div>
-      <figcaption><code>putIfAbsent</code> stores the slot; a duplicate id would throw. Both seats free.</figcaption>
+      <figcaption>The yoga slot is saved (with <code>putIfAbsent</code>). Saving another slot with the same id would fail. Both seats are free.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell hl">A</span><span class="cell">seat</span></div>
       <div class="ptrs"><span class="on">book(A, S1)</span><span>lock A → lock S1</span><span>booked={A}</span></div>
-      <figcaption>User lock, then slot lock. Rules pass, a seat is free, so <code>confirm</code> writes slot, schedule and bookings together.</figcaption>
+      <figcaption>Take the user lock, then the slot lock. The rules pass and a seat is free. So A gets the seat. The slot, A's schedule and the booking list are all updated together.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">A</span><span class="cell">seat</span></div>
       <div class="ptrs"><span class="on">book(A, S1) again</span><span>same booking id</span><span>booked={A}</span></div>
-      <figcaption>A's app retried after a timeout. Key <code>A|S1</code> already exists, so the same booking returns. Nothing changes.</figcaption>
+      <figcaption>A's app timed out and sent the request again. The service already has a booking for A in this slot (key <code>A|S1</code>). So it returns that same booking, and nothing changes.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">A</span><span class="cell hl">B</span></div>
@@ -186,29 +196,29 @@
     <figure class="frame">
       <div class="cells"><span class="cell ok">A</span><span class="cell ok">B</span><span class="cell bad">C</span></div>
       <div class="ptrs"><span class="on">book(C, S1)</span><span>status=WAITLISTED</span><span>waitlist=[C]</span></div>
-      <figcaption>No seat, so C joins the FIFO waitlist (a <code>LinkedHashSet</code>: ordered, O(1) remove).</figcaption>
+      <figcaption>No seat is left, so C joins the waitlist. The waitlist keeps people in arrival order and can drop anyone quickly (a <code>LinkedHashSet</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell dim">A</span><span class="cell ok">B</span><span class="cell win">C</span></div>
       <div class="ptrs"><span class="on">cancel(A, S1)</span><span>booked={B}</span><span>promoted=C</span></div>
-      <figcaption>A cancels. The service notes C as the head, then releases A's locks before promoting.</figcaption>
+      <figcaption>A cancels. The service notes that C is first in line. It releases A's locks before moving C up.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">C</span><span class="cell ok">B</span></div>
       <div class="ptrs"><span class="on">promote(C)</span><span>lock C → lock S1</span><span>booked={B,C}</span><span>waitlist=[]</span></div>
-      <figcaption>Promotion takes C's lock, then the slot's, re-runs the rules and confirms. Had C booked a clash meanwhile, the next in line would go.</figcaption>
+      <figcaption>Promotion takes C's lock, then the slot's lock. It runs the rules again and confirms. If C had booked a clashing slot meanwhile, the next person in line would get it.</figcaption>
     </figure>
   </div></div>
 
   <h2 id="concurrency"><span class="n">06</span>The race and the fix</h2>
-  <p>The bug: "is there a seat?" and "take the seat" as two steps. One seat left:</p>
+  <p>The bug is doing "is there a seat?" and "take the seat" as two separate steps. Here is what happens with one seat left:</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>Slot S1</th></tr></thead><tbody>
     <tr><td>t1</td><td><code>hasSeat()</code> → true</td><td></td><td>booked={X}, cap 2</td></tr>
     <tr><td>t2</td><td></td><td><code>hasSeat()</code> → true</td><td>booked={X}</td></tr>
     <tr><td>t3</td><td><code>booked.add(A)</code></td><td></td><td>booked={X,A}</td></tr>
     <tr><td>t4</td><td></td><td><code>booked.add(B)</code></td><td class="bad">3 people, capacity 2</td></tr>
   </tbody></table></div>
-  <p>The fix: check and write inside the slot's lock (user lock first).</p>
+  <p>The fix is to check and write while holding the slot's lock. Take the user's lock first.</p>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Thread A</th><th>Thread B</th><th>Slot S1</th></tr></thead><tbody>
     <tr><td>t1</td><td>lock user A, lock S1</td><td>lock user B, waits for S1</td><td>booked={X}</td></tr>
     <tr><td>t2</td><td><code>hasSeat()</code> → true, confirm</td><td>waiting</td><td>booked={X,A}</td></tr>
@@ -216,8 +226,8 @@
     <tr><td>t4</td><td></td><td><code>hasSeat()</code> → false, waitlist</td><td class="ok">2 booked, B waitlisted</td></tr>
   </tbody></table></div>
   <div class="callout warn"><b>Lock rules</b><ul>
-    <li>One order everywhere: user, then slot. Two slots? Sort ids first.</li>
-    <li>A <code>synchronized</code> service is correct but serialises every booking. Say it.</li>
+    <li>Use one order everywhere: user first, then slot. If you need two slots, sort their ids first.</li>
+    <li>A <code>synchronized</code> service is correct, but every booking then waits in one line. Say so.</li>
     <li>Lock the <code>Slot</code> object from the map, never a string id.</li>
   </ul></div>
   <h3>The same invariant in a database</h3>
@@ -229,27 +239,28 @@
     <tr><td>Unique constraint</td><td><code>UNIQUE(seat_id, show_id)</code></td><td>Discrete seats</td></tr>
     <tr><td>Exclusion constraint</td><td><code>EXCLUDE USING gist (… during WITH &amp;&amp;)</code></td><td>Time ranges</td></tr>
   </table></div>
+  <p>An invariant is a rule that must always be true, such as "never more people than seats". A pessimistic lock blocks others while you work. An optimistic lock lets everyone try, and the loser retries. "Hot rows" are rows many users fight over at once. "Low contention" means few users compete.</p>
   <details class="deep"><summary>Go deeper: every concurrency and edge case, and the full database table</summary><ul>
-    <li><b>Check-then-act.</b> "Is there a seat?" and "take the seat" must be one critical section. Two threads passing the check before either writes is the textbook double booking.</li>
-    <li><b>Two locks, one order.</b> Capacity lives on the slot, overlap lives on the user. Take user then slot everywhere. If a flow needs two slots (round trip, recurrence), sort slot ids and lock in that order.</li>
-    <li><b>Lock granularity.</b> A <code>synchronized</code> service method is correct but serialises every booking in the system. Per-slot and per-user locks let unrelated bookings run in parallel; say this out loud.</li>
-    <li><b>Lock objects must be stable.</b> Lock the <code>Slot</code> instance from the map, not a string id (<code>"S1"</code> literals are interned; new strings are not the same monitor).</li>
-    <li><b>Idempotency.</b> The natural key (user, slot) makes BOOK idempotent. For REST, also accept an <code>Idempotency-Key</code> header, store key → response for 24 h, and replay the stored response.</li>
-    <li><b>Time.</b> Inject <code>Clock</code>; "upcoming" uses <code>clock.instant()</code>. Store <code>Instant</code>; convert with the slot's <code>ZoneId</code> only for display and for "per day" rules. Reject bookings in the past.</li>
-    <li><b>Holds.</b> A HELD booking carries <code>expiresAt</code>. Treat expired holds as free when checking capacity (lazy expiry) and sweep them with a <code>ScheduledExecutorService</code>. Confirm must re-check <code>expiresAt</code> under the lock: payment may succeed after the hold expired, which means refund or re-hold.</li>
-    <li><b>Validation.</b> start &lt; end, capacity &gt; 0, unique id (<code>putIfAbsent</code>), unknown user/slot, cancel of a booking that does not exist.</li>
+    <li><b>Check-then-act.</b> "Is there a seat?" and "take the seat" must run as one protected block. If two threads both pass the check before either writes, you get the textbook double booking.</li>
+    <li><b>Two locks, one order.</b> Capacity lives on the slot. Clashes live on the user. Take the user lock, then the slot lock, everywhere. Some flows need two slots, like a round trip or a repeating booking. Then sort the slot ids and lock in that order.</li>
+    <li><b>Lock size.</b> A <code>synchronized</code> service method is correct. But every booking in the system then waits in one line. Per-slot and per-user locks let unrelated bookings run side by side. Say this out loud.</li>
+    <li><b>Lock objects must stay the same.</b> Lock the <code>Slot</code> object from the map, not a string id. Java shares one copy of each <code>"S1"</code> literal, but a newly built string is a different object, so it is a different lock.</li>
+    <li><b>Idempotency.</b> The natural key (user, slot) already makes BOOK idempotent. For REST, also accept an <code>Idempotency-Key</code> header. Store each key with its response for 24 h, and send the stored response again on a repeat.</li>
+    <li><b>Time.</b> Pass in a <code>Clock</code>. "Upcoming" uses <code>clock.instant()</code>. Store <code>Instant</code>. Convert with the slot's <code>ZoneId</code> only for display and for "per day" rules. Refuse bookings in the past.</li>
+    <li><b>Holds.</b> A HELD booking has an <code>expiresAt</code> time. When checking capacity, treat expired holds as free. This is lazy expiry. Also clean them up with a <code>ScheduledExecutorService</code>. Confirm must check <code>expiresAt</code> again under the lock. Payment may succeed after the hold expired. Then you must refund or hold again.</li>
+    <li><b>Validation.</b> Check start &lt; end, capacity &gt; 0 and a unique id (<code>putIfAbsent</code>). Handle an unknown user or slot. Handle a cancel for a booking that does not exist.</li>
   </ul>
   <div class="tbl"><table>
     <tr><th>Approach</th><th>How</th><th>Good for</th><th>Cost</th></tr>
-    <tr><td>Pessimistic lock</td><td><code>SELECT … FROM slot WHERE id = ? FOR UPDATE</code>, check count, insert booking, commit. In Spring: <code>@Lock(PESSIMISTIC_WRITE)</code>.</td><td>Hot inventory (last seats on a Tatkal train), short transactions</td><td>Blocking; keep the transaction tiny, never call payment inside it</td></tr>
-    <tr><td>Optimistic lock</td><td><code>@Version</code> column; <code>UPDATE slot SET booked = booked + 1, version = version + 1 WHERE id = ? AND version = ? AND booked &lt; capacity</code>; 0 rows → retry or fail</td><td>Low contention (meeting rooms)</td><td>Retry storms under contention</td></tr>
-    <tr><td>Conditional update</td><td><code>UPDATE seat SET status='HELD', held_by=?, hold_until=now()+'10 min' WHERE id=? AND (status='FREE' OR hold_until &lt; now())</code></td><td>Seat-level inventory, holds</td><td>One statement, no explicit lock</td></tr>
-    <tr><td>Unique constraint</td><td><code>UNIQUE(seat_id, show_id)</code> on confirmed bookings, or <code>UNIQUE(user_id, slot_id)</code> for idempotency</td><td>Discrete seats</td><td>Catch the violation and map to 409</td></tr>
-    <tr><td>Exclusion constraint (Postgres)</td><td><code>EXCLUDE USING gist (room_id WITH =, during WITH &amp;&amp;)</code> with <code>btree_gist</code>, <code>during tstzrange</code></td><td>Free-form time ranges</td><td>The database rejects overlaps even from buggy code paths</td></tr>
+    <tr><td>Pessimistic lock</td><td><code>SELECT … FROM slot WHERE id = ? FOR UPDATE</code>, check the count, insert the booking, commit. In Spring: <code>@Lock(PESSIMISTIC_WRITE)</code>.</td><td>Hot stock (last seats on a Tatkal train) and short transactions</td><td>Others wait. Keep the transaction tiny, and never call payment inside it.</td></tr>
+    <tr><td>Optimistic lock</td><td><code>@Version</code> column; <code>UPDATE slot SET booked = booked + 1, version = version + 1 WHERE id = ? AND version = ? AND booked &lt; capacity</code>; 0 rows → retry or fail</td><td>Few users competing (meeting rooms)</td><td>Floods of retries when many compete</td></tr>
+    <tr><td>Conditional update</td><td><code>UPDATE seat SET status='HELD', held_by=?, hold_until=now()+'10 min' WHERE id=? AND (status='FREE' OR hold_until &lt; now())</code></td><td>Seat-level stock, holds</td><td>One statement, no separate lock</td></tr>
+    <tr><td>Unique constraint</td><td><code>UNIQUE(seat_id, show_id)</code> on confirmed bookings, or <code>UNIQUE(user_id, slot_id)</code> for idempotency</td><td>Separate, numbered seats</td><td>Catch the error and return 409</td></tr>
+    <tr><td>Exclusion constraint (Postgres)</td><td><code>EXCLUDE USING gist (room_id WITH =, during WITH &amp;&amp;)</code> with <code>btree_gist</code>, <code>during tstzrange</code></td><td>Any time ranges</td><td>The database refuses clashes, even from buggy code</td></tr>
   </table></div></details>
 
   <h2 id="code"><span class="n">07</span>Core code</h2>
-  <p>The heart of <code>book()</code>: both locks held, idempotency first, then rules, then capacity.</p>
+  <p>Here is the heart of <code>book()</code>. Both locks are held. It checks for a repeat first, then the rules, then the capacity.</p>
   <pre><code>        user.lock.lock();
         slot.lock.lock();
         try {
@@ -302,7 +313,7 @@ public final class NotFound extends BookingRejected { NotFound(String what) { su
     boolean hasSeat() { return booked.size() &lt; capacity; }
 }</code></pre></details>
   <details class="code"><summary>Show UserSchedule (O(log n) overlap)</summary>
-    <p>A user's confirmed bookings never overlap each other, so only the booking with the greatest start before the candidate's end can overlap it.</p>
+    <p>A user's confirmed bookings never clash with each other. So only one booking can clash with the new one. It is the booking with the latest start before the new booking's end.</p>
     <pre><code>final class UserSchedule {
     final ReentrantLock lock = new ReentrantLock();
     private final TreeMap&lt;Instant, Booking&gt; byStart = new TreeMap&lt;&gt;();   // guarded by lock
@@ -415,7 +426,7 @@ public final class BookingService {
     }
     private static String key(String userId, String slotId) { return userId + "|" + slotId; }
 }</code></pre>
-    <p>The skip-to-next promotion uses a fresh thread only to avoid re-entering with locks held; in an interview a simple loop that releases and re-acquires is equally fine. Say which you chose and why.</p></details>
+    <p>Moving to the next person in line uses a new thread. This only avoids re-entering the code while still holding locks. In an interview, a simple loop that releases and takes the locks again is just as good. Say which you chose and why.</p></details>
   <details class="code"><summary>Show rules: NoOverlapRule, DailyLimitRule</summary>
     <pre><code>public final class NoOverlapRule implements BookingRule {
     public void check(UserSchedule user, Slot slot) {
@@ -443,118 +454,118 @@ public final class DailyLimitRule implements BookingRule {
         return true;
     }
 }</code></pre>
-    <p>Finding any free room for a range: iterate rooms sorted by capacity (smallest that fits) and call <code>tryBook</code>; each call is atomic per room, so a lost race just moves on to the next room.</p></details>
+    <p>To find any free room for a time range, go through the rooms from smallest to largest that fits. Call <code>tryBook</code> on each. Each call is atomic for its room. So if you lose a race, you just move on to the next room.</p></details>
 
   <h2 id="extensions"><span class="n">08</span>Extensions interviewers add mid-round</h2>
   <h3>Pessimistic or optimistic? (InMobi IRCTC)</h3>
   <div class="vs">
-    <div class="pick"><h4>Pessimistic <span class="tag">Tatkal hot row</span></h4><ul><li class="pro">No retry storm when thousands hit one train</li><li class="con">Blocking; keep transactions tiny</li></ul><p class="when">Or a single writer per train partition (Kafka key = train id).</p></div>
-    <div><h4>Optimistic</h4><ul><li class="pro">No locks held</li><li class="con">Most attempts fail and retry under contention</li></ul><p class="when">Off-peak, meeting rooms.</p></div>
+    <div class="pick"><h4>Pessimistic <span class="tag">Tatkal hot row</span></h4><ul><li class="pro">No flood of retries when thousands hit one train</li><li class="con">Others wait, so keep transactions tiny</li></ul><p class="when">Or let one writer handle each train, using a Kafka partition keyed by train id.</p></div>
+    <div><h4>Optimistic</h4><ul><li class="pro">No locks are held</li><li class="con">When many compete, most attempts fail and retry</li></ul><p class="when">Use it off-peak, or for meeting rooms.</p></div>
   </div>
   <div class="grid">
-    <div class="card"><h4>Waitlist + promotion</h4><p>Already built. Trains add RAC: WL → RAC → CNF.</p></div>
-    <div class="card"><h4>Daily limit K</h4><p>One new <code>DailyLimitRule</code>; no service change.</p></div>
-    <div class="card"><h4>REST (Postman)</h4><p>201 + <code>Location</code>, 409 overlap, 400 bad input, 404, 204 delete.</p></div>
-    <div class="card"><h4>Recurring (Eightfold)</h4><p>Store a rule, expand in the room's zone, book all or none.</p></div>
-    <div class="card"><h4>Seat hold (CRED)</h4><p>HOLD with TTL and price snapshot → pay → CONFIRM.</p></div>
-    <div class="card"><h4>Many pods</h4><p>Move the invariant into the DB, or partition by resource.</p></div>
+    <div class="card"><h4>Waitlist + promotion</h4><p>Already built. Trains add RAC (shared berth) between waitlist and confirmed: WL → RAC → CNF.</p></div>
+    <div class="card"><h4>Daily limit K</h4><p>Add one new <code>DailyLimitRule</code>. The service does not change.</p></div>
+    <div class="card"><h4>REST (Postman)</h4><p>201 with <code>Location</code> on success. 409 for a clash, 400 for bad input, 404 if missing, 204 on delete.</p></div>
+    <div class="card"><h4>Recurring (Eightfold)</h4><p>Store a repeat rule. Expand it in the room's time zone. Book all dates or none.</p></div>
+    <div class="card"><h4>Seat hold (CRED)</h4><p>Hold the seat with a timer and save the price. Then pay, then confirm.</p></div>
+    <div class="card"><h4>Many pods</h4><p>Move the rule into the database, or send each resource to one server.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full answers for each extension</summary>
-  <details class="qa"><summary>Waitlist with auto-promotion (Udaan, Swiggy train booking)</summary><p>Already in the design: <code>LinkedHashSet</code> per slot for FIFO plus O(1) removal when a waitlisted user cancels. On cancel, promote the head; if the promoted user now fails a rule (overlap, daily limit), skip to the next. For trains, add RAC as an intermediate state and promote in order WL → RAC → CNF, one berth per cancellation.</p></details>
-  <details class="qa"><summary>Daily limit K, configurable (Udaan)</summary><p>A new <code>DailyLimitRule(K, zone)</code> in the rules list; no change to the service. The count is from the user's <code>TreeMap.subMap</code> for that local day.</p></details>
+  <details class="qa"><summary>Waitlist with auto-promotion (Udaan, Swiggy train booking)</summary><p>This is already in the design. Each slot has a <code>LinkedHashSet</code>. It keeps FIFO order and removes a waitlisted user in O(1) if they cancel. On a cancel, move up the first person. If that person now breaks a rule (a clash, or the daily limit), skip to the next. For trains, add RAC (Reservation Against Cancellation, a shared berth) as a middle state. Move people up in the order WL → RAC → CNF, one berth per cancellation.</p></details>
+  <details class="qa"><summary>Daily limit K, configurable (Udaan)</summary><p>Add a new <code>DailyLimitRule(K, zone)</code> to the rules list. The service does not change. The count comes from the user's <code>TreeMap.subMap</code> for that local day.</p></details>
   <details class="qa"><summary>REST API with correct codes and headers (Postman)</summary>
-    <p><code>POST /rooms/{id}/bookings</code> → <b>201 Created</b> with <code>Location: /bookings/{bookingId}</code> and the body. Overlap → <b>409 Conflict</b> with the conflicting booking id. Bad input (end before start, missing field) → <b>400</b> (or 422 for well-formed but invalid). Unknown room → <b>404</b>. Replay with the same <code>Idempotency-Key</code> → the original 201 response. <code>DELETE /bookings/{id}</code> → <b>204</b>. <code>GET</code> list → 200 with pagination. For updates, return an <code>ETag</code> and require <code>If-Match</code> (412 on mismatch) for optimistic concurrency.</p>
-    <p>In Spring: a <code>@RestControllerAdvice</code> maps <code>OverlappingBooking</code> to 409 and validation errors to 400 with a <code>ProblemDetail</code> body (RFC 7807 style).</p></details>
-  <details class="qa"><summary>Recurring bookings (Eightfold)</summary><p>Store a rule (RRULE-like: frequency, interval, until/count, by-day) and expand occurrences within a horizon (for example 6 months) in the room's time zone, so 10:00 stays 10:00 across DST. Book all occurrences atomically: lock the room once, check every occurrence, then insert all or none. Report which dates conflict. Editing "this and following" splits the series into two rules. Never materialise infinite series.</p></details>
-  <details class="qa"><summary>Seat lock with timeout and per-seat price (CRED flights, movie and train variants)</summary><p>Two-phase: HOLD (seat status HELD, <code>hold_until</code>, price snapshot stored on the hold) → pay → CONFIRM. The price is locked at hold time, so a later fare change does not alter what the user pays. Expiry is lazy (a held seat with past <code>hold_until</code> counts as free) plus a sweeper. In Redis, <code>SET seat:{flight}:{seat} {userId} NX PX 600000</code> is a fast hold; the database conditional update stays the source of truth.</p></details>
-  <details class="qa"><summary>Other platforms sell the same seats (CRED)</summary><p>You do not own inventory, so your lock is advisory. The airline's system (via the GDS) is the source of truth: you request a hold from the airline, get a PNR or hold reference with an expiry, and confirm against it. The CRED candidate's answer, "the airline locks on the platform's behalf", convinced the interviewer. Your local hold must be shorter than the upstream hold.</p></details>
-  <details class="qa"><summary>Pessimistic vs optimistic (InMobi IRCTC)</summary><p>Tatkal opening is the textbook hot row: optimistic locking makes most of thousands of concurrent attempts fail and retry, so use pessimistic row locks with short transactions, or better, a per-train queue (single writer per train partition, for example a Kafka partition keyed by train id). Off-peak, optimistic is cheaper. Say the contention level drives the choice.</p></details>
-  <details class="qa"><summary>Multiple app instances</summary><p>In-memory locks only protect one JVM. Move the invariant into the database (constraint or row lock), or route all requests for a resource to one instance (partition by resource id). A Redis lock (Redisson) works but needs fencing tokens or a DB check, because a paused lock holder can resume after its lease expired.</p></details>
+    <p><code>POST /rooms/{id}/bookings</code> returns <b>201 Created</b>, with <code>Location: /bookings/{bookingId}</code> and the body. A clash returns <b>409 Conflict</b> with the clashing booking id. Bad input, like an end before the start or a missing field, returns <b>400</b>. Use 422 for input that is well-formed but invalid. An unknown room returns <b>404</b>. A repeat with the same <code>Idempotency-Key</code> returns the original 201 response. <code>DELETE /bookings/{id}</code> returns <b>204</b>. <code>GET</code> on a list returns 200 with pagination. For updates, return an <code>ETag</code> (a version tag) and require <code>If-Match</code>. Return 412 if they don't match. This is optimistic concurrency over HTTP.</p>
+    <p>In Spring, a <code>@RestControllerAdvice</code> maps <code>OverlappingBooking</code> to 409. It maps validation errors to 400 with a <code>ProblemDetail</code> body, in the RFC 7807 style.</p></details>
+  <details class="qa"><summary>Recurring bookings (Eightfold)</summary><p>Store a repeat rule, like an iCalendar RRULE. It has frequency, interval, an end date or count, and the days of the week. Expand the dates up to a limit, for example 6 months ahead. Do it in the room's time zone, so 10:00 stays 10:00 when daylight saving changes. Book all dates atomically. Lock the room once, check every date, then insert all or none. Report which dates clash. Editing "this and following" splits the series into two rules. Never create an endless series.</p></details>
+  <details class="qa"><summary>Seat lock with timeout and per-seat price (CRED flights, movie and train variants)</summary><p>Use two steps. First HOLD: the seat status becomes HELD, with a <code>hold_until</code> time and a saved copy of the price. Then pay, then CONFIRM. The price is fixed when you hold. So a later fare change does not change what the user pays. Expiry is lazy, meaning a held seat whose <code>hold_until</code> has passed counts as free. A background sweeper also cleans up. In Redis, <code>SET seat:{flight}:{seat} {userId} NX PX 600000</code> is a fast hold. The database's conditional update stays the source of truth.</p></details>
+  <details class="qa"><summary>Other platforms sell the same seats (CRED)</summary><p>You don't own the seats, so your lock is only advisory. The airline's system is the source of truth. You reach it through the GDS, the global booking network airlines use. You ask the airline for a hold and get back a PNR or hold reference with an expiry. Then you confirm against it. The CRED candidate said "the airline locks on the platform's behalf", and that convinced the interviewer. Your local hold must be shorter than the airline's hold.</p></details>
+  <details class="qa"><summary>Pessimistic vs optimistic (InMobi IRCTC)</summary><p>Tatkal opening is the textbook hot row. Thousands try at once. With optimistic locking, most attempts fail and retry. So use pessimistic row locks with short transactions. Better still, use one queue per train, so one writer handles each train. For example, use a Kafka partition keyed by train id. Off-peak, optimistic locking is cheaper. Say that how many users compete decides the choice.</p></details>
+  <details class="qa"><summary>Multiple app instances</summary><p>In-memory locks only protect one JVM. Move the rule into the database, with a constraint or a row lock. Or send all requests for one resource to one server (partition by resource id). A Redis lock through Redisson also works. But it needs fencing tokens or a database check. A lock holder can pause, and wake up after its lease ran out, still thinking it holds the lock.</p></details>
   </details>
 
   <h2 id="tests"><span class="n">09</span>Tests to write</h2>
   <div class="keys">
-    <div class="key"><h4>Rules</h4><p>Capacity then waitlist, overlap rejected, back-to-back allowed, daily K.</p></div>
-    <div class="key"><h4>Lifecycle</h4><p>Idempotent book, FIFO promotion, skip a clashing head, hold expiry with a test clock.</p></div>
-    <div class="key"><h4>The proof</h4><p>200 users race for capacity 10: exactly 10 CONFIRMED; book/cancel mix never deadlocks.</p></div>
+    <div class="key"><h4>Rules</h4><p>Capacity then waitlist. Clashes refused. Back-to-back allowed. Daily limit K.</p></div>
+    <div class="key"><h4>Lifecycle</h4><p>A repeated book is safe. FIFO promotion. Skip a first-in-line user who now clashes. Hold expiry with a test clock.</p></div>
+    <div class="key"><h4>The proof</h4><p>200 users race for 10 places, and exactly 10 are CONFIRMED. A mix of book and cancel never deadlocks.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full test list</summary>
   <div class="tbl"><table>
     <tr><th>Test</th><th>Asserts</th></tr>
-    <tr><td><code>book_succeedsUntilCapacityThenRejectsOrWaitlists</code></td><td>Capacity 2: two CONFIRMED, third WAITLISTED (or SlotFull in Stage 1).</td></tr>
-    <tr><td><code>book_rejectsOverlappingSlotForSameUser</code></td><td>07:00–08:00 booked; 07:30–08:30 throws <code>OverlappingBooking</code>.</td></tr>
-    <tr><td><code>book_allowsBackToBack</code></td><td>07:00–08:00 then 08:00–09:00 both confirmed.</td></tr>
-    <tr><td><code>book_isIdempotentForSameUserAndSlot</code></td><td>Second call returns the same booking id; booked count unchanged.</td></tr>
-    <tr><td><code>cancel_promotesFirstWaitlistedUser</code></td><td>FIFO order respected; promoted user's schedule contains the slot.</td></tr>
-    <tr><td><code>cancel_skipsWaitlistedUserWhoNowOverlaps</code></td><td>Head of waitlist has a clashing booking; second in line is promoted.</td></tr>
-    <tr><td><code>dailyLimit_rejectsKPlusOneth</code></td><td>K=2: third booking on the same local day rejected; next day allowed.</td></tr>
-    <tr><td><code>addSlot_validatesInput</code></td><td>start ≥ end, capacity 0, duplicate id each throw.</td></tr>
-    <tr><td><code>concurrentBooking_neverExceedsCapacity</code></td><td>200 users race for capacity 10 via a latch; exactly 10 CONFIRMED, 190 WAITLISTED, no exceptions.</td></tr>
-    <tr><td><code>concurrentBookAndCancel_noDeadlock</code></td><td>Mixed book/cancel across slots and users completes within a timeout (<code>assertTimeoutPreemptively</code>).</td></tr>
-    <tr><td><code>hold_expiresAndSeatBecomesAvailable</code></td><td>Mutable test clock advanced past TTL; another user can hold; confirm of the expired hold fails.</td></tr>
-    <tr><td><code>roomCalendar_findsOverlapWithLowerEntry</code></td><td>Containment, partial overlap left/right, exact match, adjacency.</td></tr>
-    <tr><td><code>recurring_bookingIsAllOrNothing</code></td><td>One conflicting occurrence → nothing booked, conflicts reported.</td></tr>
+    <tr><td><code>book_succeedsUntilCapacityThenRejectsOrWaitlists</code></td><td>Capacity 2: two CONFIRMED, the third WAITLISTED (or SlotFull in Stage 1).</td></tr>
+    <tr><td><code>book_rejectsOverlappingSlotForSameUser</code></td><td>07:00–08:00 is booked. 07:30–08:30 throws <code>OverlappingBooking</code>.</td></tr>
+    <tr><td><code>book_allowsBackToBack</code></td><td>07:00–08:00 then 08:00–09:00 are both confirmed.</td></tr>
+    <tr><td><code>book_isIdempotentForSameUserAndSlot</code></td><td>The second call returns the same booking id. The booked count does not change.</td></tr>
+    <tr><td><code>cancel_promotesFirstWaitlistedUser</code></td><td>FIFO order is kept. The promoted user's schedule contains the slot.</td></tr>
+    <tr><td><code>cancel_skipsWaitlistedUserWhoNowOverlaps</code></td><td>The first in line has a clashing booking, so the second in line moves up.</td></tr>
+    <tr><td><code>dailyLimit_rejectsKPlusOneth</code></td><td>K=2: a third booking on the same local day is refused. The next day is allowed.</td></tr>
+    <tr><td><code>addSlot_validatesInput</code></td><td>start ≥ end, capacity 0 and a duplicate id each throw.</td></tr>
+    <tr><td><code>concurrentBooking_neverExceedsCapacity</code></td><td>200 users race for 10 places, started together by a latch. Exactly 10 CONFIRMED, 190 WAITLISTED, no exceptions.</td></tr>
+    <tr><td><code>concurrentBookAndCancel_noDeadlock</code></td><td>A mix of book and cancel across slots and users finishes within a time limit (<code>assertTimeoutPreemptively</code>).</td></tr>
+    <tr><td><code>hold_expiresAndSeatBecomesAvailable</code></td><td>Move the test clock past the TTL. Another user can now hold the seat. Confirming the expired hold fails.</td></tr>
+    <tr><td><code>roomCalendar_findsOverlapWithLowerEntry</code></td><td>One range inside another, partial clash on the left or right, exact match, and ranges that just touch.</td></tr>
+    <tr><td><code>recurring_bookingIsAllOrNothing</code></td><td>One clashing date means nothing is booked, and the clashes are reported.</td></tr>
   </table></div></details>
 
   <h2 id="mistakes"><span class="n">10</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Common mistakes</b><ul>
-    <li>Check and write in two unsynchronised steps, then "add synchronized" in review (Flipkart).</li>
-    <li>One giant <code>synchronized</code> with no word on throughput.</li>
-    <li>Closed intervals, so back-to-back fails.</li>
-    <li>Stage 2 half-built while Stage 1 is broken (Udaan).</li>
-    <li>200 for everything, or 500 for a conflict, in REST.</li>
-    <li>Payment called inside the transaction holding the seat lock.</li>
+    <li>Checking and writing in two unprotected steps, then saying "add synchronized" in the review (Flipkart).</li>
+    <li>One giant <code>synchronized</code> block, with no word about how it slows everything down.</li>
+    <li>Ranges that include the end time, so back-to-back bookings fail.</li>
+    <li>Stage 2 half-built while Stage 1 is still broken (Udaan).</li>
+    <li>In REST, returning 200 for everything, or 500 for a clash.</li>
+    <li>Calling payment inside the transaction that holds the seat lock.</li>
   </ul></div>
   <details class="deep"><summary>Go deeper: the rejection notes in full</summary><ul>
-    <li>Checking availability and writing the booking in two unsynchronised steps, then hand-waving "add synchronized" in the review (Flipkart's follow-up was exactly this).</li>
-    <li>One giant <code>synchronized</code> on the service with no explanation of the throughput cost.</li>
-    <li>Closed-interval overlap, so back-to-back bookings fail.</li>
-    <li>Stage 2 features half-built while a Stage 1 feature was broken. Udaan's prompt warns against partial features.</li>
-    <li>Returning 200 for everything, or 500 for a conflict, in the REST variant.</li>
-    <li>Only entities and a class diagram with no concurrency story; Swiggy's train-booking candidate covered entities, waitlist and concurrency and was still rejected, so depth and speed both count.</li>
+    <li>Checking availability and writing the booking in two unprotected steps. Then waving it away with "add synchronized" in the review. Flipkart's follow-up was exactly this.</li>
+    <li>One giant <code>synchronized</code> on the service, with no explanation of how it limits throughput (bookings per second).</li>
+    <li>A clash check that includes the end time, so back-to-back bookings fail.</li>
+    <li>Stage 2 features half-built while a Stage 1 feature was broken. Udaan's prompt warns against half-done features.</li>
+    <li>In the REST variant, returning 200 for everything, or 500 for a clash.</li>
+    <li>Only entities and a class diagram, with no plan for concurrency. Swiggy's train-booking candidate covered entities, waitlist and concurrency, and was still rejected. So depth and speed both count.</li>
     <li>Calling payment inside the database transaction that holds the seat lock.</li>
   </ul></details>
 
   <h2 id="plan"><span class="n">11</span>A 90-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–10 min</span><span>Clarify slot vs range, half-open, reject vs waitlist, idempotency, CLI/REST. Assumptions as comments.</span></div>
-    <div class="step"><span class="t">10–20 min</span><span>Models (<code>TimeRange</code>, <code>Slot</code>, <code>Booking</code>, status), repositories, exceptions.</span></div>
-    <div class="step"><span class="t">20–45 min</span><span>Stage 1: add/list, book with capacity and overlap, cancel. Run a sample session.</span></div>
-    <div class="step"><span class="t">45–55 min</span><span>Per-user and per-slot locks in fixed order; the 200-thread test.</span></div>
-    <div class="step"><span class="t">55–75 min</span><span>Stage 2, one feature at a time: idempotency, waitlist, daily limit, validation.</span></div>
-    <div class="step"><span class="t">75–90 min</span><span>Review: lock order, DB translation, holds with TTL, many pods.</span></div>
+    <div class="step"><span class="t">0–10 min</span><span>Ask: slots or ranges, end excluded, refuse or waitlist, repeats, command line or REST. Write your assumptions as comments.</span></div>
+    <div class="step"><span class="t">10–20 min</span><span>Write the models (<code>TimeRange</code>, <code>Slot</code>, <code>Booking</code>, status), repositories and exceptions.</span></div>
+    <div class="step"><span class="t">20–45 min</span><span>Stage 1: add and list, book with capacity and clash checks, cancel. Run a sample session.</span></div>
+    <div class="step"><span class="t">45–55 min</span><span>Add per-user and per-slot locks in a fixed order. Write the 200-thread test.</span></div>
+    <div class="step"><span class="t">55–75 min</span><span>Stage 2, one feature at a time: safe repeats, waitlist, daily limit, validation.</span></div>
+    <div class="step"><span class="t">75–90 min</span><span>Review lock order, the database version, holds with a timer, and many pods.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">12</span>Quick check</h2>
-  <div class="quiz" data-answer="1"><p class="q">Booked 09:00–10:00. Should 10:00–11:00 be allowed, and what check gives that?</p>
+  <div class="quiz" data-answer="1"><p class="q">09:00–10:00 is booked. Should 10:00–11:00 be allowed? Which check gives that?</p>
     <div class="opts"><button class="opt" type="button">No: <code>start &lt;= o.end &amp;&amp; o.start &lt;= end</code></button><button class="opt" type="button">Yes: half-open, <code>start &lt; o.end &amp;&amp; o.start &lt; end</code></button><button class="opt" type="button">Yes, but only with a scan of all bookings</button></div>
-    <p class="why">With <code>[start, end)</code>, 10:00 is not inside the first booking, so back-to-back is fine.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">Thread 1 locks user then slot; thread 2 locks slot then user. What can happen?</p>
+    <p class="why">With <code>[start, end)</code>, the end time 10:00 is not part of the first booking. So the new booking can start at 10:00.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Thread 1 locks the user, then the slot. Thread 2 locks the slot, then the user. What can happen?</p>
     <div class="opts"><button class="opt" type="button">Double booking</button><button class="opt" type="button">Nothing, ReentrantLock prevents it</button><button class="opt" type="button">Deadlock: each holds the lock the other needs</button></div>
-    <p class="why">A cycle in lock order is the deadlock condition. One global order removes the cycle.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">Tatkal opens and 50,000 users hit one train. Which DB approach?</p>
+    <p class="why">Each thread holds one lock and waits for the other, forever. Using one fixed order everywhere makes this impossible.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Tatkal opens and 50,000 users hit one train. Which database approach should you use?</p>
     <div class="opts"><button class="opt" type="button">Pessimistic row lock with tiny transactions, or one writer per train partition</button><button class="opt" type="button">Optimistic <code>@Version</code> with retries</button><button class="opt" type="button">No locking; fix duplicates later</button></div>
-    <p class="why">Under heavy contention almost every optimistic attempt fails and retries.</p></div>
+    <p class="why">When so many compete, almost every optimistic attempt fails and retries. Waiting in line for a lock is faster overall.</p></div>
   <div class="quiz" data-answer="1"><p class="q">Why does <code>UserSchedule.overlaps</code> only check <code>lowerEntry(end)</code>?</p>
     <div class="opts"><button class="opt" type="button">It is an approximation</button><button class="opt" type="button">Existing bookings are disjoint and sorted, so only the latest one starting before the new end can overlap</button><button class="opt" type="button">TreeMap forbids more checks</button></div>
-    <p class="why">That makes the check O(log n) instead of a scan.</p></div>
+    <p class="why">The user's bookings never clash and are kept sorted. So only one booking needs checking. That makes the check O(log n) instead of a full scan.</p></div>
 
   <h2 id="viva"><span class="n">13</span>Interview questions</h2>
-  <details class="qa"><summary>Why two locks? Can it deadlock?</summary><p>Capacity is slot state and overlap is user state, and both must hold at commit time. Every path takes user then slot, so there is no cycle. The promotion path releases the canceller's locks before taking the promoted user's.</p></details>
-  <details class="qa"><summary>Why <code>lowerEntry(end)</code> and not a scan?</summary><p>Existing bookings are disjoint and sorted, so the only candidate for overlap is the latest one starting before the new end. O(log n) instead of O(n).</p></details>
-  <details class="qa"><summary>How would you move this to Postgres with five pods?</summary><p>Repositories become JPA. Capacity uses a conditional <code>UPDATE … WHERE booked &lt; capacity</code> or <code>SELECT … FOR UPDATE</code>; user overlap uses an exclusion constraint on <code>(user_id, during)</code>; idempotency uses <code>UNIQUE(user_id, slot_id)</code>. The in-process locks go away.</p></details>
-  <details class="qa"><summary>What if the waitlisted user's notification fails?</summary><p>Promotion is a state change committed first; the notification is an event published after commit (outbox pattern), retried independently.</p></details>
-  <details class="qa"><summary>Where would you add a "max 7 days ahead" rule?</summary><p>A new <code>BookingRule</code> implementation using the injected <code>Clock</code>; no service change.</p></details>
+  <details class="qa"><summary>Why two locks? Can it deadlock?</summary><p>Capacity belongs to the slot, and clashes belong to the user. Both must still be true when you commit. Every path takes the user lock, then the slot lock. So no thread can wait in a circle. The promotion path releases the cancelling user's locks before it takes the promoted user's locks.</p></details>
+  <details class="qa"><summary>Why <code>lowerEntry(end)</code> and not a scan?</summary><p>The existing bookings never clash and are sorted. So the only one that could clash is the latest one starting before the new end. That is O(log n) instead of O(n).</p></details>
+  <details class="qa"><summary>How would you move this to Postgres with five pods?</summary><p>The repositories become JPA. Capacity uses a conditional <code>UPDATE … WHERE booked &lt; capacity</code>, or <code>SELECT … FOR UPDATE</code>. User clashes use an exclusion constraint on <code>(user_id, during)</code>. Idempotency uses <code>UNIQUE(user_id, slot_id)</code>. The in-process locks are no longer needed.</p></details>
+  <details class="qa"><summary>What if the waitlisted user's notification fails?</summary><p>Commit the promotion first, as a state change. Publish the notification as an event after the commit, using the outbox pattern. The outbox pattern saves the event in the same transaction, and a separate process sends it. The notification is then retried on its own.</p></details>
+  <details class="qa"><summary>Where would you add a "max 7 days ahead" rule?</summary><p>Write a new <code>BookingRule</code> that uses the passed-in <code>Clock</code>. The service does not change.</p></details>
 
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Half-open overlap: <code>a.start &lt; b.end &amp;&amp; b.start &lt; a.end</code>.</li>
-    <li>Per-user <code>TreeMap</code> by start; <code>lowerEntry(end)</code> is O(log n).</li>
-    <li>Lock user, then slot, everywhere; promote after releasing.</li>
-    <li>Idempotent on (user, slot); REST adds <code>Idempotency-Key</code>.</li>
-    <li>Waitlist: <code>LinkedHashSet</code>; skip heads that now clash.</li>
-    <li>Rules as a list of <code>BookingRule</code>; inject <code>Clock</code>.</li>
-    <li>DB: <code>FOR UPDATE</code> (hot), <code>@Version</code> (cold), unique, exclusion constraint.</li>
-    <li>Holds: TTL, lazy expiry, re-check on confirm; never pay inside the lock.</li>
+    <li>Half-open clash test: <code>a.start &lt; b.end &amp;&amp; b.start &lt; a.end</code>.</li>
+    <li>Keep a per-user <code>TreeMap</code> sorted by start. <code>lowerEntry(end)</code> is O(log n).</li>
+    <li>Lock the user, then the slot, everywhere. Promote only after releasing.</li>
+    <li>Repeats are safe because the key is (user, slot). REST adds an <code>Idempotency-Key</code>.</li>
+    <li>Waitlist: a <code>LinkedHashSet</code>. Skip anyone first in line who now clashes.</li>
+    <li>Rules are a list of <code>BookingRule</code>. Pass in the <code>Clock</code>.</li>
+    <li>Database: <code>FOR UPDATE</code> when many compete, <code>@Version</code> when few do, plus unique and exclusion constraints.</li>
+    <li>Holds: a timer, lazy expiry, and a re-check on confirm. Never pay inside the lock.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>
@@ -575,3 +586,4 @@ public final class DailyLimitRule implements BookingRule {
 <script src="guide.js" defer></script>
 </body>
 </html>
+

@@ -12,7 +12,7 @@
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
   <h1>Notification system</h1>
-  <p class="lede">Design a push/SMS/email/webhook platform that gets an OTP out in seconds while a 50-million-message campaign is running.</p>
+  <p class="lede">Design one platform that sends push, SMS, email and webhook messages. A login OTP must still arrive in seconds, even while a 50-million-message marketing campaign is going out.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min</span>
     <span class="fact"><b>Seen:</b> ~7 reports, 2025–26</span>
@@ -21,13 +21,24 @@
   <div class="chips"><span class="chip hot">Razorpay</span><span class="chip hot">Postman</span><span class="chip hot">Visa</span><span class="chip">Microsoft</span><span class="chip">Salesforce</span><span class="chip">Adobe</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Producers publish an event; the platform owns templates, preferences, routing, retries.</li>
-    <li>Separate Kafka topics and workers per priority tier, so OTPs never wait.</li>
-    <li>Kafka is at-least-once: dedupe on a notification ID minted at ingest.</li>
-    <li>The real bottleneck is vendors and slow merchants, not Kafka.</li>
+    <li>Other services just announce "this happened". The platform handles templates, user settings, routing and retries.</li>
+    <li>Urgent messages get their own Kafka queue and their own workers. So an OTP never waits behind marketing.</li>
+    <li>Kafka can deliver the same message twice. Give each notification one ID when it arrives, and skip repeats of that ID.</li>
+    <li>The slow part is the SMS and email vendors and slow merchant servers. Kafka is not the problem.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>India Post with a separate Speed Post counter. Ordinary letters can pile up by the thousand, but the Speed Post queue has its own clerk and its own van, so an urgent parcel never waits behind them.</p></div>
+  <div class="analogy"><b>Picture it</b><p>Think of India Post with a separate Speed Post counter. Ordinary letters can pile up by the thousand. But Speed Post has its own clerk and its own van. So an urgent parcel never waits behind the ordinary letters.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>OTP</dt><dd>One-time password. The 6-digit code your bank app texts you at login. It is useless after a few minutes.</dd>
+    <dt>Kafka topic</dt><dd>A named queue in Kafka. Messages are written to the end and read in order.</dd>
+    <dt>Consumer / consumer group</dt><dd>A worker that reads messages from a topic. A group is a team of workers sharing one topic.</dd>
+    <dt>At-least-once</dt><dd>Every message is delivered, but sometimes more than once. You must handle the repeats yourself.</dd>
+    <dt>Idempotent</dt><dd>Doing the same thing twice has the same effect as doing it once. Pressing "Pay" twice should charge you once.</dd>
+    <dt>Dedupe</dt><dd>Short for "de-duplicate". Noticing a repeat and skipping it.</dd>
+    <dt>Vendor</dt><dd>An outside company that actually sends the SMS or email for you, such as Twilio or Amazon SES.</dd>
+    <dt>Webhook</dt><dd>An HTTP call we make to a merchant's own server to tell them something happened, like "payment captured".</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -50,55 +61,55 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Decoupling</h4><p>Business services publish an event and move on. The platform owns templates, preferences, routing and retries.</p></div>
-    <div class="key"><h4>Priority isolation</h4><p>An OTP must never queue behind a campaign. They want physical separation, not a "priority" field.</p></div>
-    <div class="key"><h4>At-least-once + idempotency</h4><p>Kafka redelivers, so duplicates happen. Name the exact dedupe point.</p></div>
-    <div class="key"><h4>Vendor failure</h4><p>SMS and email vendors fail, throttle and lie. Use multiple providers, circuit breakers, per-provider rate limits.</p></div>
-    <div class="key"><h4>Webhooks done properly</h4><p>For payments companies: signatures, backoff retries, ordering caveats, merchant endpoints down for hours.</p></div>
-    <div class="key"><h4>Multi-DC (Staff)</h4><p>Replicate state and queues; dedupe that still works after a region fails over.</p></div>
+    <div class="key"><h4>Decoupling</h4><p>Business services announce an event and move on. The notification platform owns templates, user preferences, routing and retries. Each team does not rebuild them.</p></div>
+    <div class="key"><h4>Priority isolation</h4><p>An OTP must never wait behind a marketing campaign. Interviewers want truly separate queues and workers. A "priority" field on one shared queue is not enough.</p></div>
+    <div class="key"><h4>At-least-once + idempotency</h4><p>Kafka sometimes delivers a message again, so duplicates happen. Say exactly where in the flow you detect and skip them.</p></div>
+    <div class="key"><h4>Vendor failure</h4><p>SMS and email vendors go down, slow you down, and report wrong results. Use several vendors. Stop calling a failing one, and cap the speed for each vendor.</p></div>
+    <div class="key"><h4>Webhooks done properly</h4><p>Payment companies ask about this. Sign each call, retry with growing waits, explain ordering limits, and cope with merchant servers that are down for hours.</p></div>
+    <div class="key"><h4>Multi-DC (Staff)</h4><p>Multi-DC means more than one data centre. Copy data and queues to a second one. Duplicate-skipping must still work after switching to it.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: how each company phrased it</summary><p>The prompts vary but the probes repeat. Razorpay asked for "a scalable notification delivery system for a payment processing platform": payment events must reach customers (SMS, email) and merchants (webhooks) reliably. Postman asked for multi-channel support with a follow-up on priority-based notifications. Visa's Staff round started with "Kafka, producers and consumers" and then pushed on two things: consistency across data centres, and how you guarantee an event is not consumed twice. Salesforce framed it as Klaviyo-style high-volume event ingestion feeding campaigns.</p></details>
+  <details class="deep"><summary>Go deeper: how each company phrased it</summary><p>The wording changes, but the follow-up questions repeat. Razorpay asked for "a scalable notification delivery system for a payment processing platform". Payment events had to reach customers by SMS and email, and merchants by webhook, reliably. Postman asked for many channels, then followed up on priority. Visa's Staff round started with "Kafka, producers and consumers". It then pushed on two things. First, keeping data consistent across data centres. Second, how you make sure an event is not processed twice. Salesforce framed it as Klaviyo-style intake of huge event volumes that feed marketing campaigns.</p></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
   <div class="grid">
     <div class="card"><h4>Functional</h4><ul>
-      <li>Send to a user over one or more channels from an event or an API call.</li>
-      <li>Templates with variables and localisation.</li>
-      <li>User preferences, opt-outs, quiet hours, frequency caps.</li>
-      <li>Priority tiers; scheduled and bulk campaigns.</li>
-      <li>Merchant webhooks with retries and a replay API.</li>
-      <li>Delivery status per message.</li>
+      <li>Send to a user on one or more channels. The trigger is an event or an API call.</li>
+      <li>Message templates with fill-in variables and several languages.</li>
+      <li>User preferences, opt-outs, quiet hours, and a daily limit per user (a frequency cap).</li>
+      <li>Priority levels. Scheduled and bulk campaigns.</li>
+      <li>Merchant webhooks with retries, plus an API to send an old event again (replay).</li>
+      <li>Delivery status for every message.</li>
     </ul></div>
     <div class="card"><h4>Non-functional</h4><ul>
-      <li>Transactional: 20M/day, peak 2k/s; p99 &lt; 5 s event to vendor.</li>
-      <li>Promotional: 200M/day, bursts of 50k/s.</li>
-      <li>No lost notifications; duplicates rare and harmless.</li>
-      <li>99.99% availability of the ingest API; survive a DC loss.</li>
+      <li>Transactional (OTPs, receipts): 20M a day, up to 2,000 a second. 99 of 100 reach the vendor within 5 seconds (p99 &lt; 5 s).</li>
+      <li>Promotional (marketing): 200M a day, with bursts of 50,000 a second.</li>
+      <li>No notification is ever lost. Duplicates are rare and harmless.</li>
+      <li>The intake API is up 99.99% of the time. The system survives losing a whole data centre (DC).</li>
     </ul></div>
     <div class="card"><h4>Out of scope</h4><ul>
-      <li>Building an SMTP server or SMS gateway.</li>
-      <li>Campaign segmentation UI and ML send-time optimisation (mention, do not design).</li>
+      <li>Building our own email server (SMTP) or SMS gateway.</li>
+      <li>The screen for picking campaign audiences. Also ML that picks the best send time. Mention them, but do not design them.</li>
     </ul></div>
   </div>
   <details class="deep"><summary>Go deeper: questions to ask the interviewer</summary><ul>
-    <li><b>Which channels?</b> Push (FCM/APNs), SMS, email, WhatsApp, in-app, webhooks. Each has different latency and cost.</li>
-    <li><b>Transactional vs promotional mix?</b> Decides priority tiers. Preferences can never suppress an OTP.</li>
-    <li><b>Delivery guarantee?</b> At-least-once with dedupe. Exactly-once to a phone is impossible.</li>
-    <li><b>Latency SLO per tier?</b> OTP p99 under 5 s to the vendor; marketing within the campaign window.</li>
-    <li><b>Status tracking?</b> Sent, delivered, read, bounced, clicked. Drives a status store and vendor callbacks.</li>
-    <li><b>Regulatory?</b> India: commercial SMS needs <dfn title="TRAI's Distributed Ledger Technology registry for SMS templates and sender IDs">DLT</dfn>-registered templates; promo has time-of-day limits.</li>
+    <li><b>Which channels?</b> Push (via Google FCM or Apple APNs), SMS, email, WhatsApp, in-app and webhooks. Each has its own speed and cost.</li>
+    <li><b>How much is transactional vs promotional?</b> This decides the priority levels. User preferences can never block an OTP.</li>
+    <li><b>Delivery guarantee?</b> At-least-once, with duplicates skipped. Exactly-once delivery to a phone is impossible.</li>
+    <li><b>Speed target (SLO) per level?</b> OTP: 99 of 100 reach the vendor in under 5 s. Marketing: anywhere inside the campaign window.</li>
+    <li><b>Status tracking?</b> Sent, delivered, read, bounced, clicked. This needs a status store and callbacks from vendors.</li>
+    <li><b>Rules and regulation?</b> In India, commercial SMS must use templates registered on <dfn title="TRAI's Distributed Ledger Technology registry for SMS templates and sender IDs">DLT</dfn>, TRAI's registry. Promotional SMS can only go out at certain times of day.</li>
   </ul></details>
 
   <h2 id="capacity"><span class="n">03</span>Capacity estimation</h2>
   <div class="stats">
-    <div class="stat"><b>~2.3k/s</b><span>transactional peak (20M/day × 10)</span></div>
-    <div class="stat"><b>50k/s</b><span>promotional bursts (200M/day)</span></div>
-    <div class="stat"><b>~330M</b><span>deliveries/day (1.5 channels each)</span></div>
-    <div class="stat"><b>~5 TB</b><span>30-day message log</span></div>
-    <div class="stat"><b>~26 GB</b><span>Redis dedupe keys, 24 h TTL</span></div>
-    <div class="stat"><b>~600</b><span>concurrent webhook calls</span></div>
+    <div class="stat"><b>~2.3k/s</b><span>transactional at the busiest time (20M a day, ×10 for the peak)</span></div>
+    <div class="stat"><b>50k/s</b><span>promotional bursts (200M a day)</span></div>
+    <div class="stat"><b>~330M</b><span>deliveries a day (1.5 channels per message)</span></div>
+    <div class="stat"><b>~5 TB</b><span>message log kept for 30 days</span></div>
+    <div class="stat"><b>~26 GB</b><span>Redis keys for skipping duplicates, each kept 24 h</span></div>
+    <div class="stat"><b>~600</b><span>webhook calls running at the same time</span></div>
   </div>
-  <div class="callout"><b>The point</b><p>Kafka and the database are not the bottleneck. Vendor throughput and slow merchant endpoints are. That is why per-provider rate limits and isolated worker pools matter more than raw scaling.</p></div>
+  <div class="callout"><b>The point</b><p>Kafka and the database are not the slow part. Vendor speed limits and slow merchant servers are. So per-vendor speed limits and separate worker pools matter more than adding servers.</p></div>
   <details class="deep"><summary>Go deeper: the arithmetic</summary>
   <div class="tbl"><table>
     <thead><tr><th>Quantity</th><th>Arithmetic</th><th>Result</th></tr></thead>
@@ -106,20 +117,20 @@
       <tr><td>Transactional avg</td><td>20M / 86,400 s</td><td class="num">~230/s, peak ×10 ≈ 2.3k/s</td></tr>
       <tr><td>Promotional avg</td><td>200M / 86,400 s</td><td class="num">~2.3k/s, bursts 50k/s</td></tr>
       <tr><td>Fan-out to channels</td><td>Avg 1.5 channels per notification × 220M</td><td class="num">~330M deliveries/day</td></tr>
-      <tr><td>Kafka throughput</td><td>50k/s × ~1 KB event</td><td class="num">~50 MB/s at burst, trivial for a 6-broker cluster</td></tr>
-      <tr><td>Message log storage</td><td>330M × ~500 B row × 30 days hot</td><td class="num">~5 TB (Cassandra, TTL 30–90 days)</td></tr>
-      <tr><td>Dedupe keys</td><td>330M/day × ~80 B in Redis, 24 h TTL</td><td class="num">~26 GB</td></tr>
-      <tr><td>Webhook workers</td><td>2k/s × 300 ms avg merchant latency</td><td class="num">~600 concurrent requests (Little's law)</td></tr>
-      <tr><td>Vendor limits</td><td>SMS vendor typically allows a few hundred to a few thousand TPS per account</td><td class="num">Need 2–3 vendors or accounts for 50k/s bursts</td></tr>
+      <tr><td>Kafka throughput</td><td>50k/s × ~1 KB event</td><td class="num">~50 MB/s at burst, easy for a 6-server (broker) Kafka cluster</td></tr>
+      <tr><td>Message log storage</td><td>330M × ~500 B row × 30 days hot</td><td class="num">~5 TB (Cassandra, rows expire after 30–90 days)</td></tr>
+      <tr><td>Dedupe keys</td><td>330M/day × ~80 B in Redis, 24 h expiry</td><td class="num">~26 GB</td></tr>
+      <tr><td>Webhook workers</td><td>2k/s × 300 ms avg merchant response time</td><td class="num">~600 requests in flight at once (Little's law: rate × time)</td></tr>
+      <tr><td>Vendor limits</td><td>One SMS vendor account usually allows a few hundred to a few thousand messages per second</td><td class="num">Need 2–3 vendors or accounts for 50k/s bursts</td></tr>
     </tbody>
   </table></div></details>
 
   <h2 id="api"><span class="n">04</span>API design</h2>
   <ol class="walk">
-    <li><span class="who">Producer</span><span>POST /v1/notifications with an <code>Idempotency-Key</code>, template, priority, TTL</span></li>
-    <li><span class="who">Ingest</span><span>Writes durably, returns <b>202</b> with a <code>notificationId</code> (delivery is async)</span></li>
-    <li><span class="who">Producer retry</span><span>Same key hits a unique constraint and gets the original ID back</span></li>
-    <li><span class="who">Merchant</span><span>Receives a signed webhook with <code>X-Event-Id</code>; can call /replay later</span></li>
+    <li><span class="who">Producer</span><span>A service asks us to send a message. It names the template, the priority and how long the message stays useful. It adds a unique key so a retry is not sent twice (<code>POST /v1/notifications</code> with an <code>Idempotency-Key</code> and a TTL).</span></li>
+    <li><span class="who">Ingest</span><span>We save the request safely and answer "accepted, we will send it soon" (HTTP <b>202</b>). The answer includes the message's ID (<code>notificationId</code>). Sending happens later.</span></li>
+    <li><span class="who">Producer retry</span><span>If the service sends the same request again, the database sees the key already exists (a unique constraint). So the caller gets the first ID back, and no second message is created.</span></li>
+    <li><span class="who">Merchant</span><span>The merchant's server gets a call from us, signed so they know it is real (a webhook). It carries an event ID they can use to spot repeats (<code>X-Event-Id</code>). They can ask us to send it again later (<code>/replay</code>).</span></li>
   </ol>
   <details class="code"><summary>Show API sketch</summary><pre><code>POST /v1/notifications
 Idempotency-Key: pay_8Hk2_captured_sms        // producer-supplied, required
@@ -145,71 +156,71 @@ X-Event-Id: evt_01J9...                       // merchants dedupe on this
 { "event": "payment.captured", "payload": { ... } }
 
 POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pre></details>
-  <details class="deep"><summary>Go deeper: why 202 and how the key is stored</summary><p>Return 202, not 200: acceptance is durable (written to Kafka or the outbox), delivery is asynchronous. The <code>Idempotency-Key</code> is scoped per producer and stored with a unique constraint so a retried POST returns the original <code>notificationId</code>.</p></details>
+  <details class="deep"><summary>Go deeper: why 202 and how the key is stored</summary><p>Return 202 ("accepted"), not 200 ("done"). The request is safely saved, in Kafka or the outbox table, but sending happens later. The <code>Idempotency-Key</code> is a unique string the caller sends with each request. It is stored per producer with a unique constraint. So if the caller retries the same POST, it gets back the original <code>notificationId</code> instead of a second notification.</p></details>
 
   <h2 id="data"><span class="n">05</span>Data model</h2>
   <div class="keys">
-    <div class="key"><h4>Cassandra</h4><p>notification, delivery_attempt, in-app inbox. Write-heavy, append-only, key lookups, TTL.</p></div>
-    <div class="key"><h4>Postgres</h4><p>template (versioned), user_preference, contact/device, webhook_endpoint. Small and relational.</p></div>
-    <div class="key"><h4>Redis</h4><p><code>dedupe:{notificationId}:{channel}</code>, 24 h TTL; preference cache; frequency-cap counters.</p></div>
+    <div class="key"><h4>Cassandra</h4><p>Stores every message, every send attempt and the in-app inbox. Cassandra suits this: lots of writes, rows are only added, lookups are by key, and old rows delete themselves.</p></div>
+    <div class="key"><h4>Postgres</h4><p>Stores message templates (with versions), user settings, phone numbers, devices and merchant webhook addresses. This data is small and tables link to each other, which suits SQL.</p></div>
+    <div class="key"><h4>Redis</h4><p>A fast "already sent?" marker for each message and channel, kept for 24 hours (<code>dedupe:{notificationId}:{channel}</code>). Also a cache of user settings, and counters for the daily message limit per user.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: every table, key and index</summary><div class="tbl"><table>
     <thead><tr><th>Entity</th><th>Store</th><th>Key fields</th><th>Partition / index</th></tr></thead>
     <tbody>
-      <tr><td>notification</td><td>Cassandra (or sharded Postgres)</td><td>notification_id (ULID), producer, idempotency_key, user_id, template_id, priority, payload, created_at</td><td>Partition by notification_id; unique (producer, idempotency_key) via a separate lookup table</td></tr>
-      <tr><td>delivery_attempt</td><td>Cassandra</td><td>notification_id, channel, attempt_no, provider, provider_msg_id, status, error, ts</td><td>Partition by notification_id, cluster by channel, attempt_no</td></tr>
-      <tr><td>user_notifications (in-app inbox)</td><td>Cassandra</td><td>user_id, notification_id (time-ordered), title, body, read_at</td><td>Partition by user_id, clustering desc by time: one query renders the bell icon</td></tr>
-      <tr><td>template</td><td>Postgres</td><td>template_id, version, channel, locale, body, dlt_template_id, category</td><td>Cached in-process; versions immutable</td></tr>
-      <tr><td>user_preference</td><td>Postgres + Redis cache</td><td>user_id, channel, category, enabled, quiet_hours, timezone</td><td>PK (user_id, channel, category)</td></tr>
-      <tr><td>contact / device</td><td>Postgres</td><td>user_id, phone, email, push tokens (per device), verified flags</td><td>Invalidate tokens on APNs/FCM "unregistered"</td></tr>
-      <tr><td>webhook_endpoint</td><td>Postgres</td><td>merchant_id, url, secret (encrypted), events[], status, failure_count</td><td>Auto-disable after sustained failure, notify merchant</td></tr>
-      <tr><td>dedupe</td><td>Redis</td><td><code>dedupe:{notificationId}:{channel}</code> → state, TTL 24 h</td><td>SET NX as the consumer's first step</td></tr>
+      <tr><td>notification</td><td>Cassandra (or sharded Postgres)</td><td>notification_id (ULID, a time-sortable unique ID), producer, idempotency_key, user_id, template_id, priority, payload, created_at</td><td>Partition by notification_id. Unique (producer, idempotency_key) through a separate lookup table.</td></tr>
+      <tr><td>delivery_attempt</td><td>Cassandra</td><td>notification_id, channel, attempt_no, provider, provider_msg_id, status, error, ts</td><td>Partition by notification_id, sort by channel, attempt_no</td></tr>
+      <tr><td>user_notifications (in-app inbox)</td><td>Cassandra</td><td>user_id, notification_id (time-ordered), title, body, read_at</td><td>Partition by user_id, newest first. One query fills the bell icon.</td></tr>
+      <tr><td>template</td><td>Postgres</td><td>template_id, version, channel, locale, body, dlt_template_id, category</td><td>Cached in memory. A version never changes once saved.</td></tr>
+      <tr><td>user_preference</td><td>Postgres + Redis cache</td><td>user_id, channel, category, enabled, quiet_hours, timezone</td><td>Primary key (user_id, channel, category)</td></tr>
+      <tr><td>contact / device</td><td>Postgres</td><td>user_id, phone, email, push tokens (per device), verified flags</td><td>Delete a token when APNs or FCM says "unregistered"</td></tr>
+      <tr><td>webhook_endpoint</td><td>Postgres</td><td>merchant_id, url, secret (encrypted), events[], status, failure_count</td><td>Switch off automatically after failing for a long time, and tell the merchant</td></tr>
+      <tr><td>dedupe</td><td>Redis</td><td><code>dedupe:{notificationId}:{channel}</code> → state, expires in 24 h</td><td>SET NX ("set only if not already set") is the worker's first step</td></tr>
     </tbody>
   </table></div></details>
   <ul>
-    <li><b>Kafka</b> is the backbone, partitioned by <code>user_id</code> so a user's messages stay ordered within a tier.</li>
+    <li><b>Kafka</b> is the main pipe that carries every message. Each topic is split into lanes (partitions). We pick the lane by user (<code>user_id</code>), so one user's messages stay in order within a priority level.</li>
   </ul>
 
   <h2 id="arch"><span class="n">06</span>High-level architecture</h2>
   <div class="arch">
-    <div class="tier"><small>Producers</small><span class="node">Payment service<small>outbox table</small></span><span class="node">Campaign job</span></div>
-    <div class="down">↓ <small>Debezium CDC → Kafka domain events</small></div>
-    <div class="tier"><span class="node">Ingest API<small>validate · dedupe key · ULID</small></span></div>
+    <div class="tier"><small>Producers</small><span class="node">Payment service<small>saves event with payment (outbox)</small></span><span class="node">Campaign job</span></div>
+    <div class="down">↓ <small>a tool copies saved events into Kafka (CDC, Debezium)</small></div>
+    <div class="tier"><span class="node">Ingest API<small>checks request · skips repeats · gives each message an ID</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node">Router / enricher<small>template · prefs · contacts · caps</small></span></div>
+    <div class="tier"><span class="node">Router<small>picks template · checks user settings · finds phone/email · applies daily limits</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node store">notif.critical.*</span><span class="node store">notif.transactional.*</span><span class="node store">notif.promo.*</span></div>
+    <div class="tier"><span class="node store">Urgent queue<small>OTPs (notif.critical.*)</small></span><span class="node store">Normal queue<small>receipts (notif.transactional.*)</small></span><span class="node store">Marketing queue<small>(notif.promo.*)</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node">SMS workers</span><span class="node">Email workers</span><span class="node">Push workers</span><span class="node">Webhook workers</span><span class="node">In-app gateway<small>WebSocket / SSE</small></span></div>
+    <div class="tier"><span class="node">SMS workers</span><span class="node">Email workers</span><span class="node">Push workers</span><span class="node">Webhook workers</span><span class="node">In-app gateway<small>keeps a live connection to the app (WebSocket / SSE)</small></span></div>
     <div class="down">↓</div>
-    <div class="tier"><span class="node">Provider adapters<small>circuit breaker · per-vendor rate limit</small></span></div>
+    <div class="tier"><span class="node">Vendor adapters<small>stop calling a failing vendor (circuit breaker) · speed limit per vendor</small></span></div>
     <div class="down">↓</div>
     <div class="tier"><span class="node">Vendors / merchant URLs</span></div>
     <div class="down">↓ <small>delivery receipts</small></div>
-    <div class="tier"><span class="node">Status service</span><span class="node store">Cassandra log</span><span class="node store">Retry topics + DLQ</span><span class="node store">Redis dedupe</span></div>
+    <div class="tier"><span class="node">Status service</span><span class="node store">Cassandra log</span><span class="node store">Retry queues + parking area for failures (DLQ)</span><span class="node store">"Already sent?" markers (Redis)</span></div>
   </div>
   <div class="keys">
-    <div class="key"><h4>Outbox at the producer</h4><p>Payment row and outbox row commit in one transaction; <dfn title="Change data capture: streams committed DB rows into Kafka">CDC</dfn> publishes it. No "paid but SMS lost" gap.</p></div>
-    <div class="key"><h4>Ingest</h4><p>Stateless. Validates, checks the idempotency key, assigns a ULID, persists, publishes.</p></div>
-    <div class="key"><h4>Router</h4><p>Resolves template, contacts, preferences, quiet hours, frequency caps. Splits into one message per channel on the right tier topic.</p></div>
-    <div class="key"><h4>Workers + adapters</h4><p>One consumer group per (priority, channel). Adapters per vendor do weighted routing, circuit breaking and token-bucket limits.</p></div>
-    <div class="key"><h4>Status service</h4><p>Consumes vendor delivery receipts (<dfn title="Delivery receipt sent back by the SMS vendor">DLRs</dfn>), bounces, FCM errors. Kills dead tokens and bounced emails.</p></div>
+    <div class="key"><h4>Outbox at the producer</h4><p>The payment service saves the payment and a "send a message" note together, in one transaction. Either both are saved or neither is. A background tool then copies the note into Kafka (<dfn title="Change data capture: streams committed DB rows into Kafka">CDC</dfn>, change data capture). So "paid, but SMS lost" cannot happen.</p></div>
+    <div class="key"><h4>Ingest</h4><p>The front door. It checks the request and makes sure it is not a repeat (idempotency key). It gives the message a unique, time-sorted ID (a ULID), saves it and puts it in Kafka. It keeps no state, so you can run many copies.</p></div>
+    <div class="key"><h4>Router</h4><p>Works out what to send and where. It finds the template, the phone or email, and the user's settings, quiet hours and daily limit. Then it puts one message per channel into the right priority queue.</p></div>
+    <div class="key"><h4>Workers + adapters</h4><p>Each priority and channel pair, like "urgent SMS", has its own team of workers. Each vendor has an adapter. It splits traffic between vendors, stops calling a failing one, and limits speed.</p></div>
+    <div class="key"><h4>Status service</h4><p>Vendors tell us later whether a message arrived (a delivery receipt, <dfn title="Delivery receipt sent back by the SMS vendor">DLR</dfn>). This service reads those receipts, email bounces and push errors (FCM). It removes phones that uninstalled the app and email addresses that bounce.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: each component in full</summary><ul>
-    <li><b>Transactional outbox at the producer.</b> The payment service writes the payment row and an outbox row in one Postgres transaction; Debezium streams it to Kafka. No "DB committed but event lost" gap. This is the answer to "payment succeeded but customer never got the SMS".</li>
-    <li><b>Ingest.</b> Validates, checks the idempotency key, assigns a ULID, writes the notification row, publishes to the routing topic. Stateless; scales horizontally.</li>
-    <li><b>Router.</b> Resolves template version, user contacts, preferences, quiet hours, frequency caps (Redis counters), and splits into one message per channel on the right priority topic. Promotional messages that hit quiet hours go to a delay topic with the release time.</li>
-    <li><b>Channel workers.</b> Separate consumer groups and thread pools per (priority, channel). Render the template, call the provider adapter, record the attempt.</li>
-    <li><b>Provider adapters.</b> One per vendor (two SMS vendors, SES plus a backup for email, FCM, APNs). Weighted routing, circuit breaker, token-bucket rate limit per vendor account. PhonePe's machine-coding variant of this question (choose an active provider per channel, segregate accounts for OTP) is exactly this layer.</li>
-    <li><b>Status service.</b> Consumes vendor delivery receipts (DLRs), bounces, FCM errors; updates attempt status; invalidates dead tokens and hard-bounced emails.</li>
-    <li><b>In-app gateway.</b> Holds WebSocket or SSE connections; on a message it writes to the user's inbox row and pushes to any live connection. Uber's RAMEN used SSE for exactly this kind of server-to-app push at 600k concurrent streams.</li>
+    <li><b>Transactional outbox at the producer.</b> The payment service saves the payment row and an outbox row in one Postgres transaction. Debezium, a CDC tool, streams the outbox row to Kafka. So the database can never commit while the event gets lost. This answers "the payment succeeded, but the customer never got the SMS".</li>
+    <li><b>Ingest.</b> It checks the request and the idempotency key, and assigns a ULID. It saves the notification row and publishes to the routing topic. It keeps no state, so you add more copies to handle more traffic.</li>
+    <li><b>Router.</b> It finds the template version, user contacts, preferences, quiet hours and frequency caps. Caps are Redis counters. It then creates one message per channel on the right priority topic. A marketing message that lands in quiet hours goes to a delay topic with the time it may be sent.</li>
+    <li><b>Channel workers.</b> Each priority and channel pair has its own worker group and thread pool. A worker fills in the template, calls the vendor adapter, and records the attempt.</li>
+    <li><b>Provider adapters.</b> One per vendor: two SMS vendors, SES plus a backup for email, FCM and APNs. Each adapter splits traffic by weight. It has a circuit breaker, which stops calling a vendor that keeps failing. It also has a token-bucket speed limit per vendor account. PhonePe's machine-coding version of this question is exactly this layer. It asks you to choose an active provider per channel and keep separate accounts for OTPs.</li>
+    <li><b>Status service.</b> It reads vendor delivery receipts (DLRs), bounces and FCM errors, and updates each attempt's status. It removes dead device tokens and emails that bounced permanently.</li>
+    <li><b>In-app gateway.</b> It keeps open WebSocket or SSE connections to apps. SSE (server-sent events) lets the server keep pushing to an open HTTP connection. When a message arrives, the gateway writes it to the user's inbox and pushes it to any open connection. Uber's RAMEN system used SSE for this kind of push, at 600,000 open streams at once.</li>
   </ul></details>
 
   <h2 id="follow"><span class="n">07</span>Follow one OTP through the system</h2>
   <div class="stepper"><b class="title">A payment OTP while a 50M promo campaign is running</b><div class="frames">
     <figure class="frame">
       <div class="arch">
-        <div class="tier"><span class="node hl">Payment service<small>payment + outbox row</small></span></div>
+        <div class="tier"><span class="node hl">Payment service<small>saves payment + "send OTP" note</small></span></div>
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">Ingest</span><span class="node dim">Router</span></div>
         <div class="down">↓</div>
@@ -217,19 +228,19 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">SMS worker</span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>The payment row and an outbox row commit in one transaction. CDC streams the outbox row into Kafka.</figcaption>
+      <figcaption>The payment and a "send this OTP" note are saved together, so one cannot exist without the other (the outbox pattern). A background tool then copies the note into Kafka (CDC, change data capture).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
         <div class="tier"><span class="node dim">Payment service</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node hl">Ingest<small>ntf_01J9 · 202</small></span><span class="node dim">Router</span></div>
+        <div class="tier"><span class="node hl">Ingest<small>new ID · "accepted"</small></span><span class="node dim">Router</span></div>
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">SMS worker</span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>Ingest checks the idempotency key, mints ULID <code>ntf_01J9</code>, stores the row and returns 202.</figcaption>
+      <figcaption>Ingest checks this is not a repeat request and gives the message its own ID (<code>ntf_01J9</code>). It saves it and answers "accepted, we will send it soon" (HTTP 202).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -237,11 +248,11 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">Ingest</span><span class="node hl">Router<small>template · contacts</small></span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node store hl">critical topic<small>lag 0</small></span><span class="node store dim">promo topic<small>lag 5M</small></span></div>
+        <div class="tier"><span class="node store hl">urgent queue<small>nothing waiting</small></span><span class="node store dim">marketing queue<small>5M waiting</small></span></div>
         <div class="down">↓</div>
         <div class="tier"><span class="node dim">SMS worker</span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>The router resolves the phone number and publishes to <code>notif.critical.sms</code>. The promo backlog of 5M sits on a different topic.</figcaption>
+      <figcaption>The router finds the user's phone number and puts the OTP in the urgent SMS queue (<code>notif.critical.sms</code>). The 5 million marketing messages wait in a different queue, so they cannot delay it.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -251,9 +262,9 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node hl">SMS worker<small>SET NX dedupe key</small></span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
+        <div class="tier"><span class="node hl">SMS worker<small>claims the message in Redis</small></span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>A reserved critical worker does <code>SET NX dedupe:ntf_01J9:SMS</code>. It wins, so it is the only sender.</figcaption>
+      <figcaption>A worker kept only for urgent messages tries to claim this message in Redis. Only the first worker to try succeeds, so the SMS goes out once (<code>SET NX dedupe:ntf_01J9:SMS</code>).</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -263,9 +274,9 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node dim">SMS worker</span><span class="node bad">Vendor A<small>5xx · breaker open</small></span><span class="node dim">Vendor B</span></div>
+        <div class="tier"><span class="node dim">SMS worker</span><span class="node bad">Vendor A<small>keeps failing · we stop calling it</small></span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>Vendor A returns 5xx repeatedly and its circuit breaker opens. The adapter stops sending there.</figcaption>
+      <figcaption>SMS vendor A keeps failing with server errors (HTTP 5xx). So the adapter stops sending to it for a while. This switch is called a circuit breaker.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -275,9 +286,9 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node dim">SMS worker</span><span class="node bad dim">Vendor A</span><span class="node hl">Vendor B<small>reserved 30% TPS</small></span></div>
+        <div class="tier"><span class="node dim">SMS worker</span><span class="node bad dim">Vendor A</span><span class="node hl">Vendor B<small>30% of capacity kept for urgent</small></span></div>
       </div>
-      <figcaption>The adapter fails over to Vendor B, using capacity reserved for critical traffic. Promo cannot eat that share.</figcaption>
+      <figcaption>The adapter sends the OTP through vendor B instead. It uses the share of vendor B's speed kept for urgent messages, which marketing can never use up.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -287,9 +298,9 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node hl">SMS worker<small>attempt row · key = SENT</small></span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
+        <div class="tier"><span class="node hl">SMS worker<small>records "sent"</small></span><span class="node dim">Vendor A</span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>The worker inserts the attempt row (unique key), sets the dedupe key to SENT, then commits the offset. Total: about 2 s.</figcaption>
+      <figcaption>The worker writes down "sent" in the database and in Redis, so a repeat will be skipped. Then it tells Kafka it has finished this message (commits the offset). Total time: about 2 s.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch">
@@ -299,9 +310,9 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
         <div class="down">↓</div>
         <div class="tier"><span class="node store dim">critical topic</span><span class="node store dim">promo topic</span></div>
         <div class="down">↓</div>
-        <div class="tier"><span class="node hl">Status service<small>DLR: DELIVERED</small></span><span class="node dim">Vendor B</span></div>
+        <div class="tier"><span class="node hl">Status service<small>receipt: delivered</small></span><span class="node dim">Vendor B</span></div>
       </div>
-      <figcaption>Vendor B posts a delivery receipt. The status service marks the attempt DELIVERED; <code>GET /v1/notifications/ntf_01J9</code> now shows it.</figcaption>
+      <figcaption>Vendor B reports that the SMS reached the phone (a delivery receipt). We mark it delivered. Anyone checking the message status now sees it (<code>GET /v1/notifications/ntf_01J9</code>).</figcaption>
     </figure>
   </div></div>
 
@@ -309,33 +320,33 @@ POST /v1/webhooks/{eventId}/replay   // merchant-triggered redelivery</code></pr
 
   <h3>8.1 Priority that actually works (the Postman follow-up)</h3>
   <div class="vs">
-    <div class="pick"><h4>Topic + workers per tier <span class="tag">usual pick</span></h4><ul><li class="pro">Real isolation: <code>notif.critical.sms</code> has its own consumers and vendor account</li><li class="pro">Each tier scales alone</li><li class="con">More topics and consumer groups</li></ul><p class="when">Always for systems that send OTPs.</p></div>
-    <div><h4>One topic + "priority" field</h4><ul><li class="pro">Simple</li><li class="con">A partition is FIFO; the OTP still waits behind 5M promos</li></ul><p class="when">Never. This is the rejection answer.</p></div>
+    <div class="pick"><h4>Topic + workers per tier <span class="tag">usual pick</span></h4><ul><li class="pro">Real separation. The urgent SMS queue has its own workers and its own vendor account (<code>notif.critical.sms</code>).</li><li class="pro">Each level can grow on its own</li><li class="con">More topics and worker groups to run</li></ul><p class="when">Always, for any system that sends OTPs.</p></div>
+    <div><h4>One topic + "priority" field</h4><ul><li class="pro">Simple</li><li class="con">Kafka reads each lane strictly in arrival order. A label cannot let the OTP skip ahead, so it waits behind 5M promos.</li></ul><p class="when">Never. This answer gets candidates rejected.</p></div>
   </div>
   <ul>
-    <li><b>Shared workers?</b> Poll critical first; <code>consumer.pause()</code> promo partitions when critical lag rises.</li>
-    <li><b>Reserve vendor capacity.</b> Split the token bucket: e.g. 30% for critical; promo only gets what is left.</li>
-    <li><b>TTL per message.</b> Drop an OTP older than <code>ttlSeconds</code>. A late OTP is worse than none.</li>
+    <li><b>Workers shared between levels?</b> Read urgent messages first. When urgent ones start piling up, pause reading marketing (<code>consumer.pause()</code>).</li>
+    <li><b>Keep vendor capacity aside.</b> Split the vendor speed limit. For example, keep 30% for critical. Marketing only gets what is left.</li>
+    <li><b>Expiry per message.</b> Throw away an OTP that is older than its time limit (<code>ttlSeconds</code>). A late OTP is worse than none.</li>
   </ul>
-  <details class="deep"><summary>Go deeper: why Kafka needs this</summary><p>Kafka has no per-message priority; a partition is a FIFO log. A "priority" field on a shared topic does nothing for an OTP stuck behind 5 million promo messages. Options:</p><ul>
-    <li><b>Separate topics per tier</b> (<code>notif.critical.sms</code>, <code>notif.transactional.sms</code>, <code>notif.promo.sms</code>) with <b>separate consumer groups and capacity</b>. Critical gets reserved workers and its own vendor account. This is the answer.</li>
-    <li><b>Weighted consumption</b> if workers are shared: poll critical first, pause promo partitions (<code>consumer.pause()</code>) when critical lag rises above a threshold.</li>
-    <li><b>Vendor capacity reservation.</b> Priority is useless if promo traffic has consumed the vendor's TPS. Split the per-vendor token bucket: e.g. 30% reserved for critical, promo can only use what is left.</li>
-    <li><b>TTL per message.</b> An OTP older than its <code>ttlSeconds</code> is dropped, not delivered late. A late OTP is worse than none because the user has already requested another.</li>
+  <details class="deep"><summary>Go deeper: why Kafka needs this</summary><p>Kafka has no priority per message. A partition is a log that is read strictly in order. So a "priority" field on a shared topic does nothing for an OTP stuck behind 5 million promo messages. Your options:</p><ul>
+    <li><b>Separate topics per level</b> (<code>notif.critical.sms</code>, <code>notif.transactional.sms</code>, <code>notif.promo.sms</code>). Each has <b>its own worker group and capacity</b>. Critical gets reserved workers and its own vendor account. This is the answer.</li>
+    <li><b>Weighted reading</b> if workers are shared. Read critical first. Pause promo partitions (<code>consumer.pause()</code>) when the critical backlog passes a limit.</li>
+    <li><b>Reserve vendor capacity.</b> Priority is useless if marketing has used up the vendor's messages-per-second (TPS) limit. Split the per-vendor token bucket. For example, keep 30% for critical, and let marketing use only what is left.</li>
+    <li><b>Expiry (TTL) per message.</b> An OTP older than its <code>ttlSeconds</code> is dropped, not sent late. A late OTP is worse than none, because the user has already asked for a new one.</li>
   </ul></details>
 
   <h3>8.2 Idempotent consumers (the Visa follow-up)</h3>
   <div class="tbl"><table class="race"><thead><tr><th>Time</th><th>Worker 1</th><th>Worker 2 (after rebalance)</th><th>Dedupe key</th></tr></thead><tbody>
-    <tr><td>t1</td><td>SET NX → wins, sends SMS</td><td></td><td>SENDING</td></tr>
-    <tr><td>t2</td><td>attempt row + key = SENT</td><td></td><td>SENT</td></tr>
-    <tr><td>t3</td><td>crashes before offset commit</td><td></td><td>SENT</td></tr>
-    <tr><td>t4</td><td></td><td>replayed message: SET NX fails, key = SENT → ack, skip</td><td>SENT</td></tr>
-    <tr><td>alt</td><td>crash after vendor accepted, before recording</td><td>retries after 2 min stuck window</td><td class="bad">one duplicate SMS</td></tr>
+    <tr><td>t1</td><td>Claims the message first, sends the SMS (SET NX wins)</td><td></td><td>SENDING</td></tr>
+    <tr><td>t2</td><td>Writes down "sent" in the database and Redis</td><td></td><td>SENT</td></tr>
+    <tr><td>t3</td><td>Crashes before telling Kafka it finished (offset commit)</td><td></td><td>SENT</td></tr>
+    <tr><td>t4</td><td></td><td>Kafka hands the same message over again. The claim fails and the marker says "sent", so it skips it.</td><td>SENT</td></tr>
+    <tr><td>alt</td><td>Crashes after the vendor took the SMS, before writing "sent"</td><td>Sees the claim stuck for 2 min, so it sends again</td><td class="bad">one duplicate SMS</td></tr>
   </tbody></table></div>
   <ul>
-    <li>The ID is minted once at ingest (ULID/Snowflake), never by the consumer.</li>
-    <li>Redis is the fast path; the attempt row's unique constraint is the durable truth.</li>
-    <li>Honest guarantee: "at least once, effectively once".</li>
+    <li>The message ID is created once, when the message first arrives (a ULID or Snowflake ID). The worker never creates it, so every repeat carries the same ID.</li>
+    <li>Redis is the fast "already sent?" check. The database row is the lasting record, and its unique key blocks a second copy.</li>
+    <li>The honest promise: every message arrives, and almost never twice ("at least once, effectively once").</li>
   </ul>
   <details class="code"><summary>Show Java worker</summary><pre><code>// Channel worker, per message
 String key = "dedupe:" + msg.notificationId() + ":" + msg.channel();
@@ -350,137 +361,138 @@ ProviderResult r = adapter.send(render(msg), msg.notificationId()); // pass id a
 attemptRepo.insert(msg, r);                                         // unique (notification_id, channel, attempt_no)
 redis.opsForValue().set(key, "SENT", Duration.ofHours(24));
 ack(msg);</code></pre></details>
-  <details class="deep"><summary>Go deeper: why Kafka exactly-once does not help</summary><p>Kafka consumers commit offsets after processing, so a crash between "SMS sent" and "offset committed" replays the message. Exactly-once semantics in Kafka cover Kafka-to-Kafka; they do not extend to an HTTP call to an SMS vendor.</p><ul>
-    <li>The globally unique ID is generated once at ingest (ULID or Snowflake), never by the consumer, so retries and replays carry the same ID.</li>
-    <li>Redis is the fast path; the durable truth is the attempt row with a unique constraint. If Redis loses the key, the DB insert conflicts and you skip.</li>
-    <li>The remaining window (crash after the vendor accepted but before recording) can cause one duplicate SMS. Say so: it is rare and harmless for notifications, and it is why the guarantee is "at least once, effectively once".</li>
-    <li>Webhooks: send <code>X-Event-Id</code> and document that merchants must dedupe on it. Stripe's webhook docs ask integrators for exactly this.</li>
+  <details class="deep"><summary>Go deeper: why Kafka exactly-once does not help</summary><p>A Kafka worker records its progress (commits the offset) only after it finishes a message. So if it crashes after "SMS sent" but before the commit, Kafka gives the message out again. Kafka's exactly-once feature only covers reading from Kafka and writing back to Kafka. It does not cover an HTTP call to an SMS vendor.</p><ul>
+    <li>The unique ID is created once at ingest, as a ULID or Snowflake ID. The worker never creates it. So retries and replays carry the same ID.</li>
+    <li>Redis is the fast check. The lasting record is the attempt row with a unique constraint. If Redis loses the key, the database insert fails as a duplicate, and you skip.</li>
+    <li>One gap remains: a crash after the vendor accepted, but before we recorded it. This can cause one duplicate SMS. Say so. It is rare and harmless for notifications. It is why the promise is "at least once, effectively once".</li>
+    <li>Webhooks: send <code>X-Event-Id</code>, and tell merchants they must skip repeats of it. Stripe's webhook docs ask integrators to do exactly this.</li>
   </ul></details>
 
   <h3>8.3 Retries, backoff and webhooks to slow merchants</h3>
   <div class="vs">
-    <div class="pick"><h4>Retry topics with delays <span class="tag">usual pick</span></h4><ul><li class="pro"><code>retry.30s</code> → <code>retry.5m</code> → <code>retry.1h</code> → DLQ</li><li class="pro">Partition keeps flowing</li><li class="con">More topics</li></ul><p class="when">Spring Kafka's <code>@RetryableTopic</code> builds it.</p></div>
-    <div><h4>Sleep and retry in the consumer</h4><ul><li class="pro">Trivial to write</li><li class="con">Blocks everything behind it on the partition</li></ul><p class="when">Never in a shared pipeline.</p></div>
+    <div class="pick"><h4>Retry topics with delays <span class="tag">usual pick</span></h4><ul><li class="pro">A failed message moves to a "try again in 30 s" queue, then 5 min, then 1 hour. After that it goes to a parking area for messages that keep failing (DLQ). Queue names: <code>retry.30s</code>, <code>retry.5m</code>, <code>retry.1h</code>.</li><li class="pro">New messages in the main queue keep flowing</li><li class="con">More topics</li></ul><p class="when">Spring Kafka's <code>@RetryableTopic</code> builds it for you.</p></div>
+    <div><h4>Sleep and retry in the consumer</h4><ul><li class="pro">Easy to write</li><li class="con">While it sleeps, every message behind it in the same lane waits</li></ul><p class="when">Never in a shared pipeline.</p></div>
   </div>
   <div class="timeline">
-    <div class="step"><span class="t">1 min</span><span>Webhook retry 1 (exponential backoff with jitter)</span></div>
+    <div class="step"><span class="t">1 min</span><span>Webhook retry 1. Each wait is longer than the last, plus a little randomness (exponential backoff with jitter).</span></div>
     <div class="step"><span class="t">5 min</span><span>Retry 2</span></div>
     <div class="step"><span class="t">30 min</span><span>Retry 3</span></div>
-    <div class="step"><span class="t">2 h · 6 h · 12 h</span><span>Retries 4–6, in a slow-lane pool</span></div>
-    <div class="step"><span class="t">~1 day</span><span>Disable endpoint, email merchant; replay from dashboard</span></div>
+    <div class="step"><span class="t">2 h · 6 h · 12 h</span><span>Retries 4–6, in a separate pool for slow merchants</span></div>
+    <div class="step"><span class="t">~1 day</span><span>Switch off the endpoint and email the merchant. They can replay from the dashboard.</span></div>
   </div>
   <details class="deep"><summary>Go deeper: error classes, bulkheads, ordering</summary><ul>
-    <li><b>Classify errors.</b> 4xx from a vendor for an invalid number: do not retry, mark failed. 429/5xx/timeouts: retry. FCM "unregistered": delete the token.</li>
-    <li><b>Retry topics with delays</b> (<code>retry.30s</code>, <code>retry.5m</code>, <code>retry.1h</code>) instead of sleeping in the consumer, which would block the partition. Spring Kafka's <code>@RetryableTopic</code> builds this pattern. After N attempts, DLQ plus alert.</li>
-    <li><b>Webhook schedule.</b> Exponential backoff with jitter over about a day (e.g. 1 min, 5 min, 30 min, 2 h, 6 h, 12 h). Merchant can replay from a dashboard. After sustained failures, disable the endpoint and email the merchant.</li>
-    <li><b>Bulkheads per merchant.</b> One merchant with a 30 s timeout must not exhaust shared HTTP connections. Bound concurrency per endpoint and short timeouts (5–10 s). Slow merchants get moved to a separate "slow lane" pool.</li>
-    <li><b>Ordering.</b> Partition by merchant ID keeps order per merchant on the happy path, but retries break order. Tell merchants to use the event timestamp and fetch current state from the API rather than trusting arrival order.</li>
+    <li><b>Sort errors into kinds.</b> A 4xx from the vendor for an invalid number means do not retry. Mark it failed. A 429, 5xx or timeout means retry. FCM "unregistered" means delete the device token.</li>
+    <li><b>Retry topics with delays</b> (<code>retry.30s</code>, <code>retry.5m</code>, <code>retry.1h</code>). Do not sleep inside the worker, because that blocks the whole partition. Spring Kafka's <code>@RetryableTopic</code> builds this pattern. After N attempts, move the message to the DLQ (dead-letter queue) and raise an alert.</li>
+    <li><b>Webhook schedule.</b> Retry with growing waits plus jitter over about a day. For example: 1 min, 5 min, 30 min, 2 h, 6 h, 12 h. The merchant can replay from a dashboard. After failing for a long time, switch off the endpoint and email the merchant.</li>
+    <li><b>Bulkheads per merchant.</b> A bulkhead is a wall that keeps one problem from flooding everything. One merchant with a 30 s timeout must not use up all shared HTTP connections. Limit calls per endpoint and use short timeouts (5–10 s). Move slow merchants to a separate "slow lane" pool.</li>
+    <li><b>Ordering.</b> Partitioning by merchant ID keeps one merchant's events in order when all goes well. Retries break that order. Tell merchants to use the event timestamp. They should fetch the current state from the API, not trust the arrival order.</li>
   </ul></details>
 
   <h3>8.4 Multi-DC replication (the Visa Staff follow-up)</h3>
   <div class="arch">
-    <div class="tier"><small>DC Mumbai (home for user u_99)</small><span class="node hl">Ingest + workers</span><span class="node store">Kafka</span><span class="node store">Cassandra attempts</span></div>
-    <div class="down">↕ <small>MirrorMaker 2 · Cassandra multi-DC (async)</small></div>
-    <div class="tier"><small>DC Hyderabad (failover)</small><span class="node">Ingest + workers</span><span class="node store">Kafka mirror</span><span class="node store">Cassandra replica</span></div>
+    <div class="tier"><small>Mumbai data centre (home for user u_99)</small><span class="node hl">Ingest + workers</span><span class="node store">Kafka</span><span class="node store">Send records (Cassandra)</span></div>
+    <div class="down">↕ <small>copied in the background (Kafka MirrorMaker 2 · Cassandra multi-DC)</small></div>
+    <div class="tier"><small>Hyderabad data centre (backup)</small><span class="node">Ingest + workers</span><span class="node store">Copy of Kafka</span><span class="node store">Copy of send records</span></div>
   </div>
   <ul>
-    <li><b>Home region</b> per user or merchant: only one DC processes them, so no double send.</li>
-    <li><b>On failover</b> some events replay; the global ID dedupes against the replicated attempt log.</li>
-    <li><b>Redis is local cache only.</b> The durable dedupe state lives in Cassandra.</li>
+    <li><b>Each user or merchant has a home data centre.</b> Only that one sends their messages, so two centres never send the same one.</li>
+    <li><b>After a switch to the backup data centre (failover)</b>, some messages get handled again. Their ID is checked against the copied send records, so they are skipped.</li>
+    <li><b>Redis is only a local, fast check.</b> The lasting "already sent" record lives in Cassandra, which is copied to both centres.</li>
   </ul>
   <details class="deep"><summary>Go deeper: multi-DC details</summary><ul>
-    <li><b>Active-active ingest, home-region processing.</b> Each DC accepts requests. A user (or merchant) has a home region; events are processed there to avoid double-sending from two DCs.</li>
-    <li><b>Kafka replication.</b> MirrorMaker 2 (or Confluent Cluster Linking) replicates topics to the other DC for failover. Replication is async, so on failover some events are re-consumed: the global <code>notificationId</code> dedupe absorbs that, provided the dedupe state is also available in the surviving DC.</li>
-    <li><b>Dedupe store across DCs.</b> Cassandra with multi-DC replication for attempt records (write at <code>LOCAL_QUORUM</code>, which is fine because a notification is only processed in its home DC). Redis is a local cache only.</li>
-    <li><b>Idempotency key lookup on ingest.</b> If a client retries into the other DC during a failover, the key may not yet be replicated: accept the small duplicate risk, or route by producer to a home DC. Say which.</li>
-    <li><b>RPO/RTO.</b> Async replication means seconds of RPO; the outbox at the producer lets you re-publish anything not confirmed. That combination is what makes "no lost notifications" true across a DC loss.</li>
+    <li><b>Every DC accepts, the home region processes (active-active ingest).</b> Each data centre accepts requests. But each user or merchant has a home region, and their events are processed only there. This stops two DCs from sending the same message.</li>
+    <li><b>Kafka copying.</b> MirrorMaker 2, or Confluent Cluster Linking, copies topics to the other DC for failover. The copy runs in the background (async), so after failover some events are read again. The global <code>notificationId</code> check absorbs that. But the dedupe records must also exist in the surviving DC.</li>
+    <li><b>Dedupe store across DCs.</b> Use Cassandra, copied to every DC, for attempt records. Write at <code>LOCAL_QUORUM</code>, which means a majority of copies in the local DC. That is fine, because a notification is only processed in its home DC. Redis is only a local cache.</li>
+    <li><b>Idempotency key check at ingest.</b> During a failover, a client may retry into the other DC before the key has been copied there. Either accept the small risk of a duplicate, or send each producer to a home DC. Say which one you choose.</li>
+    <li><b>RPO and RTO.</b> RPO is how much recent data you can lose. RTO is how long recovery takes. Background copying means a few seconds of RPO. The producer's outbox lets you publish again anything that was not confirmed. Together, these make "no lost notifications" true even if a whole DC is lost.</li>
   </ul></details>
 
   <h2 id="scale"><span class="n">09</span>Scaling, failure handling and consistency</h2>
   <div class="tbl"><table>
     <thead><tr><th>Situation</th><th>Response</th></tr></thead>
     <tbody>
-      <tr><td>10x promo volume</td><td>Vendors saturate first. Throttle campaigns at source (<code>throttlePerSec</code>), spread the window, add vendor accounts.</td></tr>
-      <tr><td>100M-user campaign</td><td>No fan-out in the API call. A job pages the segment into Kafka at a set rate, checkpointing so a crash resumes.</td></tr>
-      <tr><td>Vendor outage</td><td>Circuit breaker opens, route to secondary. OTP fails over in seconds; email can queue for an hour.</td></tr>
-      <tr><td>Lag alerting</td><td>Critical lag &gt; 5 s pages someone; promo lag of 20 min is normal.</td></tr>
-      <tr><td>Backpressure</td><td>Ingest returns 429 to promo producers when promo lag is high; transactional is never throttled by promo.</td></tr>
-      <tr><td>Bad template</td><td>Versions are immutable; roll back by pointing to the previous one. Render failures go to DLQ.</td></tr>
-      <tr><td>"Why didn't I get it?"</td><td>Trace ID from producer to vendor call; funnel accepted → sent → delivered → opened; vendor latency and error rates.</td></tr>
+      <tr><td>10x promo volume</td><td>Vendors max out first. Slow campaigns down at the source (<code>throttlePerSec</code>). Spread them over a longer window. Add vendor accounts.</td></tr>
+      <tr><td>100M-user campaign</td><td>Do not send to everyone inside the API call. A background job feeds the audience into Kafka at a set speed. It saves checkpoints, so after a crash it continues where it stopped.</td></tr>
+      <tr><td>Vendor outage</td><td>The circuit breaker opens and traffic goes to the backup vendor. An OTP switches over in seconds. Email can wait in the queue for an hour.</td></tr>
+      <tr><td>Lag alerting</td><td>If critical messages are more than 5 s behind, wake someone up. Promo being 20 min behind is normal.</td></tr>
+      <tr><td>Backpressure</td><td>When the promo backlog is large, ingest replies 429 ("slow down") to promo producers. Transactional traffic is never slowed by promo.</td></tr>
+      <tr><td>Bad template</td><td>Template versions never change once saved. Roll back by pointing to the previous one. Messages that fail to render go to the DLQ.</td></tr>
+      <tr><td>"Why didn't I get it?"</td><td>One trace ID follows the message from producer to vendor call. Track the funnel: accepted, sent, delivered, opened. Watch vendor speed and error rates.</td></tr>
     </tbody>
   </table></div>
-  <details class="deep"><summary>Go deeper: observability at Slack</summary><p>Slack described tracing every notification across their stack because "why didn't I get notified?" is the top support question.</p></details>
+  <details class="deep"><summary>Go deeper: observability at Slack</summary><p>Slack traces every notification across their whole system. They do this because "why didn't I get notified?" is their most common support question.</p></details>
 
   <h2 id="tradeoffs"><span class="n">10</span>Trade-offs</h2>
   <div class="vs">
-    <div class="pick"><h4>Kafka backbone <span class="tag">usual pick</span></h4><ul><li class="pro">Replay, high throughput, partition ordering, retention</li><li class="con">No per-message priority or delay; ops cost</li></ul><p class="when">Default at this scale.</p></div>
-    <div><h4>RabbitMQ / SQS</h4><ul><li class="pro">Per-message TTL, delays, priority queues, simple ack</li><li class="con">Less replay; lower throughput ceiling (RabbitMQ)</li></ul><p class="when">Smaller platforms, heavy delay scheduling.</p></div>
+    <div class="pick"><h4>Kafka backbone <span class="tag">usual pick</span></h4><ul><li class="pro">You can re-read old messages. It handles huge volume, keeps order within each lane, and keeps messages for days.</li><li class="con">No priority or delay per message. Costly to operate.</li></ul><p class="when">The default at this scale.</p></div>
+    <div><h4>RabbitMQ / SQS</h4><ul><li class="pro">Expiry, delay and priority per message. Simple acknowledgements.</li><li class="con">Harder to re-read old messages. RabbitMQ handles less volume.</li></ul><p class="when">Smaller platforms, or ones with lots of delayed sends.</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Redis dedupe + DB unique key <span class="tag">usual pick</span></h4><ul><li class="pro">Fast path plus durable truth</li><li class="con">Two stores to reason about</li></ul><p class="when">High volume.</p></div>
-    <div><h4>DB unique key only</h4><ul><li class="pro">One source of truth</li><li class="con">DB write on every message before send</li></ul><p class="when">Lower volume, simpler ops.</p></div>
+    <div class="pick"><h4>Redis dedupe + DB unique key <span class="tag">usual pick</span></h4><ul><li class="pro">A fast "already sent?" check in Redis, plus a lasting record in the database</li><li class="con">Two stores to think about</li></ul><p class="when">High volume.</p></div>
+    <div><h4>DB unique key only</h4><ul><li class="pro">One source of truth</li><li class="con">Every message needs a database write before it is sent, which is slower</li></ul><p class="when">Lower volume, simpler operations.</p></div>
   </div>
   <div class="vs">
-    <div><h4>Push in-app (WebSocket/SSE)</h4><ul><li class="pro">Instant</li><li class="con">Connection management, sticky state</li></ul><p class="when">Active sessions.</p></div>
-    <div class="pick"><h4>Pull (inbox API on app open) <span class="tag">always as fallback</span></h4><ul><li class="pro">Simple, cacheable</li><li class="con">Not real-time</li></ul><p class="when">Background users; always as fallback.</p></div>
+    <div><h4>Push in-app (WebSocket/SSE)</h4><ul><li class="pro">Instant</li><li class="con">You must keep a live connection open for each user, and each user is tied to one server</li></ul><p class="when">Users with the app open.</p></div>
+    <div class="pick"><h4>Pull (inbox API on app open) <span class="tag">always as fallback</span></h4><ul><li class="pro">Simple and easy to cache</li><li class="con">Not real-time</li></ul><p class="when">Users without the app open. Always keep it as a fallback.</p></div>
   </div>
 
   <h2 id="followups"><span class="n">11</span>Interview questions</h2>
-  <details class="qa"><summary>How do you make sure a notification event is not consumed twice?</summary><p>You cannot prevent redelivery with at-least-once Kafka; you make consumption idempotent. A globally unique notification ID is minted at ingest. The worker does <code>SET NX</code> on <code>id:channel</code> before sending and records the attempt with a unique constraint. Replays after a crash or DC failover see the key and skip. A tiny window remains between vendor accept and recording, so the honest guarantee is effectively-once.</p></details>
-  <details class="qa"><summary>How do you keep data consistent across two data centres?</summary><p>Process each user's notifications in one home DC; replicate Kafka (MirrorMaker 2) and the attempt log (Cassandra multi-DC) asynchronously for failover. On failover, replayed events are deduped by the global ID against the replicated attempt log. Producers use an outbox so nothing unconfirmed is lost.</p></details>
-  <details class="qa"><summary>An OTP is stuck behind a 10M-user campaign. Fix it.</summary><p>That is a design bug: OTPs need their own topic, consumer group, worker pool and vendor account or reserved vendor capacity. Add a TTL so stale OTPs are dropped. Promo producers get backpressure when lag rises.</p></details>
-  <details class="qa"><summary>Payment succeeded, but the customer got no SMS. How do you debug and prevent it?</summary><p>Trace by payment ID: was the outbox row written, did CDC publish, did ingest accept, which vendor, what DLR came back. Prevention: outbox (no lost events), DLR-driven retries on a secondary vendor for undelivered transactional SMS, and dashboards on delivered-rate per vendor and operator.</p></details>
-  <details class="qa"><summary>How do you prevent spamming users?</summary><p>Preferences and opt-outs per channel and category, frequency caps as Redis counters per user per day, quiet hours in the user's timezone (promo only), and collapsing similar notifications ("5 new comments") in the router with a short aggregation window.</p></details>
-  <details class="qa"><summary>Webhook endpoint is down for 6 hours. What happens?</summary><p>Retries back off up to about a day, in a slow-lane pool so other merchants are unaffected. Events are stored, so the merchant can replay from the dashboard. After sustained failure, we disable and email them. Every webhook is signed (HMAC with timestamp to block replays) and carries an event ID for dedupe.</p></details>
-  <details class="qa"><summary>How would you ingest 1M events per second, Klaviyo-style?</summary><p>Thin ingest nodes that validate and append to Kafka in batches (acks=all, idempotent producer, compression), partitioned by account. Everything else, profile updates, segmentation and triggering flows, is downstream stream processing. Return 202 as soon as Kafka acknowledges.</p></details>
-  <details class="qa"><summary>Why not let each service call Twilio or SES directly?</summary><p>Every team would re-implement retries, vendor failover, preferences, DLT templates, rate limits and audit. A platform gives one place for compliance and one bill to negotiate. The cost is a central dependency, which is why ingest must be highly available and accept-then-process.</p></details>
+  <details class="qa"><summary>How do you make sure a notification event is not consumed twice?</summary><p>With at-least-once Kafka, you cannot stop a message from being delivered again. Instead, you make processing idempotent, so a repeat does no harm. A globally unique notification ID is created at ingest. Before sending, the worker runs <code>SET NX</code> ("set if not exists") on <code>id:channel</code>. It records the attempt in a table with a unique constraint. After a crash or a data-centre failover, a replayed message finds the key and is skipped. A tiny gap remains between "vendor accepted" and "we recorded it". So the honest promise is "effectively once".</p></details>
+  <details class="qa"><summary>How do you keep data consistent across two data centres?</summary><p>Process each user's notifications in one home DC. Copy Kafka (with MirrorMaker 2) and the attempt log (with Cassandra multi-DC) to the other DC in the background, for failover. After failover, replayed events are matched by their global ID against the copied attempt log, and skipped. Producers use an outbox, so nothing unconfirmed is lost.</p></details>
+  <details class="qa"><summary>An OTP is stuck behind a 10M-user campaign. Fix it.</summary><p>That is a design bug. OTPs need their own topic, worker group and worker pool. They also need their own vendor account, or vendor capacity kept aside for them. Add an expiry (TTL) so old OTPs are dropped. When the backlog grows, tell promo producers to slow down (backpressure).</p></details>
+  <details class="qa"><summary>Payment succeeded, but the customer got no SMS. How do you debug and prevent it?</summary><p>Trace it by payment ID. Was the outbox row written? Did CDC publish it? Did ingest accept it? Which vendor got it? What delivery receipt (DLR) came back? To prevent it, use an outbox so no event is lost. If a transactional SMS is not delivered, retry it on a backup vendor based on the DLR. Add dashboards for delivery rate per vendor and per mobile operator.</p></details>
+  <details class="qa"><summary>How do you prevent spamming users?</summary><p>Keep preferences and opt-outs per channel and category. Add frequency caps, which are Redis counters per user per day. Respect quiet hours in the user's timezone, for promo only. In the router, wait a short time and merge similar messages into one, like "5 new comments".</p></details>
+  <details class="qa"><summary>Webhook endpoint is down for 6 hours. What happens?</summary><p>Retries wait longer each time, for up to about a day. They run in a separate slow-lane pool, so other merchants are not affected. Events are stored, so the merchant can replay them from the dashboard. If it keeps failing, we switch off the endpoint and email them. Every webhook is signed with HMAC, a secret-key signature, plus a timestamp to block replayed fakes. Each also carries an event ID so the merchant can skip repeats.</p></details>
+  <details class="qa"><summary>How would you ingest 1M events per second, Klaviyo-style?</summary><p>Use thin ingest servers that check each event and append to Kafka in batches. Use acks=all (wait for all copies), an idempotent producer, and compression. Partition by account. Everything else happens later in stream processing: profile updates, audience building, and triggering flows. Reply 202 as soon as Kafka confirms the write.</p></details>
+  <details class="qa"><summary>Why not let each service call Twilio or SES directly?</summary><p>Every team would rebuild retries, vendor failover, preferences, DLT templates, speed limits and audit logs. A platform gives one place for compliance, and one bill to negotiate. The cost is that everyone depends on it. That is why ingest must be highly available, and must accept first and process later.</p></details>
 
   <h2 id="mistakes"><span class="n">12</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b><ul>
-    <li>A single queue with a "priority" column, then no answer when asked how an OTP gets ahead of a campaign.</li>
+    <li>Using one queue with a "priority" column, then having no answer for how an OTP gets ahead of a campaign.</li>
     <li>Claiming Kafka exactly-once means no duplicate SMS.</li>
-    <li>Calling the vendor synchronously from the payment request path.</li>
-    <li>Sleeping or retrying in the consumer thread, blocking the partition for everyone behind it.</li>
-    <li>No outbox: "save payment, then publish event" with a gap where the process can die.</li>
-    <li>Ignoring vendor rate limits and failures, the real bottleneck.</li>
-    <li>For Visa-style Staff rounds: hand-waving "replicate everything" without saying where dedupe state lives after failover.</li>
+    <li>Calling the SMS vendor inside the payment request, so the payment waits on the SMS.</li>
+    <li>Waiting and retrying inside the worker. Every message behind it in the same lane is stuck.</li>
+    <li>No outbox. If you save the payment and then publish the event separately, a crash in between loses the SMS.</li>
+    <li>Ignoring vendor speed limits and failures, which are the real bottleneck.</li>
+    <li>In Visa-style Staff rounds: saying "copy everything to the other data centre" without saying where the "already sent" records live after a switch.</li>
   </ul></div>
 
   <h2 id="plan"><span class="n">13</span>A 45-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–5 min</span><span>Clarify channels, tiers, guarantees, SLOs, regulatory (DLT). Write NFRs.</span></div>
-    <div class="step"><span class="t">5–9 min</span><span>Capacity: per tier QPS, storage, vendor TPS as the bottleneck.</span></div>
-    <div class="step"><span class="t">9–14 min</span><span>API: 202 accept, idempotency key, TTL, priority; webhook signature format.</span></div>
-    <div class="step"><span class="t">14–24 min</span><span>Architecture: outbox, ingest, router, topics per tier and channel, workers, adapters, status loop, in-app gateway.</span></div>
-    <div class="step"><span class="t">24–36 min</span><span>Deep dives: priority isolation, idempotent consumers, retries and webhooks.</span></div>
-    <div class="step"><span class="t">36–42 min</span><span>Failure: vendor outage, DC failover and dedupe, backpressure, observability.</span></div>
-    <div class="step"><span class="t">42–45 min</span><span>Trade-offs recap and what you would build next (send-time optimisation, digesting).</span></div>
+    <div class="step"><span class="t">0–5 min</span><span>Ask about channels, priority levels, guarantees, speed targets and rules (DLT). Write the non-functional requirements.</span></div>
+    <div class="step"><span class="t">5–9 min</span><span>Capacity: requests per second per level, and storage. Show that vendor speed is the bottleneck.</span></div>
+    <div class="step"><span class="t">9–14 min</span><span>API: answer "accepted" (202), not "done". Add a key that blocks repeats, an expiry and a priority. Show how webhooks are signed.</span></div>
+    <div class="step"><span class="t">14–24 min</span><span>Architecture: save events safely (outbox), then the front door (ingest) and the router. Add a queue per level and channel, workers and vendor adapters. Finish with delivery receipts and the in-app gateway.</span></div>
+    <div class="step"><span class="t">24–36 min</span><span>Deep dives: priority separation, skipping duplicates, retries and webhooks.</span></div>
+    <div class="step"><span class="t">36–42 min</span><span>Failure: a vendor going down, switching data centres without double sends, slowing producers down, and monitoring.</span></div>
+    <div class="step"><span class="t">42–45 min</span><span>Recap the trade-offs. Say what you would build next, such as best send-time and daily digests.</span></div>
   </div>
 
   <h2 id="quiz"><span class="n">14</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">OTPs are delayed during a big campaign. Every message carries a "priority" field on one Kafka topic. What fixes it?</p>
-    <div class="opts"><button class="opt" type="button">Sort messages by priority inside the consumer</button><button class="opt" type="button">Add more partitions to the shared topic</button><button class="opt" type="button">Separate topics, consumer groups and reserved vendor capacity per tier</button></div>
-    <p class="why">A partition is a FIFO log, so the OTP still waits behind earlier promos. Only physical separation, including vendor TPS, isolates it.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">Kafka offers exactly-once semantics. Does that stop duplicate SMS?</p>
-    <div class="opts"><button class="opt" type="button">Yes, if the producer is idempotent</button><button class="opt" type="button">No; it covers Kafka-to-Kafka, not an HTTP call to a vendor</button><button class="opt" type="button">Yes, with transactions enabled on the consumer</button></div>
-    <p class="why">A crash between "vendor accepted" and "offset committed" replays the message. You need your own dedupe on the notification ID.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">Where should the notification ID used for dedupe be generated?</p>
+  <div class="quiz" data-answer="2"><p class="q">OTPs are late during a big campaign. Every message has a "priority" field, and all share one Kafka topic. What fixes it?</p>
+    <div class="opts"><button class="opt" type="button">Sort messages by priority inside the worker</button><button class="opt" type="button">Add more partitions to the shared topic</button><button class="opt" type="button">Separate topics, worker groups and reserved vendor capacity for each level</button></div>
+    <p class="why">A partition is read strictly in order. So the OTP still waits behind the promos that arrived before it. Only real separation, including the vendor's speed limit, protects it.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">Kafka has an "exactly-once" feature. Does that stop duplicate SMS?</p>
+    <div class="opts"><button class="opt" type="button">Yes, if the producer is idempotent</button><button class="opt" type="button">No. It covers Kafka-to-Kafka, not an HTTP call to a vendor.</button><button class="opt" type="button">Yes, with transactions turned on in the worker</button></div>
+    <p class="why">A crash after "vendor accepted" but before "offset committed" makes Kafka send the message again. You need your own duplicate check on the notification ID.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">Where should the notification ID used for skipping duplicates be created?</p>
     <div class="opts"><button class="opt" type="button">Once, at ingest, before publishing to Kafka</button><button class="opt" type="button">In each channel worker when it picks up the message</button><button class="opt" type="button">By the SMS vendor in its response</button></div>
-    <p class="why">Replays and retries must carry the same ID. An ID minted by the consumer is new on every redelivery and dedupes nothing.</p></div>
-  <div class="quiz" data-answer="1"><p class="q">A merchant's webhook endpoint times out after 30 s. What stops it hurting other merchants?</p>
-    <div class="opts"><button class="opt" type="button">Retry it immediately in the same consumer thread</button><button class="opt" type="button">Short timeouts, per-endpoint concurrency limits and a slow-lane pool</button><button class="opt" type="button">Drop all its events</button></div>
-    <p class="why">Bulkheads keep one slow endpoint from exhausting shared connections; retries go to delayed topics, not a blocked thread.</p></div>
+    <p class="why">Repeats and retries must carry the same ID. If the worker creates the ID, each repeat gets a new ID. Then nothing is ever recognised as a duplicate.</p></div>
+  <div class="quiz" data-answer="1"><p class="q">A merchant's webhook server takes 30 s and then times out. What stops it from hurting other merchants?</p>
+    <div class="opts"><button class="opt" type="button">Retry it immediately in the same worker thread</button><button class="opt" type="button">Short timeouts, a limit on calls per endpoint, and a separate slow-lane pool</button><button class="opt" type="button">Drop all its events</button></div>
+    <p class="why">These limits (bulkheads) stop one slow server from using up the shared connections. Retries go to delayed topics, not a blocked thread.</p></div>
 
   <div class="cheat" id="cheat"><b>Cheat sheet</b><ul>
-    <li>Outbox + CDC at the producer: no "paid but SMS lost".</li>
-    <li>Ingest returns 202; idempotency key with a unique constraint.</li>
-    <li>Topics per (tier × channel), separate consumer groups, reserved vendor TPS, TTL on OTPs.</li>
-    <li>Dedupe: ID minted at ingest → Redis SET NX → attempt row unique key. "Effectively once".</li>
-    <li>Retry topics with delays → DLQ. Never sleep in the consumer.</li>
-    <li>Webhooks: HMAC + timestamp, <code>X-Event-Id</code>, ~1 day backoff, slow lane, replay API.</li>
-    <li>Bottleneck = vendors and merchants. Multiple vendors, circuit breakers, token buckets.</li>
-    <li>Multi-DC: home region per user, async mirror, dedupe in Cassandra not Redis.</li>
+    <li>Save the event with the payment (outbox), then copy it to Kafka (CDC). So "paid, but SMS lost" cannot happen.</li>
+    <li>Ingest answers "accepted" (202). A unique key in the database blocks repeat requests.</li>
+    <li>One topic per priority level and channel. Separate worker groups. Vendor capacity kept aside. Expiry on OTPs.</li>
+    <li>Skipping repeats: create the ID once at ingest. The worker claims it in Redis (SET NX), then writes a unique row. Promise "effectively once".</li>
+    <li>Failed messages go to delayed retry queues, then a parking area (DLQ). Never sleep inside the worker.</li>
+    <li>Webhooks: sign each call with a secret and a timestamp (HMAC). Send an event ID (<code>X-Event-Id</code>). Retry for about a day, in a slow lane. Offer a replay API.</li>
+    <li>The bottleneck is vendors and merchants. Use several vendors, circuit breakers and token-bucket limits.</li>
+    <li>Two data centres: a home centre per user, background copying, and "already sent" records in Cassandra, not Redis.</li>
   </ul></div>
+
 
   <h2 id="sources"><span class="n">15</span>Sources</h2>
   <ul class="sources">

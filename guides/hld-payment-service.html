@@ -11,8 +11,8 @@
 <div class="wrap">
 <nav class="sitenav" aria-label="Study by round"><a class="brand" href="../index.html">Senior Switch Playbook</a><span class="links"><a href="../dsa.html">DSA</a><a href="../lld.html">LLD / machine coding</a><a href="../hld.html" aria-current="page">System design</a><a href="../ai.html">AI engineering</a><a href="../backend.html">Java &amp; backend</a><a href="../career.html">Career</a></span></nav>
   <div class="crumb"><a href="../index.html">← Senior Switch Playbook</a><span>/</span><a class="kind" href="../hld.html">System design · HLD</a></div>
-  <h1>Payment Service</h1>
-  <p class="lede">Design a payment service that never charges twice and never loses money, even when the bank times out.</p>
+    <h1>Payment Service</h1>
+  <p class="lede">Design a payment service that never charges a user twice and never loses money. It must stay correct even when the bank does not reply in time.</p>
   <div class="facts">
     <span class="fact"><b>Time-box:</b> 45–60 min (Angel One ran 1 h+)</span>
     <span class="fact"><b>Seen:</b> Angel One, Paytm ×2, Kotak, PhonePe, Slice, Rippling, 2025–26</span>
@@ -20,13 +20,24 @@
   <div class="chips"><span class="chip hot">Angel One</span><span class="chip hot">Paytm</span><span class="chip">PhonePe</span><span class="chip">Kotak</span><span class="chip">Slice</span><span class="chip">Rippling</span><span class="chip">Razorpay</span></div>
 
   <div class="tldr"><b>In 30 seconds</b><ul>
-    <li>Idempotency key per hop: client → you → PSP.</li>
-    <li>A bank timeout is PENDING, never FAILED.</li>
-    <li>Outbox table, not "commit then publish to Kafka".</li>
-    <li>Double-entry ledger plus daily reconciliation catch everything else.</li>
+    <li>Every hop needs its own "this is the same request" key: app to you, and you to the payment gateway.</li>
+    <li>If the bank does not reply in time, the payment is PENDING (unknown). It is never FAILED.</li>
+    <li>Save the event in an outbox table in the same transaction. Do not "commit, then publish to Kafka".</li>
+    <li>A double-entry ledger plus a daily check against the bank's file catch everything else.</li>
   </ul></div>
 
-  <div class="analogy"><b>Picture it</b><p>You pay at a toll plaza with FASTag and the screen freezes. Did it deduct? You do not pay again in cash; you wait for the SMS or check the statement. A payment service does the same: "unknown" is a real state, resolved later.</p></div>
+  <div class="analogy"><b>Picture it</b><p>You pay at a toll plaza with FASTag, and the screen freezes. Did it deduct? You do not pay again in cash. You wait for the SMS or check your statement. A payment service works the same way. "Unknown" is a real state, and it gets resolved later.</p></div>
+
+  <div class="words"><b>Words you'll see</b><dl>
+    <dt>PSP</dt><dd>Payment service provider, a gateway like Razorpay or Juspay. It talks to banks and UPI for you.</dd>
+    <dt>Idempotency key</dt><dd>A unique id the caller sends with a request. If the same id arrives twice, we do the work once. Pressing "Pay" twice should charge you once.</dd>
+    <dt>Webhook</dt><dd>The PSP calling <i>our</i> server to say "payment X succeeded". It is how we hear results that arrive later.</dd>
+    <dt>Outbox</dt><dd>A table where we save "events to publish", in the same transaction as the payment. A separate process then sends them to Kafka.</dd>
+    <dt>Double-entry ledger</dt><dd>An accounting log where every money movement is written as two or more lines that add up to zero. Money is never created or lost.</dd>
+    <dt>Reconciliation</dt><dd>A daily job that compares our records with the bank's settlement file, line by line, and fixes any differences.</dd>
+    <dt>Circuit breaker</dt><dd>A switch that stops sending traffic to a partner that keeps failing, and tries again later.</dd>
+    <dt>Terminal state</dt><dd>A final status, like SUCCEEDED or FAILED. A payment never moves out of it.</dd>
+  </dl></div>
 
   <nav class="toc"><b>On this page</b><ol>
     <li><a href="#graded">What's graded</a></li>
@@ -47,51 +58,51 @@
 
   <h2 id="graded"><span class="n">01</span>What the interviewer is grading</h2>
   <div class="keys">
-    <div class="key"><h4>Idempotency end to end</h4><p>Client → your API → PSP. Each hop needs its own key.</p></div>
-    <div class="key"><h4>UNKNOWN / PENDING state</h4><p>Treating a timeout as failure is the classic double-charge bug.</p></div>
-    <div class="key"><h4>DB + Kafka atomicity</h4><p>"Commit then publish" loses events; a transactional outbox fixes it.</p></div>
-    <div class="key"><h4>Money correctness</h4><p>Double-entry ledger, immutable entries, balances derived not overwritten.</p></div>
-    <div class="key"><h4>Reconciliation</h4><p>The daily process that catches what everything else missed.</p></div>
-    <div class="key"><h4>Partner failure</h4><p>Retry only where safe, circuit breakers, routing across PSPs.</p></div>
+    <div class="key"><h4>Idempotency end to end</h4><p>The app calls your API, and your API calls the PSP. Each of these hops needs its own idempotency key.</p></div>
+    <div class="key"><h4>UNKNOWN / PENDING state</h4><p>Treating a timeout as a failure is the classic bug. The user pays again, and gets charged twice.</p></div>
+    <div class="key"><h4>DB + Kafka atomicity</h4><p>"Commit, then publish" can lose events. A transactional outbox fixes this.</p></div>
+    <div class="key"><h4>Money correctness</h4><p>Use a double-entry ledger. Never edit entries. Calculate balances from entries instead of overwriting them.</p></div>
+    <div class="key"><h4>Reconciliation</h4><p>The daily check that catches anything every other part missed.</p></div>
+    <div class="key"><h4>Partner failure</h4><p>Retry only where it is safe. Use circuit breakers. Route payments across several PSPs.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: what the reports said</summary><p>The Angel One SDE-2 round (Sep 2026, selected) ran over an hour with deep dives on <b>database commits and transaction handling, Kafka streams, partner bank failures, vendor payment flow, and payment failures and retries</b>. Paytm asked a Shiprocket-like system (order management plus payments) and a Paytm risk management service with a database focus. Kotak's screening asked "what is an idempotency key and how would you use it for placing an order". PhonePe probes double payment, Slice wallet consistency, Rippling idempotent metrics ingestion.</p></details>
+  <details class="deep"><summary>Go deeper: what the reports said</summary><p>The Angel One SDE-2 round (Sep 2026, candidate selected) ran for over an hour. It went deep on <b>database commits and transaction handling, Kafka streams, partner bank failures, vendor payment flow, and payment failures and retries</b>. Paytm asked for a Shiprocket-like system, meaning order management plus payments. Paytm also asked for a risk management service, with a focus on the database. Kotak's screening asked "what is an idempotency key and how would you use it for placing an order". PhonePe probes double payment. Slice asks about wallet consistency. Rippling asks about ingesting metrics without double counting.</p></details>
 
   <h2 id="scope"><span class="n">02</span>Clarify and scope</h2>
   <div class="grid">
-    <div class="card"><h4>Functional</h4><ul><li>Create payment for an order, redirect / intent to PSP</li><li>Receive result via webhook and status poll</li><li>Refunds (full / partial), vendor payouts</li><li>Payment history, ledger, daily reconciliation</li></ul></div>
-    <div class="card"><h4>Non-functional</h4><ul><li>Zero double charges; zero lost payments</li><li>99.99% availability for create; p99 &lt; 300 ms (excluding PSP)</li><li>Every rupee traceable; immutable audit</li><li>PCI DSS: never store card data (tokenise at PSP); RBI data localisation</li></ul></div>
-    <div class="card"><h4>Out of scope</h4><ul><li>Building a card network or UPI switch</li><li>Full fraud ML (risk check is a hook)</li><li>Tax / invoicing</li></ul></div>
+    <div class="card"><h4>Functional</h4><ul><li>Create a payment for an order, and send the user to the PSP (redirect or UPI intent)</li><li>Learn the result from a webhook and from status checks</li><li>Full and partial refunds, and payouts to vendors</li><li>Payment history, ledger, daily reconciliation</li></ul></div>
+    <div class="card"><h4>Non-functional</h4><ul><li>Zero double charges and zero lost payments</li><li>Create is up 99.99% of the time; 99 in 100 calls under 300 ms, not counting the PSP</li><li>Every rupee can be traced; the audit log is never edited</li><li>Never store card data (PCI DSS card rules; the PSP keeps it). Keep data in India (RBI rule).</li></ul></div>
+    <div class="card"><h4>Out of scope</h4><ul><li>Building a card network or UPI switch</li><li>Full fraud ML (the risk check is just a hook)</li><li>Tax and invoicing</li></ul></div>
   </div>
   <details class="deep"><summary>Go deeper: five questions to ask first</summary><ul>
-    <li><b>Are we a merchant integrating PSPs (Razorpay / Juspay / Stripe) or the PSP talking to banks / NPCI?</b> Most rounds mean the former: an internal payment service for an app (broker, e-commerce).</li>
-    <li><b>Payment methods?</b> UPI (async: collect / intent, result comes later), cards (3DS redirect), netbanking, wallet. UPI being asynchronous forces the PENDING state.</li>
-    <li><b>Flows?</b> Pay-in (user pays), refunds, payouts to vendors (Angel One "vendor payment flow"), wallet top-up.</li>
-    <li><b>Authorise and capture separately?</b> Cards support it; e-commerce often captures on shipment.</li>
-    <li><b>Consistency expectation?</b> Money moves must be strongly consistent and auditable; read models (history screen) can lag.</li>
+    <li><b>Are we a merchant that uses PSPs (Razorpay, Juspay, Stripe)? Or are we the PSP, talking to banks and NPCI?</b> Most rounds mean the first. That is an internal payment service for an app, like a broker or a shop.</li>
+    <li><b>Which payment methods?</b> UPI, cards (with a 3DS bank-verification redirect), netbanking and wallet. UPI is asynchronous: the result comes later. That alone forces a PENDING state.</li>
+    <li><b>Which flows?</b> Pay-in (the user pays), refunds, payouts to vendors (Angel One's "vendor payment flow") and wallet top-up.</li>
+    <li><b>Authorise and capture separately?</b> Cards can hold money first and take it later. Online shops often take it only when the item ships.</li>
+    <li><b>How consistent?</b> Money movements must be strongly consistent and auditable. Read screens, like payment history, can lag a little.</li>
   </ul></details>
 
   <h2 id="capacity"><span class="n">03</span>The numbers</h2>
   <div class="stats">
-    <div class="stat"><b>10M/day</b><span>payments (~115/s avg)</span></div>
-    <div class="stat"><b>~1,700/s</b><span>peak TPS (~15× spikes)</span></div>
-    <div class="stat"><b>~20k/s</b><span>peak DB writes (~12 per payment)</span></div>
+    <div class="stat"><b>10M/day</b><span>payments (~115 per second on average)</span></div>
+    <div class="stat"><b>~1,700/s</b><span>payments per second at peak (~15× spikes)</span></div>
+    <div class="stat"><b>~20k/s</b><span>database writes per second at peak (~12 per payment)</span></div>
     <div class="stat"><b>30 GB/day</b><span>≈ 11 TB/year</span></div>
-    <div class="stat"><b>8–10 yrs</b><span>retention; hot 90 days in DB</span></div>
-    <div class="stat"><b>~2.5k/s</b><span>peak webhooks in</span></div>
+    <div class="stat"><b>8–10 yrs</b><span>how long we keep data; the last 90 days stay in the DB</span></div>
+    <div class="stat"><b>~2.5k/s</b><span>incoming webhooks per second at peak</span></div>
   </div>
-  <p>One tuned Postgres primary handles this; sharding covers 10×. <b>Correctness is the hard part, not throughput.</b> Say so, then spend your time on failures.</p>
+  <p>One well-tuned Postgres primary handles this. Splitting the data across servers (sharding) covers 10× growth. <b>The hard part is correctness, not speed.</b> Say so, then spend your time on failures.</p>
   <details class="deep"><summary>Go deeper: full estimation table</summary>
   <div class="tbl"><table>
     <tr><th>Quantity</th><th>Assumption</th><th>Result</th></tr>
     <tr><td>Payments per day</td><td>Large Indian app</td><td class="num">10M/day</td></tr>
-    <tr><td>Average TPS</td><td>10M / 86,400</td><td class="num">~115/s</td></tr>
-    <tr><td>Peak TPS</td><td>Sale / market-open spikes, ~15×</td><td class="num">~1,700/s</td></tr>
-    <tr><td>Writes per payment</td><td>Payment row + 3–5 state updates + 2–4 ledger entries + outbox + idempotency row</td><td class="num">~12 writes → ~20k writes/s peak</td></tr>
-    <tr><td>Storage</td><td>~3 KB per payment including ledger and events</td><td class="num">30 GB/day ≈ 11 TB/year</td></tr>
-    <tr><td>Retention</td><td>RBI / tax rules: keep 8–10 years; archive cold data to S3 / Glacier</td><td class="num">Hot 90 days in DB</td></tr>
+    <tr><td>Average payments per second</td><td>10M / 86,400</td><td class="num">~115/s</td></tr>
+    <tr><td>Peak payments per second</td><td>Sales or market-open spikes, ~15×</td><td class="num">~1,700/s</td></tr>
+    <tr><td>Writes per payment</td><td>Payment row, 3–5 status updates, 2–4 ledger entries, outbox row, idempotency row</td><td class="num">~12 writes → ~20k writes/s peak</td></tr>
+    <tr><td>Storage</td><td>~3 KB per payment, including ledger and events</td><td class="num">30 GB/day ≈ 11 TB/year</td></tr>
+    <tr><td>Retention</td><td>RBI and tax rules: keep 8–10 years; move old data to S3 or Glacier</td><td class="num">Last 90 days in the DB</td></tr>
     <tr><td>Webhooks in</td><td>~1.5 per payment</td><td class="num">~2.5k/s peak</td></tr>
   </table></div>
-  <p>The volume is moderate: one well-tuned Postgres primary handles 20k simple writes/s, and sharding by merchant or user id covers 10× growth. The hard part is correctness, not throughput. Say so, then spend your time on failure handling.</p></details>
+  <p>The volume is moderate. One well-tuned Postgres primary handles 20k simple writes per second. Sharding by merchant or user id covers 10× growth. The hard part is correctness, not speed. Say so, then spend your time on failure handling.</p></details>
 
   <h2 id="arch"><span class="n">04</span>Architecture</h2>
   <div class="arch">
@@ -108,10 +119,10 @@
     <div class="tier"><small>Backstops and consumers</small><span class="node">Status poller<small>sweeps PENDING</small></span><span class="node">Reconciliation<small>daily PSP / bank files</small></span><span class="node">Order, notify, analytics</span></div>
   </div>
   <ul>
-    <li><b>One write path, three ways to learn the outcome</b>: synchronous response, webhook, poll. Reconciliation is the backstop.</li>
-    <li>All status changes go through <b>one method</b> with a conditional update on <code>(status, version)</code>.</li>
+    <li><b>One write path, and three ways to learn the result.</b> The direct reply, the webhook, and asking the PSP again (polling). Reconciliation is the final safety net.</li>
+    <li>Every status change goes through <b>one method</b>. It updates the row only if the status is still what it expects (a conditional update on <code>(status, version)</code>).</li>
   </ul>
-  <pre><code>POST /v1/payments                    Idempotency-Key: ord_88123-attempt-1
+<pre><code>POST /v1/payments                    Idempotency-Key: ord_88123-attempt-1
 { "orderId": "ord_88123", "amount": 49900, "currency": "INR",    // paise, integer
   "method": "UPI", "customerId": "c_42" }
 → 201 { "paymentId": "pay_X1", "status": "CREATED",
@@ -123,62 +134,62 @@
 GET  /v1/payments/{paymentId}         → { status: CREATED|PENDING|SUCCEEDED|FAILED|... }
 POST /v1/payments/{paymentId}/refunds  Idempotency-Key: ...  { "amount": 10000 }
 POST /v1/webhooks/{psp}               (PSP → us; verify HMAC signature, dedupe by event id, 200 fast)</code></pre>
-  <p>Tie the key to the business intent: <code>orderId</code> plus attempt. A random UUID per click is useless against a double tap (PhonePe's question).</p>
+  <p>Build the key from what the user is trying to do: <code>orderId</code> plus the attempt number. A random UUID per click does not stop a double tap. This was PhonePe's question.</p>
   <details class="deep"><summary>Go deeper: key scoping, data model and each component</summary>
-  <p>The key is client-generated and scoped by caller (<code>merchant_id + key</code>). Tie it to the business intent: for an order, <code>orderId</code> plus attempt number. A random UUID per click is useless against a user tapping "Pay" twice; the order id is what makes the second tap a no-op (PhonePe's double-payment question).</p>
+  <p>The caller creates the key. We store it per caller (<code>merchant_id + key</code>), so two merchants can use the same key safely. Build it from the business intent. For an order, that is <code>orderId</code> plus the attempt number. A random UUID per click is useless when a user taps "Pay" twice. The order id is what makes the second tap do nothing (PhonePe's double-payment question).</p>
   <div class="tbl"><table>
     <tr><th>Table</th><th>Key fields</th><th>Keys / indexes</th></tr>
-    <tr><td><code>idempotency_keys</code></td><td>scope, key, request_hash, status (IN_PROGRESS / DONE), response_code, response_body, locked_at, expires_at</td><td>PK (scope, key) — the unique constraint is the lock</td></tr>
-    <tr><td><code>payments</code></td><td>payment_id, order_id, amount_minor, currency, method, status, psp, psp_ref, attempt, version, created_at</td><td>PK payment_id; unique (order_id, attempt); index (psp, psp_ref); index (status, updated_at) for sweeper</td></tr>
-    <tr><td><code>payment_events</code></td><td>payment_id, seq, from_status, to_status, source (API / WEBHOOK / POLL / RECON), payload</td><td>PK (payment_id, seq); append-only audit</td></tr>
-    <tr><td><code>ledger_entries</code></td><td>entry_id, txn_id, account_id, direction (DEBIT / CREDIT), amount_minor, created_at</td><td>Index (account_id, created_at); constraint per txn: Σ debits = Σ credits</td></tr>
-    <tr><td><code>accounts</code></td><td>account_id, type (USER_WALLET, PSP_RECEIVABLE, MERCHANT_PAYABLE, FEES, REFUNDS), balance_minor, version</td><td>Balance is a cache of the ledger, updated in the same transaction</td></tr>
-    <tr><td><code>outbox</code></td><td>id, aggregate_id, event_type, payload, created_at</td><td>Polled or streamed by Debezium to Kafka</td></tr>
+    <tr><td><code>idempotency_keys</code></td><td>scope, key, request_hash, status (IN_PROGRESS / DONE), response_code, response_body, locked_at, expires_at</td><td>Primary key (scope, key). This unique rule acts as the lock.</td></tr>
+    <tr><td><code>payments</code></td><td>payment_id, order_id, amount_minor, currency, method, status, psp, psp_ref, attempt, version, created_at</td><td>Primary key payment_id; unique (order_id, attempt); index (psp, psp_ref); index (status, updated_at) for the sweeper</td></tr>
+    <tr><td><code>payment_events</code></td><td>payment_id, seq, from_status, to_status, source (API / WEBHOOK / POLL / RECON), payload</td><td>Primary key (payment_id, seq); add-only audit log</td></tr>
+    <tr><td><code>ledger_entries</code></td><td>entry_id, txn_id, account_id, direction (DEBIT / CREDIT), amount_minor, created_at</td><td>Index (account_id, created_at); rule per transaction: total debits = total credits</td></tr>
+    <tr><td><code>accounts</code></td><td>account_id, type (USER_WALLET, PSP_RECEIVABLE, MERCHANT_PAYABLE, FEES, REFUNDS), balance_minor, version</td><td>The balance is a cached copy of the ledger total, updated in the same transaction</td></tr>
+    <tr><td><code>outbox</code></td><td>id, aggregate_id, event_type, payload, created_at</td><td>Read by a poller, or streamed to Kafka by Debezium</td></tr>
     <tr><td><code>recon_items</code></td><td>psp_ref, our_status, psp_status, amount_ours, amount_psp, result (MATCHED / MISMATCH / MISSING_OURS / MISSING_PSP)</td><td>Per settlement date</td></tr>
   </table></div>
-  <p><b>Postgres (or MySQL) for the money path.</b> You need ACID transactions across payment, ledger and outbox rows, unique constraints for idempotency, and row locks. Shard by <code>merchant_id</code> or <code>user_id</code> (Citus or app-level) when one primary is not enough. Kafka carries events to order, notification and analytics services; it is never the source of truth for balances. Amounts are integers in minor units (paise).</p>
+  <p><b>Use Postgres (or MySQL) for the money path.</b> You need ACID transactions across the payment, ledger and outbox rows. ACID means all of them save together or none do. You also need unique constraints for idempotency, and row locks. When one primary is not enough, shard by <code>merchant_id</code> or <code>user_id</code>, with Citus or in the app. Kafka carries events to the order, notification and analytics services. It is never the source of truth for balances. Amounts are whole numbers in the smallest unit (paise).</p>
   <ul>
-    <li><b>Payment service</b> owns the state machine. All transitions go through one method with a conditional update on <code>(status, version)</code>.</li>
-    <li><b>Risk check</b> (the Paytm risk-management variant) runs synchronously before calling the PSP: velocity counters in Redis (payments per user per hour, per device, per card fingerprint), rule engine, ML score; it returns ALLOW / REVIEW / BLOCK within a hard timeout and fails open or closed by amount.</li>
-    <li><b>PSP router</b> picks a gateway by method, success rate over the last 5 minutes, and cost. A circuit breaker per PSP (Resilience4j) removes a degraded bank from rotation.</li>
-    <li><b>Webhook receiver</b> verifies the HMAC signature, stores the raw event, returns 200 in milliseconds, and processes asynchronously. PSPs retry webhooks for hours; dedupe by PSP event id.</li>
-    <li><b>Status poller</b> queries the PSP for payments stuck in PENDING beyond a threshold (e.g. 2, 5, 15, 60 minutes).</li>
-    <li><b>Reconciliation</b> ingests settlement files (T+1) and compares line by line.</li>
+    <li><b>Payment service</b> owns the state machine. Every status change goes through one method with a conditional update on <code>(status, version)</code>.</li>
+    <li><b>Risk check</b> (the Paytm risk-management variant) runs before calling the PSP, and we wait for it. It uses speed counters in Redis: payments per user per hour, per device and per card. It adds a rule engine and an ML score. It answers ALLOW, REVIEW or BLOCK within a hard time limit. If it is down, small amounts go through and large amounts are blocked.</li>
+    <li><b>PSP router</b> picks a gateway by payment method, success rate over the last 5 minutes, and cost. A circuit breaker per PSP (Resilience4j) takes a struggling bank out of rotation.</li>
+    <li><b>Webhook receiver</b> checks the HMAC signature, which proves the message really came from the PSP. It saves the raw event and replies 200 OK within milliseconds. The real processing happens later. PSPs resend webhooks for hours, so it drops repeats by the PSP's event id.</li>
+    <li><b>Status poller</b> asks the PSP about payments stuck in PENDING for too long, for example at 2, 5, 15 and 60 minutes.</li>
+    <li><b>Reconciliation</b> loads the settlement files the next day (T+1) and compares them line by line.</li>
   </ul></details>
 
   <h2 id="follow"><span class="n">05</span>Follow one payment (with a bank timeout)</h2>
   <div class="stepper"><b class="title">₹499 UPI payment for ord_88123</b><div class="frames">
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Payment service<small>INSERT idempotency key → owned</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Risk</span><span class="node dim">PSP router</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>Key <code>ord_88123-attempt-1</code> is new, so this request owns it. Payment row created as CREATED and committed.</figcaption>
+      <figcaption>We have never seen this request's key before, so this request owns it (<code>ord_88123-attempt-1</code>). We save the payment with status CREATED.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Payment service</span></div><div class="down">↓</div><div class="tier"><span class="node hl">Risk<small>ALLOW in 12 ms</small></span><span class="node hl">PSP router<small>Razorpay, 97% success</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>Risk check passes; the router picks the healthiest PSP. Status → PROCESSING.</figcaption>
+      <figcaption>The fraud check says yes. The router picks the gateway that is working best right now. Status becomes PROCESSING.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Payment service</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Risk</span><span class="node dim">PSP router</span></div><div class="down">↓</div><div class="tier"><span class="node bad">Bank / NPCI<small>no reply in 10 s</small></span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>The bank call times out. Money may or may not have moved.</figcaption>
+      <figcaption>The bank does not reply in time. The money may or may not have moved.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Payment service<small>PROCESSING → PENDING</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Risk</span><span class="node dim">PSP router</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>Mark PENDING, not FAILED. The user sees "processing, we will confirm shortly".</figcaption>
+      <figcaption>We mark it PENDING, not FAILED. The user sees "processing, we will confirm shortly", so they do not pay again.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Webhook receiver<small>HMAC ok, event id new</small></span></div><div class="down">↓</div><div class="tier"><span class="node hl">Payment service<small>PENDING → SUCCEEDED</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>40 s later the PSP webhook says SUCCESS. The conditional update moves PENDING → SUCCEEDED.</figcaption>
+      <figcaption>40 s later, the gateway calls us back to say SUCCESS. We check the message is genuine and new. Then we move the payment from PENDING to SUCCEEDED.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Payment service</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Risk</span><span class="node dim">PSP router</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store hl">Postgres<small>status + ledger + outbox, one txn</small></span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>Same transaction: status, ledger entries (₹494 + ₹5 debit, ₹499 credit) and an outbox row.</figcaption>
+      <figcaption>In the same transaction, we save the status, the ledger lines (₹494 + ₹5 debit, ₹499 credit) and an outbox event. All save together or none do.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node dim">Payment service</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Risk</span><span class="node dim">PSP router</span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store hl">Kafka<small>PAYMENT_SUCCEEDED</small></span></div></div>
-      <figcaption>Debezium relays the outbox row to Kafka. The order service ships; consumers dedupe by event id.</figcaption>
+      <figcaption>A background tool (Debezium) copies the outbox event into Kafka. The order service ships the order. Readers ignore repeats by event id.</figcaption>
     </figure>
     <figure class="frame">
       <div class="arch"><div class="tier"><span class="node hl">Status poller<small>also asks PSP: SUCCESS</small></span></div><div class="down">↓</div><div class="tier"><span class="node hl">Payment service<small>PENDING → SUCCEEDED: 0 rows</small></span></div><div class="down">↓</div><div class="tier"><span class="node dim">Bank / NPCI</span></div><div class="down">↓</div><div class="tier"><span class="node store dim">Postgres</span><span class="node store dim">Kafka</span></div></div>
-      <figcaption>The poller races with the webhook. Its update hits 0 rows: an idempotent no-op, no second ledger post.</figcaption>
+      <figcaption>The poller also hears SUCCESS. But the payment is no longer PENDING, so its update changes nothing. No second ledger entry is written.</figcaption>
     </figure>
   </div></div>
 
@@ -186,51 +197,51 @@ POST /v1/webhooks/{psp}               (PSP → us; verify HMAC signature, dedupe
 
   <h3>6.1 Idempotency done properly</h3>
   <ol class="walk">
-    <li><span class="who">Claim</span><span><code>INSERT … 'IN_PROGRESS' ON CONFLICT DO NOTHING</code>. 1 row → you own it. 0 rows → read the existing row.</span></li>
-    <li><span class="who">Replay</span><span>DONE + same hash → replay response. Different hash → 422. IN_PROGRESS → 409; stale <code>locked_at</code> → take over.</span></li>
-    <li><span class="who">Phase 1</span><span>Create payment (CREATED) and commit.</span></li>
-    <li><span class="who">Phase 2</span><span>Call the PSP with <i>our</i> payment id as its idempotency key.</span></li>
-    <li><span class="who">Phase 3</span><span>Record result, ledger, outbox and final response on the key row, in one transaction.</span></li>
+    <li><span class="who">Claim</span><span>Try to save the key as IN_PROGRESS. If the save works, this request owns it. If the key already exists, read that row (<code>INSERT … 'IN_PROGRESS' ON CONFLICT DO NOTHING</code>).</span></li>
+    <li><span class="who">Replay</span><span>Finished with the same request body: return the saved response. Different body: reject (HTTP 422). Still running: "try later" (HTTP 409). Running but stuck after a crash: take over.</span></li>
+    <li><span class="who">Phase 1</span><span>Create the payment as CREATED and commit.</span></li>
+    <li><span class="who">Phase 2</span><span>Call the PSP, sending <i>our</i> payment id as its idempotency key.</span></li>
+    <li><span class="who">Phase 3</span><span>In one transaction, save the result, ledger lines, outbox event and the final response on the key row.</span></li>
   </ol>
   <div class="vs">
-    <div class="pick"><h4>Key in the DB, same txn <span class="tag">usual pick</span></h4><ul><li class="pro">Correct under crashes</li><li class="con">Extra write per request</li></ul><p class="when">Default for money.</p></div>
-    <div><h4>Key in Redis (SETNX)</h4><ul><li class="pro">Fast, cheap</li><li class="con">Not atomic with the DB commit; lost on eviction</li></ul><p class="when">Non-financial dedup (metrics, notifications).</p></div>
+    <div class="pick"><h4>Key in the DB, same transaction <span class="tag">usual pick</span></h4><ul><li class="pro">Stays correct when servers crash</li><li class="con">One extra write per request</li></ul><p class="when">Default for money.</p></div>
+    <div><h4>Key in Redis (SETNX)</h4><ul><li class="pro">Fast and cheap</li><li class="con">Not saved together with the DB commit; lost if Redis evicts it</li></ul><p class="when">Duplicate checks where money is not involved (metrics, notifications).</p></div>
   </div>
   <details class="deep"><summary>Go deeper: the full idempotency algorithm</summary>
   <ol>
-    <li><code>INSERT INTO idempotency_keys (scope, key, request_hash, status) VALUES (..., 'IN_PROGRESS') ON CONFLICT DO NOTHING</code>. Inserted one row → you own the request. Zero rows → read the existing row.</li>
-    <li>Existing and DONE with the same hash → replay the stored response. Different hash → 422. IN_PROGRESS → 409, or wait briefly; if <code>locked_at</code> is stale (crash), take over.</li>
-    <li>Do the work. Persist the payment row, ledger entries, outbox row and the final response on the key row <b>in one transaction</b>.</li>
-    <li>External calls (PSP) cannot be in that transaction, so split the request into <b>atomic phases</b> with recovery points: phase 1 creates the payment (CREATED) and commits; phase 2 calls the PSP with <i>our</i> payment id as the PSP's idempotency key / merchant reference; phase 3 records the result. A retry resumes from the last committed phase. This is Stripe's (Brandur's) recovery-point pattern and Airbnb's Orpheus "pre-RPC, RPC, post-RPC" split.</li>
+    <li>Run <code>INSERT INTO idempotency_keys (scope, key, request_hash, status) VALUES (..., 'IN_PROGRESS') ON CONFLICT DO NOTHING</code>. If one row was inserted, you own the request. If zero rows, read the existing row.</li>
+    <li>If it exists and is DONE with the same request hash, return the saved response. A different hash returns 422. IN_PROGRESS returns 409, or you wait briefly. If <code>locked_at</code> is old, the owner crashed, so take over.</li>
+    <li>Do the work. Save the payment row, ledger lines, outbox row and final response on the key row <b>in one transaction</b>.</li>
+    <li>The PSP call cannot be inside that transaction. So split the request into <b>atomic phases</b>, each with a recovery point. Phase 1 creates the payment (CREATED) and commits. Phase 2 calls the PSP, with <i>our</i> payment id as the PSP's idempotency key or merchant reference. Phase 3 records the result. A retry continues from the last committed phase. This is Stripe's (Brandur's) recovery-point pattern. Airbnb's Orpheus uses the same "pre-RPC, RPC, post-RPC" split.</li>
   </ol>
-  <p>Keep the key row 24 h to 7 days. Store it in the same database as the payment so the check and the write share a transaction; a Redis-only check has a window where Redis says "new" and the DB already committed.</p></details>
+  <p>Keep the key row for 24 h to 7 days. Store it in the same database as the payment, so the check and the write share one transaction. With a Redis-only check, there is a gap. Redis can say "new" while the database has already committed the payment.</p></details>
 
   <h3>6.2 The payment state machine</h3>
   <div class="stepper"><b class="title">Legal moves only; terminal states never go back</b><div class="frames">
     <figure class="frame">
       <div class="cells"><span class="cell hl">CREATED</span><span class="cell">PROCESSING</span><span class="cell">PENDING</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span><span class="cell">REFUNDED</span></div>
-      <figcaption>Payment row committed. Nothing has left our system yet.</figcaption>
+      <figcaption>The payment row is saved. Nothing has left our system yet.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">CREATED</span><span class="cell hl">PROCESSING</span><span class="cell">PENDING</span><span class="cell">SUCCEEDED</span><span class="cell">FAILED</span><span class="cell">REFUNDED</span></div>
-      <figcaption>Sent to the PSP. From here it can go to SUCCEEDED, FAILED or PENDING.</figcaption>
+      <figcaption>Sent to the gateway. From here it can become SUCCEEDED, FAILED or PENDING.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">CREATED</span><span class="cell ok">PROCESSING</span><span class="cell hl">PENDING</span><span class="cell">SUCCEEDED</span><span class="cell bad">FAILED?</span><span class="cell">REFUNDED</span></div>
-      <figcaption>Timeout or UPI still awaiting: PENDING / UNKNOWN. Marking FAILED here lets the user pay twice.</figcaption>
+      <figcaption>The bank timed out, or UPI is still waiting. So it is PENDING (unknown). Marking it FAILED here would let the user pay twice.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">CREATED</span><span class="cell ok">PROCESSING</span><span class="cell ok">PENDING</span><span class="cell hl">SUCCEEDED</span><span class="cell">FAILED</span><span class="cell">REFUNDED</span></div>
       <div class="ptrs"><span>source: WEBHOOK | POLL | RECON</span></div>
-      <figcaption>Resolved by webhook, poller or reconciliation, whichever arrives first. The others get 0 rows.</figcaption>
+      <figcaption>The webhook, the poller or reconciliation settles it, whichever comes first. The others then change nothing.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">CREATED</span><span class="cell ok">PROCESSING</span><span class="cell ok">PENDING</span><span class="cell hl">SUCCEEDED</span><span class="cell bad">FAILED ✕</span><span class="cell">REFUNDED</span></div>
-      <figcaption>A late FAILED webhook arrives. Leaving a terminal state is not allowed: 0 rows, logged for audit.</figcaption>
+      <figcaption>A late FAILED message arrives. A final state cannot change, so nothing is updated. We log it for audit.</figcaption>
     </figure>
     <figure class="frame">
       <div class="cells"><span class="cell ok">CREATED</span><span class="cell ok">PROCESSING</span><span class="cell ok">PENDING</span><span class="cell ok">SUCCEEDED</span><span class="cell">FAILED</span><span class="cell hl">REFUND_PENDING → REFUNDED</span></div>
-      <figcaption>The user also paid via attempt 2, which succeeded second. "Order already paid" triggers an auto-refund.</figcaption>
+      <figcaption>The user also paid with a second attempt, which succeeded later. "Order already paid" triggers an automatic refund of that second payment.</figcaption>
     </figure>
   </div></div>
   <details class="code"><summary>Show Java transition method</summary><pre><code>// single place where status changes; webhook, poller and recon all call this
@@ -246,24 +257,24 @@ public boolean transition(String paymentId, Status from, Status to, Source src, 
     return true;
 }</code></pre></details>
   <details class="deep"><summary>Go deeper: the UNKNOWN problem in full</summary>
-  <p>Figure: PROCESSING and PENDING can also go to FAILED. Terminal states never move backwards.</p>
-  <p>When the bank call times out, you do not know whether money moved. Marking it FAILED and letting the user retry is how double payments happen: the first debit succeeds at the bank, the retry debits again. Instead move to PENDING, show "payment processing", and resolve it from the webhook, the status poller, or reconciliation. Only retry the PSP call with the <b>same</b> merchant reference, so the PSP deduplicates. If the user insists on paying again, create attempt 2 on the same order, and auto-refund whichever attempt succeeds second ("order already paid" check on success).</p>
-  <p>Webhook and poller can race to report success; the conditional update lets exactly one win. Out-of-order events (FAILED webhook after SUCCEEDED) are rejected by the allowed-transition table.</p></details>
+  <p>Note on the figure: PROCESSING and PENDING can also move to FAILED. Final states never move backwards.</p>
+  <p>When the bank call times out, you do not know whether money moved. Marking it FAILED and letting the user retry is how double payments happen. The first debit succeeds at the bank, and the retry debits again. Instead, move to PENDING and show "payment processing". Settle it from the webhook, the status poller or reconciliation. Retry the PSP call only with the <b>same</b> merchant reference, so the PSP can spot the repeat. If the user insists on paying again, create attempt 2 on the same order. Then refund whichever attempt succeeds second. We check "order already paid" each time a payment succeeds.</p>
+  <p>The webhook and the poller can race to report success. The conditional update lets exactly one of them win. Events in the wrong order, like a FAILED webhook after SUCCEEDED, are rejected by the table of allowed moves.</p></details>
 
   <h3>6.3 DB commit plus Kafka: the transactional outbox</h3>
   <div class="tbl"><table class="race"><thead><tr><th>Order</th><th>Step 1</th><th>Crash / failure</th><th>Result</th></tr></thead><tbody>
     <tr><td>Commit, then publish</td><td>DB commit SUCCEEDED</td><td>crash before publish</td><td class="bad">event lost: order never ships</td></tr>
     <tr><td>Publish, then commit</td><td>Kafka PAYMENT_SUCCEEDED</td><td>DB rollback</td><td class="bad">announces a payment that does not exist</td></tr>
-    <tr><td>Outbox</td><td>DB commit status + outbox row</td><td>Kafka down</td><td class="ok">relay retries later; consumers dedupe</td></tr>
+    <tr><td>Outbox</td><td>DB commit status + outbox row</td><td>Kafka down</td><td class="ok">relay retries later; readers skip repeats</td></tr>
   </tbody></table></div>
   <div class="vs">
-    <div class="pick"><h4>Transactional outbox + CDC <span class="tag">usual pick</span></h4><ul><li class="pro">No dual write; ordered per aggregate</li><li class="con">Debezium to operate; at-least-once</li></ul><p class="when">Any DB-then-Kafka flow.</p></div>
-    <div><h4>Kafka transactions</h4><ul><li class="con">Cannot span Postgres</li></ul><p class="when">Kafka-to-Kafka only; does not solve this.</p></div>
+    <div class="pick"><h4>Transactional outbox + CDC <span class="tag">usual pick</span></h4><ul><li class="pro">No dual write; events stay in order per payment</li><li class="con">Debezium is one more thing to run; events may arrive twice</li></ul><p class="when">Any "save to DB, then tell Kafka" flow.</p></div>
+    <div><h4>Kafka transactions</h4><ul><li class="con">Cannot include Postgres</li></ul><p class="when">Kafka-to-Kafka only. Does not solve this.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: outbox and sagas</summary><p>"Update the payment, then publish to Kafka" breaks in both orders: commit then crash before publish loses the event (order never ships); publish then rollback announces a payment that does not exist. Write the event to an <code>outbox</code> table in the same transaction, and have Debezium (CDC on the WAL) or a poller publish it to Kafka. Delivery is at-least-once, so consumers dedupe on event id. Kafka transactions do not help here, because they cannot span Postgres. For the Shiprocket-style order + payment flow, the order service consumes <code>PAYMENT_SUCCEEDED</code> and moves the order on; if the order cannot be fulfilled, it issues a refund command (a saga with compensation, not a 2PC).</p></details>
+  <details class="deep"><summary>Go deeper: outbox and sagas</summary><p>"Update the payment, then publish to Kafka" breaks in both orders. Commit, then crash before publishing, and the event is lost, so the order never ships. Publish, then roll back, and you announce a payment that does not exist. Instead, write the event to an <code>outbox</code> table in the same transaction. Then Debezium or a poller publishes it to Kafka. Debezium does CDC (change data capture): it reads the database's write-ahead log (WAL), where every change is recorded. Delivery is at-least-once, so readers drop repeats by event id. Kafka transactions do not help, because they cannot include Postgres. For the Shiprocket-style order and payment flow, the order service reads <code>PAYMENT_SUCCEEDED</code> and moves the order forward. If the order cannot be fulfilled, it sends a refund command. This is a saga: a chain of steps where each step has an "undo" action. It is not a 2PC (two-phase commit, where all systems lock and commit together).</p></details>
 
   <h3>6.4 Double-entry ledger and wallet consistency</h3>
-  <p>Every money movement is at least two entries that sum to zero. ₹499 UPI payment, ₹5 gateway fee:</p>
+  <p>Every money movement is written as at least two lines that add up to zero. Here is a ₹499 UPI payment with a ₹5 gateway fee.</p>
   <div class="tbl"><table>
     <tr><th>Account</th><th>Debit</th><th>Credit</th></tr>
     <tr><td>PSP_RECEIVABLE</td><td class="num">₹494</td><td></td></tr>
@@ -271,119 +282,119 @@ public boolean transition(String paymentId, Status from, Status to, Source src, 
     <tr><td>MERCHANT_PAYABLE / revenue</td><td></td><td class="num">₹499</td></tr>
   </table></div>
   <div class="keys">
-    <div class="key"><h4>Immutable</h4><p>Corrections are new reversing entries, never edits.</p></div>
-    <div class="key"><h4>Wallet debit</h4><p><code>UPDATE … SET balance = balance - ? WHERE … AND balance &gt;= ?</code> plus the ledger insert, one transaction. Cannot overdraw.</p></div>
-    <div class="key"><h4>Hot accounts</h4><p>A merchant receiving thousands/s locks one row. Split into sub-accounts or batch credits.</p></div>
+    <div class="key"><h4>Immutable</h4><p>Never edit an entry. To fix a mistake, add a new entry that reverses it.</p></div>
+    <div class="key"><h4>Wallet debit</h4><p>Take money only if the balance is enough, in one statement, together with the ledger line. It cannot overdraw: <code>UPDATE … SET balance = balance - ? WHERE … AND balance &gt;= ?</code>.</p></div>
+    <div class="key"><h4>Hot accounts</h4><p>A merchant receiving thousands of payments per second locks one row. Split it into sub-accounts or group credits into batches.</p></div>
   </div>
-  <details class="deep"><summary>Go deeper: ledger details</summary><p>Entries are immutable; corrections are new reversing entries. Balances are the sum of entries, cached on the account row and updated in the same transaction. For a wallet (Slice), a debit does <code>UPDATE accounts SET balance = balance - ? , version = version + 1 WHERE account_id = ? AND balance &gt;= ?</code>: one atomic statement that cannot overdraw, plus the ledger insert in the same transaction. For very hot accounts (a merchant receiving thousands per second), shard the account into sub-accounts or batch credits, since every write locks one row. Uber's payments platform follows the same zero-sum principle and stores ledgers in an immutable store (LedgerStore).</p></details>
+  <details class="deep"><summary>Go deeper: ledger details</summary><p>Entries are never edited. Fixes are new entries that reverse the old ones. A balance is the sum of its entries. It is cached on the account row and updated in the same transaction. For a wallet (Slice), a debit runs <code>UPDATE accounts SET balance = balance - ? , version = version + 1 WHERE account_id = ? AND balance &gt;= ?</code>. This is one atomic statement that cannot overdraw. The ledger insert happens in the same transaction. Some accounts are very busy, like a merchant receiving thousands per second. Every write locks that one row. So split the account into sub-accounts, or group credits into batches. Uber's payments platform follows the same "always adds up to zero" rule. It stores ledgers in a store that never edits records (LedgerStore).</p></details>
 
   <h3>6.5 Reconciliation</h3>
   <div class="tbl"><table>
     <tr><th>PSP file says</th><th>We say</th><th>Action</th></tr>
     <tr><td>success</td><td>success</td><td class="ok">MATCHED: nothing to do</td></tr>
-    <tr><td>success</td><td>PENDING / FAILED</td><td>Money was taken: move to SUCCEEDED, or auto-refund if order cancelled</td></tr>
-    <tr><td>no record</td><td>success</td><td>High severity: investigate before merchant settlement</td></tr>
-    <tr><td>₹494</td><td>₹499</td><td>Amount mismatch: finance ops queue</td></tr>
+    <tr><td>success</td><td>PENDING / FAILED</td><td>Money was taken. Move to SUCCEEDED, or refund automatically if the order was cancelled.</td></tr>
+    <tr><td>no record</td><td>success</td><td>High severity: investigate before paying the merchant</td></tr>
+    <tr><td>₹494</td><td>₹499</td><td>Amount mismatch: send to the finance team's queue</td></tr>
   </table></div>
-  <p>Every morning, match the T−1 settlement file by <code>psp_ref</code> and amount. Every mechanism before recon can fail; recon still catches it within a day.</p>
+  <p>Every morning, take yesterday's (T−1) settlement file from the gateway. Match each line by <code>psp_ref</code> and amount. Every other safeguard can fail, but this check still catches the problem within a day.</p>
   <details class="deep"><summary>Go deeper: reconciliation in full</summary>
-  <p>Every morning, download the PSP / bank settlement file for T−1 and match it against <code>payments</code> by <code>psp_ref</code> and amount. Outcomes:</p>
+  <p>Every morning, download the PSP or bank settlement file for the previous day (T−1). Match it against <code>payments</code> by <code>psp_ref</code> and amount. There are four outcomes.</p>
   <ul>
     <li><b>MATCHED</b>: nothing to do.</li>
-    <li><b>PSP says success, we say PENDING / FAILED</b>: money was taken. Move to SUCCEEDED (fulfil) or auto-refund if the order is cancelled.</li>
-    <li><b>We say success, PSP has no record</b>: high severity; investigate before settlement to merchant.</li>
-    <li><b>Amount mismatch</b>: fee or partial capture issue; to the finance ops queue.</li>
+    <li><b>PSP says success, we say PENDING or FAILED</b>: money was taken. Move to SUCCEEDED and fulfil the order. Or refund automatically if the order was cancelled.</li>
+    <li><b>We say success, PSP has no record</b>: high severity. Investigate before paying out to the merchant.</li>
+    <li><b>Amount mismatch</b>: a fee or partial-capture problem. Send it to the finance ops queue.</li>
   </ul>
-  <p>Reconciliation is why the design is allowed to be eventually consistent with the outside world: every mechanism before it can fail, and recon still catches it within a day.</p></details>
+  <p>Reconciliation is why the design may lag behind the outside world for a while (eventual consistency). Every safeguard before it can fail, and reconciliation still catches it within a day.</p></details>
 
   <h2 id="tradeoffs"><span class="n">07</span>Design choices</h2>
   <div class="vs">
-    <div class="pick"><h4>Saga (orchestrated) <span class="tag">usual pick</span></h4><ul><li class="pro">Works across services; explicit compensation</li><li class="con">Intermediate states visible</li></ul><p class="when">Order + payment + inventory.</p></div>
-    <div><h4>2PC / XA</h4><ul><li class="pro">Atomic across resources</li><li class="con">Blocking; PSPs do not support it</li></ul><p class="when">Almost never.</p></div>
+    <div class="pick"><h4>Saga (orchestrated) <span class="tag">usual pick</span></h4><ul><li class="pro">Works across services; each step has a clear undo</li><li class="con">Half-finished states are visible for a while</li></ul><p class="when">Order + payment + inventory.</p></div>
+    <div><h4>2PC / XA</h4><ul><li class="pro">All systems commit together</li><li class="con">Everyone waits on locks; PSPs do not support it</li></ul><p class="when">Almost never.</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Ledger + cached balance <span class="tag">usual pick</span></h4><ul><li class="pro">Full audit; drift detectable</li></ul></div>
-    <div><h4>Balance column only</h4><ul><li class="pro">Simple</li><li class="con">No audit; drift undetectable</li></ul><p class="when">Never alone; pair with a ledger.</p></div>
+    <div class="pick"><h4>Ledger + cached balance <span class="tag">usual pick</span></h4><ul><li class="pro">Full audit trail; a wrong balance can be detected</li></ul></div>
+    <div><h4>Balance column only</h4><ul><li class="pro">Simple</li><li class="con">No audit trail; a wrong balance cannot be detected</li></ul><p class="when">Never alone. Pair it with a ledger.</p></div>
   </div>
   <div class="vs">
-    <div class="pick"><h4>Postgres / MySQL <span class="tag">usual pick</span></h4><ul><li class="pro">ACID, unique constraints, row locks</li></ul><p class="when">The money path.</p></div>
-    <div><h4>Cassandra</h4><ul><li class="con">No multi-row transactions; LWT is slow</li></ul><p class="when">Not for payments.</p></div>
+    <div class="pick"><h4>Postgres / MySQL <span class="tag">usual pick</span></h4><ul><li class="pro">ACID transactions, unique constraints, row locks</li></ul><p class="when">The money path.</p></div>
+    <div><h4>Cassandra</h4><ul><li class="con">No multi-row transactions; its lightweight transactions (LWT) are slow</li></ul><p class="when">Not for payments.</p></div>
   </div>
 
   <h2 id="scale"><span class="n">08</span>Scaling, failure handling and consistency</h2>
   <div class="keys">
-    <div class="key"><h4>Partner bank down</h4><p>Circuit breaker per PSP; route <b>new</b> payments elsewhere. Never re-route an in-flight payment: that can debit twice.</p></div>
-    <div class="key"><h4>Retry policy</h4><p>Only idempotent calls; backoff with jitter; cap; then DLQ and alert. No retry on 4xx business errors.</p></div>
-    <div class="key"><h4>Timeouts</h4><p>PSP timeout below the user timeout (10 s vs 30 s). Timeout = PENDING.</p></div>
-    <div class="key"><h4>Database</h4><p>Sync replica in another AZ (RPO 0). Monthly partitions; archive old ones.</p></div>
-    <div class="key"><h4>10× / 100×</h4><p>Shard by merchant or user; active-passive regions for money, active-active reads.</p></div>
+    <div class="key"><h4>Partner bank down</h4><p>Use a circuit breaker per gateway, and send <b>new</b> payments elsewhere. Never move a payment that is already in progress. That can debit the user twice.</p></div>
+    <div class="key"><h4>Retry policy</h4><p>Retry only safe-to-repeat calls. Wait longer each time, with some randomness (jitter). Stop after a limit, park the message in a DLQ (a holding queue for failures) and alert. Never retry business errors like "insufficient funds".</p></div>
+    <div class="key"><h4>Timeouts</h4><p>Give up on the gateway before the user's screen gives up (10 s vs 30 s). A timeout means PENDING.</p></div>
+    <div class="key"><h4>Database</h4><p>Keep a live copy in another data centre that confirms every write (RPO 0, no data loss). Split tables by month and archive old months.</p></div>
+    <div class="key"><h4>10× / 100×</h4><p>Shard by merchant or user. For money, one region works and one stands by. Reads can be served from both.</p></div>
   </div>
   <details class="deep"><summary>Go deeper: full scaling notes</summary><ul>
-    <li><b>Partner bank down (Angel One).</b> Circuit breaker per PSP / bank with success-rate thresholds; router fails over new payments to a secondary PSP. In-flight payments at the failed PSP stay PENDING and resolve via poll / recon; never re-route an in-flight payment to another PSP (that can debit twice).</li>
-    <li><b>Retry policy.</b> Retry only idempotent calls or calls with a PSP idempotency key; exponential backoff with jitter; cap attempts; then park in a DLQ topic and alert. Do not retry on 4xx business errors (insufficient funds).</li>
-    <li><b>Timeouts.</b> Set PSP client timeouts below the user-facing timeout (e.g. 10 s vs 30 s), and treat timeout as PENDING.</li>
-    <li><b>Webhook storms.</b> Receiver only persists and enqueues; consumers scale out; per-payment ordering via Kafka key = payment_id.</li>
-    <li><b>Database.</b> Primary with synchronous replica in another AZ (RPO 0 for money), async replica for reads. Partition <code>payments</code> and <code>ledger_entries</code> by month; archive older partitions.</li>
-    <li><b>10× / 100×.</b> Shard by merchant or user; ledger hot accounts split; outbox relay scales per shard. Multi-region active-passive for the money path (avoid multi-master on balances); read APIs can be active-active.</li>
-    <li><b>Idempotent metrics (Rippling).</b> Events carry ids; the aggregator keeps a dedup set per window (or uses upserts keyed by event id) so retried publishes do not double-count.</li>
+    <li><b>Partner bank down (Angel One).</b> Put a circuit breaker on each PSP or bank, based on success rate. The router sends new payments to a backup PSP. Payments already in progress at the failed PSP stay PENDING. They are settled by polling or reconciliation. Never re-route an in-progress payment to another PSP, because that can debit twice.</li>
+    <li><b>Retry policy.</b> Retry only calls that are safe to repeat, or calls that carry a PSP idempotency key. Wait longer after each try (exponential backoff), with random jitter. Cap the number of tries. Then park the message in a DLQ topic (dead-letter queue, a separate parking area for messages that keep failing) and alert. Do not retry 4xx business errors like insufficient funds.</li>
+    <li><b>Timeouts.</b> Set the PSP client timeout below the user-facing timeout, for example 10 s vs 30 s. Treat a timeout as PENDING.</li>
+    <li><b>Webhook storms.</b> The receiver only saves and queues. Readers scale out. Kafka key = payment_id keeps events for one payment in order.</li>
+    <li><b>Database.</b> Run a primary with a synchronous copy in another availability zone (AZ). RPO 0 means no money data is lost if the primary dies. Add an asynchronous copy for reads. Split <code>payments</code> and <code>ledger_entries</code> into monthly partitions, and archive older ones.</li>
+    <li><b>10× / 100×.</b> Shard by merchant or user. Split busy ledger accounts. Run one outbox relay per shard. For the money path, use active-passive regions: one region writes, one stands by. Avoid two regions writing the same balance. Read APIs can be active-active.</li>
+    <li><b>Idempotent metrics (Rippling).</b> Each event carries an id. The aggregator keeps a set of seen ids per window, or upserts by event id. Then a re-sent event is not counted twice.</li>
   </ul></details>
 
   <h2 id="mistakes"><span class="n">09</span>Mistakes that got candidates rejected</h2>
   <div class="callout warn"><b>Rejected for this</b>
     <ul>
-      <li>Treating a PSP timeout as failure and letting the user retry.</li>
-      <li>"Save to DB then publish to Kafka" with no outbox, or calling the PSP inside a DB transaction holding row locks for seconds.</li>
-      <li>Idempotency described as "check Redis if we saw this request" with no request hash, no in-flight state, and no link to the DB commit.</li>
-      <li>Floats for money; a single balance column with no ledger.</li>
+      <li>Treating a gateway timeout as a failure, and letting the user try again.</li>
+      <li>"Save to DB, then publish to Kafka" with no outbox. Or calling the PSP inside a database transaction that holds row locks for seconds.</li>
+      <li>Idempotency described as "check Redis if we saw this request". No request hash, no in-progress state, and no link to the database commit.</li>
+      <li>Using floats for money. Or one balance column with no ledger.</li>
       <li>No reconciliation, or not knowing what a settlement file is.</li>
-      <li>Retrying everything, including non-idempotent bank calls, or re-routing an in-flight payment to a second PSP.</li>
+      <li>Retrying everything, including bank calls that are unsafe to repeat. Or moving an in-progress payment to a second PSP.</li>
     </ul>
   </div>
 
   <h2 id="quiz"><span class="n">10</span>Quick check</h2>
-  <div class="quiz" data-answer="2"><p class="q">The bank call times out after 10 s. What status do you set?</p>
-    <div class="opts"><button class="opt" type="button">FAILED, and let the user retry</button><button class="opt" type="button">SUCCEEDED, the bank usually succeeds</button><button class="opt" type="button">PENDING, then resolve by webhook, poll or reconciliation</button></div>
-    <p class="why">You do not know if money moved. FAILED plus a retry is the classic double charge.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">The bank call gets no reply after 10 s. What status do you set?</p>
+    <div class="opts"><button class="opt" type="button">FAILED, and let the user retry</button><button class="opt" type="button">SUCCEEDED, the bank usually succeeds</button><button class="opt" type="button">PENDING, then settle it by webhook, polling or reconciliation</button></div>
+    <p class="why">You do not know if the money moved. FAILED plus a retry is the classic double charge.</p></div>
   <div class="quiz" data-answer="1"><p class="q">Which idempotency key best stops a double tap on "Pay"?</p>
-    <div class="opts"><button class="opt" type="button">A fresh UUID per HTTP request</button><button class="opt" type="button">orderId plus attempt number</button><button class="opt" type="button">The user's id</button></div>
-    <p class="why">The key must represent the business intent. A new UUID per click makes the second tap look like a new payment.</p></div>
-  <div class="quiz" data-answer="0"><p class="q">You commit the payment and Kafka is down. With an outbox, what happens?</p>
-    <div class="opts"><button class="opt" type="button">The event waits in the outbox; the relay publishes when Kafka recovers</button><button class="opt" type="button">The DB transaction rolls back</button><button class="opt" type="button">The event is lost</button></div>
-    <p class="why">The outbox row was committed with the payment. Delivery is late and at-least-once; consumers dedupe.</p></div>
-  <div class="quiz" data-answer="2"><p class="q">PSP A is failing. A payment is in flight at PSP A. What do you do with it?</p>
-    <div class="opts"><button class="opt" type="button">Re-send it to PSP B</button><button class="opt" type="button">Mark it FAILED</button><button class="opt" type="button">Leave it PENDING; route only new payments to PSP B</button></div>
-    <p class="why">The in-flight one may still succeed at A. Re-routing it can debit the user twice.</p></div>
+    <div class="opts"><button class="opt" type="button">A new UUID for every HTTP request</button><button class="opt" type="button">orderId plus attempt number</button><button class="opt" type="button">The user's id</button></div>
+    <p class="why">The key must stand for what the user is trying to do. A new UUID per click makes the second tap look like a new payment.</p></div>
+  <div class="quiz" data-answer="0"><p class="q">You commit the payment, but Kafka is down. With an outbox, what happens?</p>
+    <div class="opts"><button class="opt" type="button">The event waits in the outbox, and is sent when Kafka comes back</button><button class="opt" type="button">The DB transaction rolls back</button><button class="opt" type="button">The event is lost</button></div>
+    <p class="why">The outbox row was saved together with the payment. It is delivered late, maybe twice, and readers skip repeats.</p></div>
+  <div class="quiz" data-answer="2"><p class="q">Gateway A is failing. One payment is already in progress at A. What do you do with it?</p>
+    <div class="opts"><button class="opt" type="button">Send it again to gateway B</button><button class="opt" type="button">Mark it FAILED</button><button class="opt" type="button">Leave it PENDING, and send only new payments to gateway B</button></div>
+    <p class="why">The in-progress payment may still succeed at A. Sending it to B as well can debit the user twice.</p></div>
 
   <h2 id="followups"><span class="n">11</span>Follow-up questions interviewers asked</h2>
-  <details class="qa"><summary>The bank call timed out. What do you show the user and what does the system do?</summary><p>Show "processing, we will confirm shortly". Mark PENDING, never FAILED. Webhook, scheduled status polls at 2 / 5 / 15 / 60 minutes, and T+1 reconciliation each can resolve it. If it eventually fails, release the order; if it succeeds after the user paid again, refund the duplicate.</p></details>
-  <details class="qa"><summary>How exactly do you prevent a double payment when the user taps Pay twice?</summary><p>The client sends the same idempotency key derived from the order id and attempt. The unique constraint on (scope, key) makes the second request read the first's state. Separately, unique (order_id) for a SUCCEEDED payment, checked when marking success, catches duplicates that arrive through different attempts and triggers an automatic refund.</p></details>
-  <details class="qa"><summary>You commit to the DB and then Kafka is down. What happens?</summary><p>Nothing is lost: the event is in the outbox table in the same commit. The relay retries until Kafka recovers. Consumers see it late, possibly twice, and dedupe by event id.</p></details>
-  <details class="qa"><summary>How do you design the idempotency key for a food-delivery order (Kotak)?</summary><p>Client generates it per user intent: <code>userId + cartId + attempt</code> or a UUID created when the checkout screen opens and reused on retries. Server scopes it by user, stores the request hash, and returns the original response on replay. Expire after 24 h.</p></details>
-  <details class="qa"><summary>Two webhooks arrive out of order: FAILED after SUCCEEDED.</summary><p>The allowed-transition table forbids leaving a terminal state; the conditional update affects zero rows and the event is logged for audit. If the PSP genuinely reversed the payment, that arrives as a separate refund / chargeback event with its own flow.</p></details>
-  <details class="qa"><summary>How do you keep a wallet balance consistent under concurrent debits?</summary><p>Single conditional update (<code>balance &gt;= amount</code>) with the ledger insert in one transaction, or <code>SELECT ... FOR UPDATE</code> on the account row. Optimistic version checks work when contention is low. Never read-modify-write in application code without a lock.</p></details>
-  <details class="qa"><summary>What does reconciliation catch that webhooks and polling do not?</summary><p>Lost webhooks after PSP retries expire, bugs in our state handling, PSP-side reversals, fee mismatches, and settlement amounts that differ from authorised amounts. It is the only check against the bank's own books.</p></details>
+  <details class="qa"><summary>The bank call timed out. What do you show the user, and what does the system do?</summary><p>Show "processing, we will confirm shortly". Mark it PENDING, never FAILED. Three things can settle it. The webhook, status polls at 2, 5, 15 and 60 minutes, and reconciliation the next day (T+1). If it finally fails, release the order. If it succeeds after the user already paid again, refund the duplicate.</p></details>
+  <details class="qa"><summary>How exactly do you prevent a double payment when the user taps Pay twice?</summary><p>The app sends the same idempotency key, built from the order id and attempt. The unique constraint on (scope, key) makes the second request read the first one's state. There is a second guard too. When marking a payment SUCCEEDED, we check that the order has no other successful payment (unique order_id). That catches duplicates from different attempts and triggers an automatic refund.</p></details>
+  <details class="qa"><summary>You commit to the DB, and then Kafka is down. What happens?</summary><p>Nothing is lost. The event sits in the outbox table, saved in the same commit. The relay keeps retrying until Kafka recovers. Readers see the event late, maybe twice, and skip repeats by event id.</p></details>
+  <details class="qa"><summary>How do you design the idempotency key for a food-delivery order (Kotak)?</summary><p>The app creates it once per user intent. Use <code>userId + cartId + attempt</code>, or a UUID made when the checkout screen opens and reused on retries. The server stores it per user, along with a hash of the request. On a repeat, it returns the original response. Keys expire after 24 h.</p></details>
+  <details class="qa"><summary>Two webhooks arrive in the wrong order: FAILED after SUCCEEDED.</summary><p>The table of allowed moves forbids leaving a final state. So the conditional update changes zero rows, and we log the event for audit. If the PSP really reversed the payment, that comes as a separate refund or chargeback event, with its own flow.</p></details>
+  <details class="qa"><summary>How do you keep a wallet balance correct when two debits happen at once?</summary><p>Use a single conditional update (<code>balance &gt;= amount</code>), with the ledger insert in the same transaction. Or lock the account row first with <code>SELECT ... FOR UPDATE</code>. Optimistic version checks also work when collisions are rare. Never read the balance, change it in app code, and write it back without a lock.</p></details>
+  <details class="qa"><summary>What does reconciliation catch that webhooks and polling do not?</summary><p>Webhooks lost after the PSP stopped retrying. Bugs in our own status handling. Reversals on the PSP side. Fee mismatches. Settled amounts that differ from authorised amounts. It is the only check against the bank's own books.</p></details>
 
   <h2 id="plan"><span class="n">12</span>A 45-minute plan</h2>
   <div class="timeline">
-    <div class="step"><span class="t">0–5 min</span><span>Merchant vs PSP, methods (UPI async), flows (pay-in, refund, payout), consistency needs.</span></div>
-    <div class="step"><span class="t">5–8 min</span><span>Capacity: ~1.7k TPS peak; conclude correctness is the hard part.</span></div>
-    <div class="step"><span class="t">8–14 min</span><span>APIs with Idempotency-Key semantics; tables with constraints.</span></div>
-    <div class="step"><span class="t">14–22 min</span><span>Architecture: payment service, router, adapters, webhook receiver, poller, recon, Kafka via outbox.</span></div>
-    <div class="step"><span class="t">22–36 min</span><span>Deep dives: idempotency phases, state machine with PENDING, outbox, ledger.</span></div>
+    <div class="step"><span class="t">0–5 min</span><span>Ask: merchant or PSP, payment methods (UPI is async), flows (pay-in, refund, payout), consistency needs.</span></div>
+    <div class="step"><span class="t">5–8 min</span><span>Capacity: ~1.7k payments per second at peak. Conclude that correctness is the hard part.</span></div>
+    <div class="step"><span class="t">8–14 min</span><span>APIs and how the Idempotency-Key behaves. Tables with their constraints.</span></div>
+    <div class="step"><span class="t">14–22 min</span><span>Architecture: payment service, router, adapters, webhook receiver, poller, reconciliation, Kafka through the outbox.</span></div>
+    <div class="step"><span class="t">22–36 min</span><span>Deep dives: idempotency phases, the state machine with PENDING, the outbox, the ledger.</span></div>
     <div class="step"><span class="t">36–42 min</span><span>Partner bank failure, retries, circuit breakers, reconciliation.</span></div>
     <div class="step"><span class="t">42–45 min</span><span>Trade-offs, scaling the ledger, multi-region.</span></div>
   </div>
 
   <h2 id="cheat"><span class="n">13</span>Cheat sheet</h2>
   <div class="cheat"><b>Cheat sheet</b><ul>
-    <li>Idempotency key = orderId + attempt; unique (scope, key) row in the same DB.</li>
-    <li>Phases: create + commit → PSP call with our id → record result in one txn.</li>
-    <li>CREATED → PROCESSING → PENDING → SUCCEEDED / FAILED → REFUNDED; terminal never moves back.</li>
-    <li>Timeout = PENDING; resolve via webhook, poll (2/5/15/60 min), recon.</li>
-    <li>One <code>transition()</code> with conditional update; races become no-ops.</li>
-    <li>Outbox + Debezium; consumers dedupe by event id; saga, not 2PC.</li>
-    <li>Double-entry, integer paise, immutable entries, balance as cache.</li>
-    <li>Circuit breaker per PSP; never re-route in-flight payments.</li>
+    <li>Idempotency key = orderId + attempt. Store a unique (scope, key) row in the same database.</li>
+    <li>Three phases: create and commit, call the PSP with our id, save the result in one transaction.</li>
+    <li>Statuses: CREATED, PROCESSING, PENDING, then SUCCEEDED or FAILED, then REFUNDED. Final states never move back.</li>
+    <li>Timeout means PENDING. Settle it by webhook, polling (2/5/15/60 min) or reconciliation.</li>
+    <li>One <code>transition()</code> method with a conditional update. Races then change nothing.</li>
+    <li>Outbox plus Debezium. Readers skip repeats by event id. Use a saga, not 2PC.</li>
+    <li>Double-entry, whole paise, entries never edited, balance only a cache.</li>
+    <li>Circuit breaker per PSP. Never re-route a payment already in progress.</li>
   </ul></div>
 
   <h2 id="sources"><span class="n">14</span>Sources</h2>
@@ -403,3 +414,4 @@ public boolean transition(String paymentId, Status from, Status to, Source src, 
 <script src="guide.js" defer></script>
 </body>
 </html>
+
